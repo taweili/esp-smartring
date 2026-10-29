@@ -1,6 +1,13 @@
 # Smart Ring Plus (VIEWE) known-good sdkconfig defaults
 # See notes/esp-smartring.md section 6 for rationale.
 
+# --- Console: send ALL output (including panic/WDT backtraces) to the
+#     USB-Serial-JTAG port (/dev/ttyACM0). The primary console defaulted to
+#     UART0 on GPIO43/44, which is NOT exposed on this board, so crashes were
+#     invisible. Secondary console alone does not carry panic output.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
+
 # --- Required by the smartring_plus BSP ---
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
@@ -12,7 +19,14 @@ CONFIG_LV_USE_CLIB_MALLOC=y
 # A 1 kHz tick is required (also standard for 48 kHz audio + 250 Hz IMU).
 CONFIG_FREERTOS_HZ=1000
 
-# --- LVGL 9 fonts needed to render "Hello World" ---
+# --- Headroom for UI construction from app_main (launcher builds 37 label
+#     objects in one call chain). 3584 is the IDF default; 8192 is comfortable.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# --- LVGL 9 fonts. 20 is what the launcher icons use (LV_SYMBOL_* glyphs are
+#     baked into the built-in Montserrat fonts). 14/16/24/48 kept for general use.
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
-CONFIG_LV_FONT_MONTSERRAT_48=y   # large "Hello World" fills the 360px screen
+CONFIG_LV_FONT_MONTSERRAT_20=y   # launcher icon glyphs
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_48=y

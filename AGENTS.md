@@ -30,15 +30,36 @@ idf.py -p /dev/ttyACM0 monitor     # follow serial log (Ctrl-] to exit)
 > **sdkconfig.defaults is only applied when `sdkconfig` is (re)created.** If you change
 > `sdkconfig.defaults`, run `rm -f sdkconfig && idf.py reconfigure` so the new defaults take effect.
 
-To capture the boot log non-interactively (e.g. from a script), reset the board and read the port:
+To capture the boot log non-interactively (e.g. from a script), reset the board and read the port.
+
+> **⚠️ You must drain the port continuously.** The console is the USB-Serial-JTAG port,
+> and device log writes **block when the host is not reading**. A script that sleeps
+> (e.g. `time.sleep(10)`) *before* reading lets the TX FIFO fill, which stalls the
+> firmware mid-boot and looks exactly like a hang/crash. Nesting `time.sleep()` inside
+> `lv_*` work has caused hours of phantom bugs here.
+> Always read in a background thread (or use `idf.py monitor`):
 
 ```bash
 python3 - <<'EOF'
-import serial, time
-p = serial.Serial("/dev/ttyACM0", 115200, timeout=0.5)
+import serial, time, threading
+p = serial.Serial("/dev/ttyACM0", 115200, timeout=0.1)
+buf = bytearray(); stop = False
+
+def reader():                      # drain continuously — do NOT sleep first
+    while not stop:
+        try:
+            d = p.read(4096)
+            if d: buf.extend(d)
+        except Exception:
+            pass
+
+threading.Thread(target=reader, daemon=True).start()
+
 p.setDTR(False); p.setRTS(True); time.sleep(0.1); p.setRTS(False)
 time.sleep(0.2); p.setDTR(True); time.sleep(0.1); p.setDTR(False)
-time.sleep(3); print(p.read(8192).decode("utf-8", "replace"))
+time.sleep(5)
+stop = True; time.sleep(0.3)
+print(buf.decode("utf-8", "replace"))
 EOF
 ```
 
@@ -118,7 +139,11 @@ CONFIG_FREERTOS_HZ=1000
 
 ## sdkconfig essentials
 
-`CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT=y`, `CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n`, `CONFIG_LV_USE_CLIB_MALLOC=y`, `CONFIG_FREERTOS_HZ=1000`, and Montserrat fonts (`14`, `16`, `48`).
+`CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT=y`, `CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n`, `CONFIG_LV_USE_CLIB_MALLOC=y`, `CONFIG_FREERTOS_HZ=1000`, `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`, and Montserrat fonts (`14`, `16`, `20`, `24`, `48`).
+
+> `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` matters: the board's primary console used to be
+> UART0 on GPIO43/44, which is **not exposed**, so panic/WDT backtraces went nowhere and
+> crashes were invisible. With USB-JTAG as the console, panics appear on `/dev/ttyACM0`.
 
 ## Conventions
 
@@ -132,6 +157,11 @@ CONFIG_FREERTOS_HZ=1000
 
 ## Gotchas
 
+- **Console back-pressure looks like a hang (most important).** `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`
+  is set (see below), so `ESP_LOG*` writes block whenever the host stops reading `/dev/ttyACM0`.
+  Drain the port continuously — a capture script that `sleep()`s before reading will stall the
+  firmware mid-boot and mimic a crash. This has produced false "hangs" in SD init, IMU init,
+  `bsp_power_init()`, and the LVGL render path.
 - **Full-screen LVGL flush** (`buffer_height` = full panel) exhausts internal RAM → `ESP_ERR_NO_MEM`/garbage. The BSP uses a 40-line buffer; don't increase it in app code.
 - **Audio pop/click:** always mute after playback (`set_mute(true)`); `esp_codec_dev_write()` returns `0` on success (inverted `esp_err_t`).
 - **Panel revision:** the BSP uses the vendor "B" init table (`BOARD_LCD_VERSION_A`); a mismatch gives vertical stripes.
