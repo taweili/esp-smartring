@@ -1,0 +1,6 @@
+# Smart Ring Plus (VIEWE) Hello World project dependencies.
+# The BSP brings in ST77916 QSPI LCD, CST816 touch, ES8311 audio,
+# QMI8658A IMU, SDMMC, battery/PMIC and LVGL 9 via esp_lvgl_adapter.
+dependencies:
+  idf: ">=5.5"
+  viewesmart/smartring_plus: "^1.1.2"

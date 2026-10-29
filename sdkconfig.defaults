@@ -1,0 +1,18 @@
+# Smart Ring Plus (VIEWE) known-good sdkconfig defaults
+# See notes/esp-smartring.md section 6 for rationale.
+
+# --- Required by the smartring_plus BSP ---
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n
+CONFIG_LV_USE_CLIB_MALLOC=y
+
+# The BSP's IMU sample task runs at 250 Hz (vTaskDelayUntil(pdMS_TO_TICKS(4))).
+# At the default 100 Hz FreeRTOS tick that rounds to 0 -> xTaskDelayUntil assert.
+# A 1 kHz tick is required (also standard for 48 kHz audio + 250 Hz IMU).
+CONFIG_FREERTOS_HZ=1000
+
+# --- LVGL 9 fonts needed to render "Hello World" ---
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_48=y   # large "Hello World" fills the 360px screen
