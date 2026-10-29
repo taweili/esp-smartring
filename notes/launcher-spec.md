@@ -22,7 +22,7 @@ LVGL **9.4.0**, BSP `viewesmart/smartring_plus`.
 |-------|--------|
 | Idle | Screen dark; a small cluster of glyphs lit near the center (a few center cells) |
 | Open | Glyphs **light up starting at the center** and the lit region **grows outward to the edge** (~0.4–0.5 s, ease-out) — a reveal wave, not a zoom |
-| Open (held) | Dense grid of glyph icons fills the panel. A fixed ring/pattern of **green** icons stays constant; **accent** icons cycle hue: orange → pink → blue → cream |
+| Open (held) | Dense grid fills the panel using only **~6 distinct glyph shapes** (`#`, `+`, `×`, filled square, dot, open-circle). **Green vs accent is scattered at random** (not in rings); green stays constant while accents cycle hue: orange → pink → blue → cream |
 | Close | Lit region **collapses back toward the center** (~0.3–0.4 s) until only the tiny center cluster remains |
 
 ---
@@ -104,10 +104,27 @@ typedef struct {
 static launcher_glyph_t s_glyphs[GRID_N * GRID_N];   // 169 entries
 ```
 
-- Assign symbols by walking the `LV_SYMBOL_*` table cyclically.
-- Mix the two classes across the grid (e.g. alternating/checkerboard, or a
-  rough 60 % green / 40 % accent) so the green pattern reads as a fixed ring
-  and the accents provide the cycling color, like the footage.
+- **Only ~6 distinct glyph shapes**, approximating the footage's pixel marks
+  (`#`, `+`, `×`, filled square, dot, open-circle). The video uses custom pixel
+  glyphs; we approximate with a small `LV_SYMBOL_*` set:
+
+  ```c
+  static const char *const s_syms[6] = {
+      LV_SYMBOL_PLUS,    /* +        */
+      LV_SYMBOL_CLOSE,   /* ×        */
+      LV_SYMBOL_STOP,    /* ■ square */
+      LV_SYMBOL_BULLET,  /* • dot    */
+      LV_SYMBOL_PLAY,    /* ▶        */
+      LV_SYMBOL_PAUSE,   /* ‖        */
+  };
+  ```
+
+  Assign each cell a glyph with a deterministic pseudo-random pick
+  (`s_syms[rnd() % 6]`), **not** a cyclic walk, so the field looks organic.
+- **Class assignment is random, not concentric bands.** Each cell is
+  `ICON_ACCENT` with ~50 % probability from a deterministic RNG (reproducible)
+  so green glyphs are scattered randomly across the field like the footage,
+  with no ring structure.
 - `ICON_STATIC_GREEN` → fixed `lv_color_hex(0x00E676)` (green).
 - `ICON_ACCENT` → colored from the cycling hue (see §5).
 - Glyphs are `lv_label`s (symbols render with the built-in Montserrat fonts —
@@ -266,6 +283,28 @@ center cluster.
 #define COLOR_GREEN lv_color_hex(0x00E676)
 #define COLOR_BG    lv_color_black()
 
+/* The footage uses ~6 custom pixel glyphs; approximate with LV_SYMBOL. */
+static const char *const s_syms[6] = {
+    LV_SYMBOL_PLUS,   /* +        */
+    LV_SYMBOL_CLOSE,  /* x        */
+    LV_SYMBOL_STOP,   /* square   */
+    LV_SYMBOL_BULLET, /* dot      */
+    LV_SYMBOL_PLAY,   /* triangle */
+    LV_SYMBOL_PAUSE,  /* bars     */
+};
+
+/* Tiny deterministic xorshift32 RNG so the random glyph/color field is
+ * reproducible. (A plain LCG has degenerate low bits: `% 6` / `& 1` would
+ * collapse to even values only, giving an all-accent field.) */
+static uint32_t s_rng = 0x9E3779B9u;
+static uint32_t rnd(void)
+{
+    s_rng ^= s_rng << 13;
+    s_rng ^= s_rng >> 17;
+    s_rng ^= s_rng << 5;
+    return s_rng;
+}
+
 typedef enum { ICON_STATIC_GREEN, ICON_ACCENT } icon_class_t;
 
 typedef struct {
@@ -349,8 +388,8 @@ esp_err_t launcher_start(void)
             s_glyphs[idx].x = x;
             s_glyphs[idx].y = y;
             s_glyphs[idx].dist = (uint16_t)roundf(hypotf(x - CX, y - CY));
-            s_glyphs[idx].symbol = /* walk LV_SYMBOL_ table */ NULL;
-            s_glyphs[idx].cls = /* green/accent mix */ ICON_STATIC_GREEN;
+            s_glyphs[idx].symbol = s_syms[rnd() % 6];
+            s_glyphs[idx].cls = (rnd() & 1) ? ICON_ACCENT : ICON_STATIC_GREEN;
 
             lv_obj_t *l = lv_label_create(scr);
             lv_label_set_text(l, s_glyphs[idx].symbol);

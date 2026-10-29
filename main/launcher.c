@@ -10,7 +10,8 @@
  * region back to the tiny idle cluster at the center.
  *
  * While OPEN, accent glyphs cycle hue (orange -> pink -> blue -> cream) via an
- * HSV anim; a concentric-ring pattern of fixed green glyphs stays constant.
+ * HSV anim; randomly scattered fixed-green glyphs stay constant. Only a
+ * handful of distinct glyph shapes are used (~6), matching the footage.
  *
  * State machine: IDLE -> OPENING -> OPEN -> CLOSING -> IDLE
  *
@@ -59,25 +60,35 @@ typedef struct {
     lv_obj_t *obj;       /* the lv_label                    */
 } launcher_glyph_t;
 
-/* Glyph symbols are cycled from this table (LV_SYMBOL_* are baked into the
- * built-in Montserrat fonts; no extra font component needed). */
-static const char *const s_syms[] = {
-    LV_SYMBOL_HOME,        LV_SYMBOL_SETTINGS,    LV_SYMBOL_AUDIO,
-    LV_SYMBOL_WIFI,        LV_SYMBOL_IMAGE,       LV_SYMBOL_BLUETOOTH,
-    LV_SYMBOL_PLAY,        LV_SYMBOL_NEXT,        LV_SYMBOL_PREV,
-    LV_SYMBOL_PAUSE,       LV_SYMBOL_STOP,        LV_SYMBOL_BELL,
-    LV_SYMBOL_GPS,         LV_SYMBOL_CHARGE,      LV_SYMBOL_BATTERY_FULL,
-    LV_SYMBOL_WARNING,     LV_SYMBOL_CALL,        LV_SYMBOL_DIRECTORY,
-    LV_SYMBOL_VOLUME_MAX,  LV_SYMBOL_DOWNLOAD,    LV_SYMBOL_UPLOAD,
-    LV_SYMBOL_REFRESH,     LV_SYMBOL_MUTE,        LV_SYMBOL_VOLUME_MID,
-    LV_SYMBOL_EYE_OPEN,    LV_SYMBOL_EYE_CLOSE,   LV_SYMBOL_SHUFFLE,
-    LV_SYMBOL_LOOP,        LV_SYMBOL_EDIT,        LV_SYMBOL_TRASH,
-    LV_SYMBOL_SAVE,        LV_SYMBOL_COPY,        LV_SYMBOL_PASTE,
-    LV_SYMBOL_KEYBOARD,    LV_SYMBOL_USB,         LV_SYMBOL_BARS,
-    LV_SYMBOL_FILE,        LV_SYMBOL_SD_CARD,     LV_SYMBOL_ENVELOPE,
-    LV_SYMBOL_VIDEO,       LV_SYMBOL_POWER,       LV_SYMBOL_OK,
+/* The footage uses only ~6 distinct pixel glyph shapes; approximate them with
+ * a small LV_SYMBOL_* set (baked into the built-in Montserrat fonts, so no
+ * extra font component is needed). Glyphs are picked pseudo-randomly per cell
+ * rather than cycled, so the field reads as organic like the footage. */
+static const char *const s_syms[6] = {
+    LV_SYMBOL_PLUS,    /* +        */
+    LV_SYMBOL_CLOSE,   /* x        */
+    LV_SYMBOL_STOP,    /* square   */
+    LV_SYMBOL_BULLET,  /* dot      */
+    LV_SYMBOL_PLAY,    /* triangle */
+    LV_SYMBOL_PAUSE,   /* bars     */
 };
 #define N_SYMS (sizeof(s_syms) / sizeof(s_syms[0]))
+
+/* Tiny deterministic xorshift32 RNG: the random glyph/color field stays
+ * reproducible across boots (useful when tuning the look).
+ *
+ * NOTE: do NOT use a plain LCG here — its low bits are degenerate, so
+ * `rnd() % 6` and `rnd() & 1` collapse to even values only (the whole field
+ * came out all-accent with 3 glyph shapes). xorshift32 mixes all bits. */
+static uint32_t s_rng = 0x9E3779B9u;
+
+static uint32_t rnd(void)
+{
+    s_rng ^= s_rng << 13;
+    s_rng ^= s_rng >> 17;
+    s_rng ^= s_rng << 5;
+    return s_rng;
+}
 
 #define N_GLYPHS (GRID_N * GRID_N)
 
@@ -254,12 +265,11 @@ static void build_grid(void)
             s_glyphs[idx].x = (int16_t)x;
             s_glyphs[idx].y = (int16_t)y;
             s_glyphs[idx].dist = (uint16_t)roundf(hypotf(x - CX, y - CY));
-            s_glyphs[idx].symbol = s_syms[idx % N_SYMS];
+            s_glyphs[idx].symbol = s_syms[rnd() % N_SYMS];
 
-            /* Concentric distance bands: odd bands are accent, even are the
-             * fixed green. The center (dist 0, band 0) is green. */
-            int band = s_glyphs[idx].dist / GRID_STEP;
-            s_glyphs[idx].cls = (band & 1) ? ICON_ACCENT : ICON_STATIC_GREEN;
+            /* Random green/accent split (no concentric bands): half the cells
+             * are the fixed green pattern, the rest cycle hue. */
+            s_glyphs[idx].cls = (rnd() & 1) ? ICON_ACCENT : ICON_STATIC_GREEN;
 
             lv_obj_t *lab = lv_label_create(scr);
             lv_label_set_text(lab, s_glyphs[idx].symbol);
