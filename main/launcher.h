@@ -1,10 +1,11 @@
 /*
  * Smart Ring Plus (VIEWE) — Circular app-grid launcher
  *
- * Replicates the @KINDOFDEVICE_ demo: a radial icon grid that zooms open
- * from the screen center, holds a fixed green ring while accent icons cycle
- * hue (orange -> pink -> blue -> cream), and collapses back to a tiny
- * central cluster on tap. See notes/launcher-spec.md for the full design.
+ * Replicates the @KINDOFDEVICE_ demo: a full-screen grid of glyphs that
+ * lights up from the center outward (a reveal wave, no scaling), holds a
+ * fixed green ring while accent glyphs cycle hue (orange -> pink -> blue ->
+ * cream), and collapses back to a tiny central cluster on tap. See
+ * notes/launcher-spec.md for the full design.
  */
 #ifndef LAUNCHER_H
 #define LAUNCHER_H

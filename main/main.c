@@ -2,7 +2,7 @@
  * Smart Ring Plus (VIEWE) — Circular app-grid launcher
  *
  * Boots the board via the viewesmart/smartring_plus BSP and shows the
- * radial app-grid launcher (see notes/launcher-spec.md) on the 1.8"
+ * glyph-grid app launcher (see notes/launcher-spec.md) on the 1.8"
  * 360x360 ST77916 QSPI round display.
  *
  * Init order matters: bsp_display_init() creates the shared I2C bus and the
