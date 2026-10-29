@@ -1,15 +1,18 @@
 # Circular App-Grid Launcher — Design & Build Spec
 
 Replicates the interaction seen in `@KINDOFDEVICE_`'s Smart Ring Plus demo:
-a **full-screen grid of glyphs** that **lights up from the center outward**
-(a reveal wave that grows to the edge), **color-cycles its accent icons**,
-and **collapses back** to a small lit cluster at the center.
+a **full-screen grid of glyphs** that **is built up layer by layer from the
+center outward** (concentric rings of glyphs added until the edge),
+**color-cycles its accent icons**, and **collapses back** to a small lit cluster
+at the center.
 
 > **Correction:** the interface does **not** scale. There is no zoom/scale
 > transform anywhere. The screen is a fixed grid of glyph labels; the open/close
-> effect is a **reveal radius** — glyphs are invisible (background color) until
-> the radius reaches them, so the lit region appears to grow from the center to
-> the edge, and shrink back on close.
+> effect is a **layered reveal** — the grid is split into concentric layers by
+> distance from the center, and layers light up one at a time. Glyphs in a layer
+> that has not been reached are invisible (painted the background color), so
+> rings of glyphs appear to be added around the center outward (and are removed
+> outside-in on close).
 
 Target: VIEWE Smart Ring Plus, ESP32-S3, 1.8" 360×360 ST77916 round panel,
 LVGL **9.4.0**, BSP `viewesmart/smartring_plus`.
@@ -20,10 +23,10 @@ LVGL **9.4.0**, BSP `viewesmart/smartring_plus`.
 
 | Phase | Visual |
 |-------|--------|
-| Idle | Screen dark; a small cluster of glyphs lit near the center (a few center cells) |
-| Open | Glyphs **light up starting at the center** and the lit region **grows outward to the edge** (~0.4–0.5 s, ease-out) — a reveal wave, not a zoom |
+| Idle | Screen dark; a small cluster of glyphs lit near the center (innermost 2 layers, ~9 cells) |
+| Open | **Layers of glyphs are added ring by ring from the center outward** (~0.4–0.5 s, ease-out) until the panel is full — a layered reveal, not a zoom; each concentric ring fades in as one unit |
 | Open (held) | Dense grid fills the panel using only **~6 distinct glyph shapes** (`#`, `+`, `×`, filled square, dot, open-circle). **Green vs accent is scattered at random** (not in rings); green stays constant while accents cycle hue: orange → pink → blue → cream |
-| Close | Lit region **collapses back toward the center** (~0.3–0.4 s) until only the tiny center cluster remains |
+| Close | Rings **disappear outside-in** (~0.3–0.4 s) until only the tiny center cluster remains |
 
 ---
 
@@ -40,11 +43,12 @@ main/
 - `launcher.c` owns the whole UI; `main.c` only calls `launcher_start()`.
 - One `lv_obj` (screen). All glyphs are `lv_label` children of the screen (or a
   single non-scaled container) placed on a **fixed grid**.
-- There is **no scale transform**. The open/close effect is driven by a
-  **reveal radius** `R`: a glyph is "lit" (target color) when its distance from
-  the center is `≤ R`, otherwise it is painted the **background color** (black),
-  i.e. invisible. Growing `R` from idle → max reveals the glyphs center-to-edge;
-  shrinking it reverses the effect.
+- There is **no scale transform**. The open/close effect is a **layered
+  reveal**: the grid is split into concentric layers by distance from center,
+  and a progress value advances one layer at a time. A glyph is lit (target
+  color) once its layer's window has been passed, otherwise it is painted the
+  **background color** (black), i.e. invisible. Each layer lights up as a whole
+  ring, so the lit set grows layer by layer outward from the center.
 
 ### State machine
 
@@ -67,8 +71,11 @@ Panel center = (180, 180). Glyphs sit on a square grid; nothing moves.
 |-------|-------|------|
 | `GRID_N` | 13 | 13×13 = **169** glyphs |
 | `GRID_STEP` | 27 px | extent = 13·27 = 351 px → ~4.5 px margin each side |
-| `IDLE_R` | 30 px | lit radius at idle → the ~5 center glyphs form the tiny cluster |
-| `MAX_R` | 240 px | reaches the corners (√(168²+168²) ≈ 238) |
+| `LAYER_UNIT` | 256 | fixed-point progress units per layer |
+| `LAYER_FADE` | 128 | fade window per layer (½ a slot → visible step between rings) |
+| `MAX_LAYERS` | 10 | safety cap on the layer index |
+| `n_layers` | 9 | derived: `max(round(dist/GRID_STEP)) + 1` |
+| `IDLE_PROGRESS` | 384 | `1·LAYER_UNIT + LAYER_FADE` → lights layers 0–1 (the idle cluster) |
 
 Glyph position for cell (i, j), i,j ∈ [0, 12]:
 
@@ -77,14 +84,23 @@ int x = CX + (i - (GRID_N - 1) / 2) * GRID_STEP;
 int y = CY + (j - (GRID_N - 1) / 2) * GRID_STEP;
 ```
 
-Each glyph's reveal key is its distance from the center:
+Each glyph is assigned to a **concentric layer** by its distance from center.
+The layer — not a raw radius — is the reveal key:
 
 ```c
-uint16_t dist = (uint16_t)roundf(hypotf(x - CX, y - CY));
+uint16_t dist  = (uint16_t)roundf(hypotf(x - CX, y - CY));
+int      layer = (int)roundf((float)dist / GRID_STEP);   // clamp to MAX_LAYERS-1
 ```
 
-Glyphs with `dist <= IDLE_R` are lit at idle (center + 4 edge-adjacent cells);
-the rest are background-colored until the radius reaches them.
+On this grid that yields **9 layers**, with these glyph counts (a square grid
+means layers are not perfectly even rings — that is expected):
+
+| Layer | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|-------|---|---|---|---|---|---|---|---|---|
+| Glyphs | 1 | 8 | 12 | 16 | 32 | 28 | 40 | 20 | 12 |
+
+Layers 0–1 (9 glyphs) form the idle cluster; the rest fade in one layer at a
+time as the reveal advances.
 
 ---
 
@@ -94,10 +110,11 @@ the rest are background-colored until the radius reaches them.
 typedef enum { ICON_STATIC_GREEN, ICON_ACCENT } icon_class_t;
 
 typedef struct {
-    const char *symbol;     // LV_SYMBOL_*
+    const char *symbol;     // one of the 6 glyph shapes
     icon_class_t cls;
     int16_t x, y;           // grid position (px)
-    uint16_t dist;          // distance from center (reveal key)
+    uint16_t dist;          // distance from center (px)
+    uint8_t layer;          // concentric layer = round(dist/GRID_STEP)
     lv_obj_t *obj;          // the lv_label (filled at build time)
 } launcher_glyph_t;
 
@@ -154,38 +171,59 @@ fixed green pattern provides contrast exactly like the footage.
 
 ---
 
-## 6. Open / close reveal (no scaling)
+## 6. Open / close reveal — layers of glyphs (no scaling)
 
-Animate the **reveal radius** `R` and repaint glyphs each frame:
+Progress is a fixed-point value in `LAYER_UNIT` (256) units per layer, animated
+from `IDLE_PROGRESS` to `n_layers · LAYER_UNIT`. Each glyph maps its own layer
+onto that progress:
 
 ```c
-static void reveal_cb(void *var, int32_t v)
+static void repaint(int32_t progress)
 {
-    int r = (int)v;
     for (int i = 0; i < N_GLYPHS; i++) {
-        lv_color_t c = (s_glyphs[i].dist <= r) ? target_color(&s_glyphs[i])
-                                               : COLOR_BG;
+        int32_t local = progress - (int32_t)s_glyphs[i].layer * LAYER_UNIT;
+        lv_color_t c;
+
+        if (local <= 0) {
+            c = COLOR_BG;                        /* layer not reached yet */
+        } else if (local >= LAYER_FADE) {
+            c = target_color(&s_glyphs[i]);      /* layer fully lit       */
+        } else {
+            c = lv_color_mix(target_color(&s_glyphs[i]), COLOR_BG,
+                             (uint8_t)(local * 255 / LAYER_FADE));
+        }
         lv_obj_set_style_text_color(s_glyphs[i].obj, c, LV_PART_MAIN);
     }
 }
 ```
 
-| Transition | Radius | Duration | Ease |
-|-----------|--------|----------|------|
-| Open | `IDLE_R` (30) → `MAX_R` (240) | 450 ms | `LV_EASE_OUT_QUART` |
-| Close | `MAX_R` → `IDLE_R` | 350 ms | `LV_EASE_IN_QUART` |
+Because a whole layer shares the same `layer` value, **all glyphs in a layer
+light up together as one ring**; because the windows are sequential, rings are
+added one after another outward — *layers and layers of glyphs growing from the
+center*. `LAYER_FADE` (128) is half a slot, so each ring finishes fading in
+before the next starts, leaving a short gap that makes the steps readable.
+Shrinking progress removes rings outside-in.
+
+| Transition | Progress | Duration | Ease |
+|-----------|----------|----------|------|
+| Open | 384 → `9·256` (2304) | 450 ms | `lv_anim_path_ease_out` |
+| Close | 2304 → 384 | 350 ms | `lv_anim_path_ease_in` |
+
+With 9 layers over 450 ms each layer gets a ~50 ms slot (≈25 ms fade, ≈25 ms
+gap). Tune `OPEN_MS` / `LAYER_FADE` to make the stepping more or less obvious;
+lowering `LAYER_FADE` makes each ring snap in harder.
 
 On open-complete → state `OPEN`, start color anim.
-On close-complete → state `IDLE`, stop/delete color anim, re-paint at `IDLE_R`.
+On close-complete → state `IDLE`, stop/delete color anim, re-paint at
+`IDLE_PROGRESS`.
 
 Use `lv_anim_set_ready_cb` to transition the state machine at the end of each
-reveal. The idle cluster IS the same grid with `R = IDLE_R` — no separate
-widget, no scale.
+reveal. The idle cluster IS the same grid with progress `IDLE_PROGRESS` — no
+separate widget, no scale.
 
-> Hard-edge wave (glyph fully lit or fully background) matches the footage. If a
-> softer edge is wanted later, interpolate each glyph's color by how far `dist`
-> is inside `R`, or stagger a per-glyph color `lv_anim` by `dist`. Keep v1
-> hard-edge for simplicity.
+> `lv_color_mix(c1, c2, mix)` takes `mix = 255 → c1`, `0 → c2`, so
+> `lv_color_mix(target, COLOR_BG, t)` fades a glyph from the black background
+> up to its target color.
 
 ---
 
@@ -233,19 +271,21 @@ idf.py build
 idf.py -p /dev/ttyACM0 flash monitor     # watch TAG "launcher"
 ```
 
-Expected log: `launcher: idle`, `launcher: opening -> open`, `launcher: closing -> idle`.
+Expected log: `launcher: ready (idle): 169 glyphs, 13 cells, 9 layers`,
+then `launcher: opening: 9 layers` → `launcher: opened` → `launcher: closing...`
+→ `launcher: closed -> idle`.
 
-Visual check: tap → glyphs light up from the center and the lit region grows to
-the edge (no scaling), green pattern fixed, accents cycle
-orange→pink→blue→cream; tap again → lit region collapses back to the tiny
+Visual check: tap → rings of glyphs are added one after another from the center
+outward until the panel is full (no scaling), green pattern fixed, accents cycle
+orange→pink→blue→cream; tap again → rings disappear outside-in back to the tiny
 center cluster.
 
 ---
 
 ## 10. Risks / notes
 
-- **No transform scaling** — the reveal repaint approach avoids LVGL transform
-  pivot/scale quirks entirely. Glyphs never move.
+- **No transform scaling** — the layered-reveal repaint approach avoids LVGL
+  transform pivot/scale quirks entirely. Glyphs never move.
 - **PSRAM flush limit:** do NOT enlarge the BSP's 40-line draw buffer
   (full-panel buffering exhausts internal RAM → `ESP_ERR_NO_MEM`). The reveal
   only changes text colors; LVGL clips/redraws in software on the same buffer.
@@ -255,7 +295,11 @@ center cluster.
 - **All LVGL calls inside `esp_lv_adapter_lock(-1)` / `unlock()`.** The
   `lv_anim` exec/ready callbacks run on the LVGL task, so they're already
   locked; user-input callbacks are dispatched by the adapter's task too.
-- **`lv_color_hsv_to_rgb`** is available in LVGL 9.4; no extra component.
+- **These are square-grid layers, not perfect circles** — layer counts are
+  uneven (1/8/12/16/32/28/40/20/12). That is the intended look: rings
+  quantized to the grid, not a smooth circular wavefront.
+- **`lv_color_hsv_to_rgb`** and **`lv_color_mix`** are available in LVGL 9.4
+  (`lv_color_mix(c1, c2, mix)`: `mix=255 → c1`, `0 → c2`); no extra component.
 - **Symbol fonts:** the `LV_SYMBOL_*` glyphs (0xF000+) ship inside the
   built-in Montserrat fonts — `CONFIG_LV_FONT_MONTSERRAT_14/16` is already on.
 
@@ -276,8 +320,10 @@ center cluster.
 #define CY        180
 #define GRID_N    13
 #define GRID_STEP 27
-#define IDLE_R    30      /* lit radius at idle -> tiny center cluster */
-#define MAX_R     240     /* reaches panel corners (~238) */
+#define LAYER_UNIT 256    /* progress units per layer (fixed point) */
+#define LAYER_FADE 128    /* fade window per layer (half a slot)    */
+#define MAX_LAYERS 10     /* safety cap on the layer index          */
+#define IDLE_PROGRESS (1 * LAYER_UNIT + LAYER_FADE)  /* lights layers 0-1 */
 
 #define ICON_FONT  (&lv_font_montserrat_20)
 #define COLOR_GREEN lv_color_hex(0x00E676)
@@ -312,15 +358,16 @@ typedef struct {
     icon_class_t cls;
     int16_t x, y;
     uint16_t dist;
+    uint8_t layer;    /* concentric layer = round(dist / GRID_STEP) */
     lv_obj_t *obj;
 } launcher_glyph_t;
 
 static launcher_glyph_t s_glyphs[GRID_N * GRID_N];
 #define N_GLYPHS (sizeof(s_glyphs) / sizeof(s_glyphs[0]))
 
-static lv_obj_t *s_accent[64];   /* ICON_ACCENT labels, for the color anim */
-static int s_n_accent;
-static float s_hue = 0.0f;
+static int32_t s_hue = 0;          /* animated hue                    */
+static int32_t s_progress = 0;     /* layered reveal progress         */
+static int     s_n_layers = 1;     /* highest layer index + 1         */
 
 typedef enum { L_IDLE, L_OPENING, L_OPEN, L_CLOSING } launcher_state_t;
 static launcher_state_t s_state = L_IDLE;
@@ -332,43 +379,58 @@ static lv_color_t target_color(const launcher_glyph_t *g)
     return lv_color_hsv_to_rgb((uint16_t)s_hue, 90, 95);
 }
 
-/* Reveal: glyphs within `r` px of center are lit, rest are background. */
-static void reveal_cb(void *var, int32_t v)
+/* Layered reveal: each glyph's layer lights as a whole ring, in order. */
+static void repaint(int32_t progress)
 {
-    int r = (int)v;
     for (int i = 0; i < N_GLYPHS; i++) {
-        lv_color_t c = (s_glyphs[i].dist <= r) ? target_color(&s_glyphs[i])
-                                               : COLOR_BG;
+        int32_t local = progress - (int32_t)s_glyphs[i].layer * LAYER_UNIT;
+        lv_color_t c;
+
+        if (local <= 0)
+            c = COLOR_BG;                       /* layer not reached yet */
+        else if (local >= LAYER_FADE)
+            c = target_color(&s_glyphs[i]);     /* layer fully lit       */
+        else
+            c = lv_color_mix(target_color(&s_glyphs[i]), COLOR_BG,
+                             (uint8_t)(local * 255 / LAYER_FADE));
+
         lv_obj_set_style_text_color(s_glyphs[i].obj, c, LV_PART_MAIN);
     }
 }
 
-/* Accent hue cycle (only runs while OPEN). */
+static void reveal_cb(void *var, int32_t v)
+{
+    s_progress = v;
+    repaint(v);
+}
+
+/* Accent hue cycle (only runs while OPEN) — repaint with current progress. */
 static void color_cb(void *var, int32_t v)
 {
-    s_hue = (float)v;
-    lv_color_t c = lv_color_hsv_to_rgb((uint16_t)s_hue, 90, 95);
-    for (int i = 0; i < s_n_accent; i++)
-        lv_obj_set_style_text_color(s_accent[i], c, LV_PART_MAIN);
+    s_hue = v;
+    repaint(s_progress);
 }
 
 static void reveal_done(lv_anim_t *a) { /* state transitions */ }
 
-static void reveal(int from, int to, uint32_t dur,
-                   lv_anim_ready_cb_t ready)
+static void reveal(int32_t from, int32_t to, uint32_t dur,
+                   lv_anim_path_cb_t path, lv_anim_ready_cb_t ready)
 {
     lv_anim_t a;
     lv_anim_init(&a);
-    lv_anim_set_var(&a, NULL);
+    lv_anim_set_var(&a, &s_progress);
     lv_anim_set_values(&a, from, to);
     lv_anim_set_duration(&a, dur);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_out_quart);
+    lv_anim_set_path_cb(&a, path);
     lv_anim_set_exec_cb(&a, reveal_cb);
     lv_anim_set_ready_cb(&a, ready);
     lv_anim_start(&a);
 }
 
-/* ... launcher_open(), launcher_close(), input event handler ... */
+/* launcher_open():  reveal(IDLE_PROGRESS, s_n_layers * LAYER_UNIT, 450,
+ *                           lv_anim_path_ease_out, open_done);
+ * launcher_close(): reveal(s_n_layers * LAYER_UNIT, IDLE_PROGRESS, 350,
+ *                           lv_anim_path_ease_in, close_done); */
 
 esp_err_t launcher_start(void)
 {
@@ -391,19 +453,23 @@ esp_err_t launcher_start(void)
             s_glyphs[idx].symbol = s_syms[rnd() % 6];
             s_glyphs[idx].cls = (rnd() & 1) ? ICON_ACCENT : ICON_STATIC_GREEN;
 
+            /* Concentric layer = grid distance from center (reveal key). */
+            int layer = (int)roundf((float)s_glyphs[idx].dist / GRID_STEP);
+            if (layer >= MAX_LAYERS) layer = MAX_LAYERS - 1;
+            s_glyphs[idx].layer = (uint8_t)layer;
+            if (layer + 1 > s_n_layers) s_n_layers = layer + 1;
+
             lv_obj_t *l = lv_label_create(scr);
             lv_label_set_text(l, s_glyphs[idx].symbol);
             lv_obj_set_style_text_font(l, ICON_FONT, LV_PART_MAIN);
             lv_obj_set_style_text_color(l, COLOR_BG, LV_PART_MAIN);
             lv_obj_set_pos(l, x, y);
             s_glyphs[idx].obj = l;
-
-            if (s_glyphs[idx].cls == ICON_ACCENT && s_n_accent < 64)
-                s_accent[s_n_accent++] = l;
         }
     }
 
-    reveal_cb(NULL, IDLE_R);        /* paint the idle cluster */
+    s_progress = IDLE_PROGRESS;
+    repaint(s_progress);            /* paint the idle cluster */
     lv_obj_add_event_cb(scr, launcher_input_cb, LV_EVENT_CLICKED, NULL);
 
     esp_lv_adapter_unlock();
