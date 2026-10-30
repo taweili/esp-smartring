@@ -94,6 +94,7 @@ EOF
 ```
 .
 ├── CMakeLists.txt               # RING_APP selection, then project(smartring)
+├── README.md                    # project entry: overview, quick start, apps, docs map
 ├── sdkconfig.defaults           # known-good config (see below)
 ├── main/
 │   ├── CMakeLists.txt           # includes examples/${RING_APP}/CMakeLists.txt
@@ -107,9 +108,11 @@ EOF
 │   ├── README.md
 │   ├── glyph-anime/             # default app: layered glyph-grid reveal
 │   ├── imu-dash/                # live IMU dashboard (accel/gyro/temp/tilt)
+│   ├── gesture-test/            # single-finger gesture probe (tap/hold/swipe)
+│   ├── voice-note/              # mic+speaker loop-back (hold to record)
 │   └── hello/                   # bring-up smoke test (white screen + label)
 └── notes/
-    ├── esp-smartring.md         # product research + full BSP API reference
+    ├── esp-smartring.md         # hardware + BSP reference (product, BSP API, pin map)
     ├── launcher-spec.md         # glyph-anime design document
     ├── restructure-proposal.md  # how this layout came about (§10 = the two IDF traps)
     ├── meta-muse.md             # research: Meta Muse gadget path (no code yet)
@@ -333,7 +336,8 @@ that must stay committed are the override *copies* in `components/`
 
 ## Deep-dive docs
 
-- `notes/esp-smartring.md` — full product research, BSP API reference, pin map, and both fix write-ups.
+- `README.md` — project entry point: overview, quick start, applications, docs map.
+- `notes/esp-smartring.md` — hardware + BSP reference: product overview, BSP API, pin map, pitfalls.
 - `notes/launcher-spec.md` — glyph-anime design: layered reveal maths, layer timeline, risks.
 - `notes/restructure-proposal.md` — why the layout is `ringkit` + fragments; §10 has the two
   ESP-IDF traps (EXTRA_COMPONENT_DIRS ordering, double CMake evaluation).
