@@ -1,5 +1,9 @@
 # VIEWE Smart Ring Plus — ESP-IDF Firmware
 
+<div align="center">
+  <img src="medias/smartring.png" alt="VIEWE Smart Ring Plus" width="50%">
+</div>
+
 ESP-IDF project for the **VIEWE "Smart Ring Plus"** — a round, 1.8-inch
 (360×360) capacitive-touch terminal built around the **ESP32-S3-N16R8**
 (8 MB octal PSRAM / 16 MB flash). The firmware boots the board through the
