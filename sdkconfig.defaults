@@ -33,6 +33,20 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 #     table gives 1500K. Harmless for the non-Wi-Fi apps.
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
+# --- Bluetooth LE (NimBLE). Only pulled in when an app calls ring_bt_init();
+#     the BT controller/host code is linked into every app but allocates no
+#     RAM at runtime unless the host is started. NimBLE is the lightweight,
+#     BLE-only host; ESP32-S3 has no Bluetooth Classic. See notes/bluetooth.md.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# CONFIG_BT_BLUEDROID_ENABLED is not set
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=y
+# Persist bonding keys across reboots (needed for "pair once, reconnect".
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_MAX_BONDS=3
+
 # --- LVGL 9 fonts. 20 is what the launcher icons use (LV_SYMBOL_* glyphs are
 #     baked into the built-in Montserrat fonts). 14/16/24/48 kept for general use.
 CONFIG_LV_FONT_MONTSERRAT_14=y

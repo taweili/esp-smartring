@@ -11,6 +11,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `gesture-test` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. |
 | `voice-note` | Mic + speaker loop-back: one round button — hold to record (ES8311 mic), release to play the captured PCM back through the speaker. Captures up to 8 s into PSRAM. |
 | `wifi-demo` | Wi-Fi station bring-up: connects to the NVS-stored SSID (default `HUAWEI-10P8UN`), shows state/SSID/IP on the round screen. First boot seeds credentials into NVS. |
+| `bt-demo` | Bluetooth LE peripheral: advertises as `SmartRing`, exposes a vendor service (0xFFE0) with a readable name/battery (READ/NOTIFY) and a writable command pipe (WRITE/NOTIFY). Pairable/bondable; scan + connect with a phone (nRF Connect / LightBlue). See `notes/bluetooth.md`. |
 | `hello` | Bring-up smoke test: white screen, one large "Hello" glyph. |
 
 ## Building an app
