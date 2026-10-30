@@ -33,14 +33,15 @@ LVGL **9.4.0**, BSP `viewesmart/smartring_plus`.
 ## 2. Architecture
 
 ```
-main/
-├── main.c          # BSP init sequence, then launcher_start()
-├── launcher.h      # public API: esp_err_t launcher_start(void);
-└── launcher.c      # state machine + glyph grid + reveal anim + input
+examples/glyph-anime/
+├── CMakeLists.txt              # fragment: RING_EXAMPLE_SRCS etc. (see examples/)
+├── include/ring_example.h      # esp_err_t ring_example_start(void);
+└── glyph_anime.c               # state machine + glyph grid + reveal anim + input
+components/ringkit/             # skeleton: board, LVGL lock, theme, RNG
 ```
 
-- No new BSP code. Everything uses `lv_*` under `esp_lv_adapter_lock()`.
-- `launcher.c` owns the whole UI; `main.c` only calls `launcher_start()`.
+- No new BSP code. Everything uses `lv_*` under `ring_ui_lock()`.
+- `glyph_anime.c` owns the whole UI; `main.c` only calls `ring_example_start()`.
 - One `lv_obj` (screen). All glyphs are `lv_label` children of the screen (or a
   single non-scaled container) placed on a **fixed grid**.
 - There is **no scale transform**. The open/close effect is a **layered
@@ -244,14 +245,15 @@ either queues the reverse or is ignored.
 
 ---
 
-## 8. Files to change
+## 8. Files
 
-1. **`main/CMakeLists.txt`** — add `launcher.c` to `SRCS`.
-2. **`main/main.c`** — replace the Hello-World UI block with
-   `ESP_ERROR_CHECK(launcher_start());` (keep BSP init order).
-3. **`main/launcher.h`** — new: `esp_err_t launcher_start(void);`
-4. **`main/launcher.c`** — new: full implementation (skeleton below).
-5. **`sdkconfig.defaults`** — add fonts:
+1. **`examples/glyph-anime/glyph_anime.c`** — the whole implementation.
+2. **`examples/glyph-anime/include/ring_example.h`** — `ring_example_start()` /
+   `ring_example_name()`.
+3. **`examples/glyph-anime/CMakeLists.txt`** — fragment listing `RING_EXAMPLE_SRCS`.
+4. **`main/main.c`** — app-agnostic; calls `ring_board_init()` then
+   `ring_example_start()`.
+5. **`sdkconfig.defaults`** — fonts (already set):
    ```
    CONFIG_LV_FONT_MONTSERRAT_20=y
    CONFIG_LV_FONT_MONTSERRAT_24=y
@@ -292,9 +294,10 @@ center cluster.
 - **Reveal cost:** up to 169 `lv_obj_set_style_text_color` calls per anim frame
   (plus the color cycle while OPEN). This is cheap (style property writes) and
   fine at 60 fps; avoid anything heavier per frame.
-- **All LVGL calls inside `esp_lv_adapter_lock(-1)` / `unlock()`.** The
-  `lv_anim` exec/ready callbacks run on the LVGL task, so they're already
-  locked; user-input callbacks are dispatched by the adapter's task too.
+- **All LVGL calls inside `RING_UI_LOCKED(-1) { ... }`** (i.e.
+  `ring_ui_lock()`/`ring_ui_unlock()`). The `lv_anim` exec/ready callbacks run
+  on the LVGL task, so they're already locked; user-input callbacks are
+  dispatched by the adapter's task too.
 - **These are square-grid layers, not perfect circles** — layer counts are
   uneven (1/8/12/16/32/28/40/20/12). That is the intended look: rings
   quantized to the grid, not a smooth circular wavefront.
@@ -305,16 +308,15 @@ center cluster.
 
 ---
 
-## 11. Reference implementation skeleton (`main/launcher.c`)
+## 11. Reference implementation skeleton (`examples/glyph-anime/glyph_anime.c`)
 
 ```c
-#include "launcher.h"
-#include "esp_lv_adapter.h"
+#include "ring_example.h"
+#include "ringkit/ringkit.h"
 #include "esp_log.h"
-#include "lvgl.h"
 #include <math.h>
 
-#define TAG "launcher"
+#define TAG "glyph-anime"
 
 #define CX        180
 #define CY        180
@@ -432,13 +434,10 @@ static void reveal(int32_t from, int32_t to, uint32_t dur,
  * launcher_close(): reveal(s_n_layers * LAYER_UNIT, IDLE_PROGRESS, 350,
  *                           lv_anim_path_ease_in, close_done); */
 
-esp_err_t launcher_start(void)
+esp_err_t ring_example_start(void)
 {
-    ESP_ERROR_CHECK(esp_lv_adapter_lock(-1));
-
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, COLOR_BG, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    RING_UI_LOCKED(-1) {
+    lv_obj_t *scr = ring_ui_screen();
 
     /* Build the 13x13 grid of glyph labels, classify accents. */
     for (int i = 0; i < GRID_N; i++) {
@@ -471,13 +470,20 @@ esp_err_t launcher_start(void)
     s_progress = IDLE_PROGRESS;
     repaint(s_progress);            /* paint the idle cluster */
     lv_obj_add_event_cb(scr, launcher_input_cb, LV_EVENT_CLICKED, NULL);
+    }
 
-    esp_lv_adapter_unlock();
-    ESP_LOGI(TAG, "launcher ready (idle)");
+    ESP_LOGI(TAG, "ready (idle): %d layers", s_n_layers);
     return ESP_OK;
+}
+
+const char *ring_example_name(void)
+{
+    return "glyph-anime";
 }
 ```
 
 > The skeleton is illustrative — the full version fills the symbol/class
-> assignment, the accent array, and the state-machine transitions. Build first,
-> then flesh out `launcher.c`.
+> assignment and the state-machine transitions. `ring_ui_screen()` already
+> clears the screen to the theme background, and `RING_UI_LOCKED` releases the
+> lock on every exit path. See `examples/glyph-anime/glyph_anime.c` for the
+> implementation that actually ships.

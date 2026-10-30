@@ -1,6 +1,10 @@
-# Smart Ring Plus (VIEWE) Hello World project dependencies.
+# Smart Ring Plus (VIEWE) project dependencies.
 # The BSP brings in ST77916 QSPI LCD, CST816 touch, ES8311 audio,
 # QMI8658A IMU, SDMMC, battery/PMIC and LVGL 9 via esp_lvgl_adapter.
+#
+# Managed dependencies live HERE and nowhere else. Do not add an
+# idf_component.yml under examples/ — every example builds as part of `main`,
+# which is always part of the build, so this single manifest covers them all.
 dependencies:
   idf: ">=5.5"
   viewesmart/smartring_plus: "^1.1.2"

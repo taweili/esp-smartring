@@ -6,7 +6,9 @@ Guidance for AI coding agents and contributors working in this repository.
 
 This is an **ESP-IDF** project for the **VIEWE "Smart Ring Plus"** — a round, 1.8-inch (360×360) capacitive-touch terminal based on the **ESP32-S3-N16R8** (8 MB octal PSRAM / 16 MB flash). The app boots all board peripherals through the official **`viewesmart/smartring_plus`** Board Support Package and renders a UI with **LVGL 9** via `esp_lvgl_adapter`.
 
-Current firmware: a "Hello World" demo — a large black `Montserrat 48` label centered on a white background.
+Today it is structured as a **generic skeleton plus interchangeable applications**: `components/ringkit/` wraps the whole BSP, and each app under `examples/<name>/` is selected at build time with `RING_APP`.
+
+Default firmware (`glyph-anime`): a full-screen 13×13 glyph grid with a layered center-out reveal and hue-cycling accents.
 
 ## Environment
 
@@ -22,10 +24,17 @@ Current firmware: a "Hello World" demo — a large black `Montserrat 48` label c
 ```bash
 idf.py set-target esp32s3          # first time / after deleting build dir
 idf.py reconfigure                 # after changing idf_component.yml or sdkconfig.defaults
-idf.py build
+idf.py build                       # builds examples/glyph-anime (default)
 idf.py -p /dev/ttyACM0 flash       # flash + reset the ring
 idf.py -p /dev/ttyACM0 monitor     # follow serial log (Ctrl-] to exit)
+
+# pick another app — ALWAYS its own build dir (see examples/README.md)
+idf.py -DRING_APP=hello -B build/hello build
+idf.py -DRING_APP=hello -B build/hello -p /dev/ttyACM0 flash
 ```
+
+> **Use a per-app build directory (`-B build/<app>`).** Switching `RING_APP` inside one
+> build tree leaves stale objects and produces confusing link errors.
 
 > **sdkconfig.defaults is only applied when `sdkconfig` is (re)created.** If you change
 > `sdkconfig.defaults`, run `rm -f sdkconfig && idf.py reconfigure` so the new defaults take effect.
@@ -67,42 +76,91 @@ EOF
 
 ```
 .
-├── CMakeLists.txt               # project(smartring_hello)
+├── CMakeLists.txt               # RING_APP selection, then project(smartring)
 ├── sdkconfig.defaults           # known-good config (see below)
 ├── main/
-│   ├── CMakeLists.txt           # REQUIRES smartring_plus esp_lvgl_adapter lvgl
-│   ├── idf_component.yml        # idf >=5.5 + viewesmart/smartring_plus ^1.1.2
-│   └── main.c                   # app: BSP init sequence + LVGL UI
+│   ├── CMakeLists.txt           # includes examples/${RING_APP}/CMakeLists.txt
+│   ├── idf_component.yml        # the ONLY dependency manifest
+│   └── main.c                   # app-agnostic: board init + ring_example_start()
 ├── components/
+│   ├── ringkit/                 # GENERIC SKELETON — wraps the whole BSP
 │   └── espressif__esp_codec_dev/ # VENDORED OVERRIDE (see "Critical fixes")
-└── notes/esp-smartring.md       # product research + full BSP API reference
+├── examples/
+│   ├── README.md
+│   ├── glyph-anime/             # default app: layered glyph-grid reveal
+│   └── hello/                   # bring-up smoke test (white screen + label)
+└── notes/
+    ├── esp-smartring.md         # product research + full BSP API reference
+    ├── launcher-spec.md         # glyph-anime design document
+    └── restructure-proposal.md  # how this layout came about
 ```
 
-The app talks to hardware **only** through the BSP's `bsp_*` API (`bsp/smartring_plus.h`); never hard-code pins or init sequences in app code. All pins/I2C addresses are in `include/bsp/board_config.h` of the BSP.
+### Skeleton (`components/ringkit/`)
 
-### Required init order (in `app_main`)
+Applications **never** include `bsp/smartring_plus.h` and never call `bsp_*` directly.
+Everything goes through `ringkit/ringkit.h`:
+
+- `ring_board_*` — bring-up in the required order + a `ring_board_t` summary
+- `ring_display_*`, `ring_touch_*`, `ring_battery_*`, `ring_power_*`,
+  `ring_audio_*`, `ring_imu_*`, `ring_sd_*` — one-to-one BSP wrappers
+- `ring_ui_*` — LVGL lock + `RING_UI_LOCKED(-1) { ... }` scoped lock, label
+  creation, exact centring
+- `ring_theme.h` — colours, panel geometry, motion timings
+- `ring_rand_*` — deterministic xorshift32
+
+### Example contract
+
+Each `examples/<name>/` provides `include/ring_example.h` and exports:
+
+```c
+esp_err_t   ring_example_start(void);  /* build UI; takes the LVGL lock itself */
+const char *ring_example_name(void);
+```
+
+**Why examples are CMake fragments, not components:** ESP-IDF registers
+`EXTRA_COMPONENT_DIRS` components *after* `main`, and
+`__component_set_dependencies()` silently drops any `REQUIRES` entry whose
+component target is not yet registered — which loses both the include path and
+the link. So `main/CMakeLists.txt` `include()`s the selected example's
+`CMakeLists.txt` (which just sets `RING_EXAMPLE_SRCS` / `_INCLUDE_DIRS` /
+`_REQUIRES`) and compiles it into the `main` component.
+
+> That `main/CMakeLists.txt` is evaluated **twice** (a requirements-gathering
+> pass where cache vars are unset and `CMAKE_SOURCE_DIR` is the build dir, then
+> the real configure), so it resolves the project root from
+> `CMAKE_CURRENT_LIST_DIR` and falls back to the default app when `RING_APP` is
+> empty. Keep it that way.
+
+Board bring-up order lives in `ring_board.c`, not in `app_main`.
+
+### Required init order (`ring_board_init()`)
 
 `bsp_display_init()` creates the shared I2C bus and starts the LVGL task, so it **must be first**:
 
 1. `bsp_display_init()`  — I2C + CST816 touch + ST77916 QSPI panel + `esp_lvgl_adapter` + backlight 100%
 2. `bsp_battery_init()`  — probes AXP2101 (V2) or GPIO1 ADC (V1)
 3. `bsp_power_init()`    — soft power-off GPIO
-4. `bsp_sd_init()`       — SDMMC + FAT (`/sdcard`); treat failure as non-fatal (no card-detect pin)
-5. `bsp_imu_init()`      — QMI8658A; treat failure as non-fatal
-6. `bsp_audio_init()`    — ES8311 + I2S (48 kHz / 16-bit / stereo)
+4. `bsp_audio_init()`    — ES8311 + I2S (48 kHz / 16-bit / stereo)
+5. `bsp_sd_init()`       — SDMMC + FAT (`/sdcard`); non-fatal (no card-detect pin)
+6. `bsp_imu_init()`      — QMI8658A; non-fatal
 
-All LVGL object creation/updates **must** happen inside `esp_lv_adapter_lock(-1)` … `esp_lv_adapter_unlock()`.
+Display/battery/power/audio are mandatory (first failure is returned); SD and
+IMU fail soft and are reported in `ring_board_t`.
 
-### Key BSP APIs
+All LVGL object creation/updates **must** happen inside
+`RING_UI_LOCKED(-1) { ... }` (or an explicit `ring_ui_lock()`/`ring_ui_unlock()` pair).
 
-- Display: `bsp_display_init()`, `bsp_display_backlight_set(pct)`, `bsp_display_get_handle()`
-- Touch: `bsp_touch_get_handle()`
-- Shared I2C bus: `bsp_i2c_get_bus()`
-- Battery: `bsp_battery_get_percent()`, `bsp_battery_get_voltage()`, `bsp_battery_is_charging()`, `bsp_battery_get_pmic_type()`
-- Power: `bsp_power_shutdown()` (holds GPIO47 ~3.5 s; normally doesn't return)
-- Audio: `bsp_audio_init()`, `bsp_audio_get_codec()`, `bsp_audio_read()`, `bsp_audio_write()`, `bsp_audio_set_mute()`
-- IMU: `bsp_imu_init()`, `bsp_imu_get_accel()`, `bsp_imu_get_tilt()`, `bsp_imu_calib_*()`
-- SD: `bsp_sd_init()`, `bsp_sd_list()`, `bsp_sd_free_list()`
+### Key ringkit APIs
+
+- Board: `ring_board_init()`, `ring_board_log_summary()`, `ring_board_i2c_bus()`
+- Display: `ring_display_backlight()`, `ring_display_handle()`, `ring_display_set_swap_bytes()`
+- Touch: `ring_touch_handle()`
+- Battery: `ring_battery_get()`, `ring_battery_percent()`, `ring_battery_voltage()`, `ring_battery_is_charging()`, `ring_battery_pmic_type()`
+- Power: `ring_power_shutdown()` (holds GPIO47 ~3.5 s; normally doesn't return)
+- Audio: `ring_audio_codec()`, `ring_audio_read()`, `ring_audio_write()`, `ring_audio_set_mute()`
+- IMU: `ring_imu_accel()`, `ring_imu_tilt()`, `ring_imu_calib_start/poll/info()`
+- SD: `ring_sd_list()`, `ring_sd_free_list()`, `ring_sd_is_mounted()`
+- UI: `ring_ui_screen()`, `ring_ui_add_label()`, `ring_ui_place_centered()`
 
 ## Critical fixes already applied — DO NOT revert
 
@@ -147,13 +205,20 @@ CONFIG_FREERTOS_HZ=1000
 
 ## Conventions
 
-- **C code** in `main/`; keep it in `app_main` or small helpers. No C++.
-- Use the BSP API; **don't** touch `board_config.h` pins in app code.
-- Wrap all LVGL calls in `esp_lv_adapter_lock(-1)` / `esp_lv_adapter_unlock()`.
+- **C code** in `main/` or `examples/<app>/`; keep it in small helpers. No C++.
+- Applications talk to hardware **only** through `ringkit` (`ringkit/ringkit.h`).
+  Do **not** include `bsp/smartring_plus.h` and do **not** call `bsp_*` in app code, and
+  don't touch `board_config.h` pins.
+- Wrap all LVGL calls in `RING_UI_LOCKED(-1) { ... }` — a hand-written
+  `esp_lv_adapter_lock()`/`unlock()` pair leaks the lock on early `return`.
 - Log with `ESP_LOGI/LOGW/LOGE` using a `TAG`.
-- Prefer `ESP_ERROR_CHECK` for mandatory init; soft-fail optional peripherals (SD, IMU).
-- `printf`-style strings: `LV_LOG` is off by default; use `esp_log`.
+- Prefer `ESP_ERROR_CHECK` for mandatory init; soft-fail optional peripherals (SD, IMU) —
+  `ring_board_init()` already encodes this split.
+- **Do not** add an `idf_component.yml` under `examples/`; the single manifest is
+  `main/idf_component.yml`.
 - Keep `notes/esp-smartring.md` in sync when you change pin/API assumptions.
+- Adding an app: copy an existing `examples/<name>/` (three files) and build with
+  `idf.py -DRING_APP=<name> -B build/<name> build`. See `examples/README.md`.
 
 ## Gotchas
 
