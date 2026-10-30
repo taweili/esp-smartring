@@ -286,7 +286,7 @@ that must stay committed is the override *copy* in `components/`.
 - **Panel revision:** the BSP uses the vendor "B" init table (`BOARD_LCD_VERSION_A`); a mismatch gives vertical stripes.
 - **SD "no card" vs "mount failure"** can't be distinguished in software.
 - **Reserved GPIOs:** 0 (BOOT), 19/20 (USB), 43/44 (UART0), 33–37 (PSRAM). Never reconfigure.
-- **`hello` is bigger than `glyph-anime`** (~819 KB vs ~731 KB). Not a regression: it is
+- **`hello` is bigger than `glyph-anime`** (~800 KB vs ~729 KB). Not a regression: it is
   the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables. App
   partition is 1 MB, so both fit with room to spare — but think before adding another
   large font.

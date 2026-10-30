@@ -310,13 +310,22 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n
 CONFIG_LV_USE_CLIB_MALLOC=y
+CONFIG_FREERTOS_HZ=1000          # required — see §11 "Fix 2", otherwise boot loop
 ```
 
-Also enable Montserrat fonts / LVGL options as your UI requires. The BSP README points to the SmartRing-Plus **full-device** demo `sdkconfig.defaults` for a known-good complete set.
+Also enable Montserrat fonts / LVGL options as your UI requires (this repo sets
+`CONFIG_LV_FONT_MONTSERRAT_14/16/20/24/48`). The BSP README points to the
+SmartRing-Plus **full-device** demo `sdkconfig.defaults` for a known-good
+complete set. The repo's own `sdkconfig.defaults` is the source of truth here;
+`AGENTS.md` lists the essential keys.
 
 ---
 
 ## 7. Build / flash workflow
+
+> For starting from scratch (a brand-new project around the BSP). **This repo is
+> already set up** — for its layout, `RING_APP` selection and exact commands,
+> see §11.
 
 ```bash
 # 1. Create project (or start from esp-idf template)
@@ -391,36 +400,123 @@ idf.py -p /dev/ttyACM0 flash monitor
 *Compiled from the product page, the `VIEWESMART/smartring_plus` v1.1.2 BSP source (README.md, README_CN.md, `include/bsp/board_config.h`, `include/bsp/smartring_plus.h`, `smartring_bsp.c`, `idf_component.yml`), the `VIEWESMART/VIEWE-SMARTRING` repo, and the 78/xiaozhi-esp32 boards tree.*
 
 ---
+## 11. Working project in this repo (`smartring`)
 
-## 11. Working project in this repo (`smartring_hello`)
-
-An ESP-IDF project is scaffolded at the repo root, target `esp32s3` (ESP-IDF **v6.1**), showing **"Hello World"** centered on the 1.8" display.
+The repo is an ESP-IDF **v6.1** project named **`smartring`** (binary
+`smartring.bin`), structured as a **generic skeleton + interchangeable
+applications**:
 
 ```
-.                         # top-level CMakeLists.txt + sdkconfig.defaults
-├── CMakeLists.txt        # project(smartring_hello)
-├── sdkconfig.defaults    # PSRAM octal, LVGL CLIB malloc, Montserrat 14/16
+.
+├── CMakeLists.txt                 # RING_APP selection, then project(smartring)
+├── sdkconfig.defaults             # PSRAM octal, FREERTOS_HZ=1000, LVGL/Montserrat
 ├── main/
-│   ├── CMakeLists.txt    # REQUIRES smartring_plus esp_lvgl_adapter lvgl
-│   ├── idf_component.yml # idf >=5.5 + viewesmart/smartring_plus ^1.1.2
-│   └── main.c            # bsp_display_init() + LVGL label
-└── components/
-    └── espressif__esp_codec_dev/   # LOCAL OVERRIDE (see below)
+│   ├── CMakeLists.txt             # include()s examples/${RING_APP}/CMakeLists.txt
+│   ├── idf_component.yml          # the ONLY dependency manifest
+│   └── main.c                     # app-agnostic: ring_board_init -> ring_example_start
+├── components/
+│   ├── ringkit/                   # skeleton: wraps the whole BSP
+│   └── espressif__esp_codec_dev/  # vendored override (see "Fix 1")
+├── examples/
+│   ├── glyph-anime/               # default app: 13x13 glyph grid, layered reveal
+│   └── hello/                     # bring-up smoke test
+└── notes/
 ```
 
-Build:
+### Skeleton — `components/ringkit/`
+
+Applications never include `bsp/smartring_plus.h` and never call `bsp_*`
+directly; everything goes through `ringkit/ringkit.h`:
+
+| Module | Covers |
+|--------|--------|
+| `ring_board` | `ring_board_init()` in the §3 order, `ring_board_t` summary, `ring_board_i2c_bus()` |
+| `ring_display` | backlight, LVGL display handle, RGB565 swap-bytes |
+| `ring_touch` | `esp_lcd_touch` handle (raw coordinates) |
+| `ring_battery` | PMIC type, `ring_battery_get()` snapshot, percent / voltage / charging |
+| `ring_power` | `ring_power_shutdown()` (GPIO47 hold) |
+| `ring_audio` | codec handle, I2S RX, blocking read/write, mute |
+| `ring_imu` | accel, screen-plane tilt, level calibration |
+| `ring_sd` | mount state, card handle, sorted directory listing |
+| `ring_ui` | LVGL lock + `RING_UI_LOCKED(-1) { ... }`, label add, exact centring |
+| `ring_theme.h` | colours, panel geometry (360×360, CX/CY), motion timings |
+| `ring_rand` | deterministic xorshift32 (all UI randomness is reproducible) |
+
+`ring_board_init()` encodes the init order from §3 — display **first** (it
+creates the shared I2C bus and starts the LVGL task), then battery → power →
+audio as mandatory steps (first failure returned), then SD → IMU which fail
+soft and are reported in `ring_board_t`.
+
+All LVGL work happens under `RING_UI_LOCKED(-1) { ... }`; the scoped macro
+releases the lock on every exit path, unlike a hand-written
+`esp_lv_adapter_lock()` / `unlock()` pair.
+
+### Applications — `examples/`
+
+Selected at build time by the `RING_APP` cache variable (default
+`glyph-anime`). Each app is three files and exports two symbols:
+
+```c
+esp_err_t   ring_example_start(void);   /* builds the UI; takes the LVGL lock */
+const char *ring_example_name(void);
+```
+
+| App | What it shows |
+|-----|---------------|
+| `glyph-anime` | 13×13 grid (169 glyphs, 6 shapes), 9 concentric layers revealed center-out, hue-cycling accents. Tap opens/closes. Design doc: `launcher-spec.md`. |
+| `hello` | White screen + one `Montserrat 48` label — bring-up smoke test. If this is clean, panel/colour-order/QSPI/adapter/backlight are all sane. |
+
+> **Examples are CMake fragments, not components.** ESP-IDF registers
+> `EXTRA_COMPONENT_DIRS` components *after* `main`, and
+> `__component_set_dependencies()` silently drops any `REQUIRES` entry whose
+> component target is not registered yet — losing both the include path and the
+> link, with an error that points nowhere useful. So `main/CMakeLists.txt`
+> `include()`s the app's three-line `CMakeLists.txt` (`RING_EXAMPLE_SRCS` /
+> `_INCLUDE_DIRS` / `_REQUIRES`) and compiles it into `main`. Full story:
+> `restructure-proposal.md` §10.
+
+### Build & flash
 
 ```bash
-idf.py set-target esp32s3   # first time
+# default app
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
+
+# another app — always its own build dir, same -B for build and flash
+idf.py -DRING_APP=hello -B build/hello build
+idf.py -DRING_APP=hello -B build/hello -p /dev/ttyACM0 flash monitor
 ```
 
-`main.c` flow: `bsp_display_init()` → `bsp_battery_init()` / `bsp_power_init()` → (soft-fail) `bsp_sd_init()` / `bsp_imu_init()` → `bsp_audio_init()` → `bsp_display_backlight_set(100)` → under `esp_lv_adapter_lock(-1)` create a full-screen label "Hello World" → unlock.
+An unknown `RING_APP` fails at configure time and lists the valid choices.
+`sdkconfig` lives at the project root, so it is shared by every build dir.
 
-### ESP-IDF v6 compatibility fix (`esp_codec_dev` 1.3.4)
+### Expected boot log
 
-The BSP pins `espressif/esp_codec_dev ==1.3.4`. That version targets ESP-IDF v5, where `driver/gpio.h`, `driver/i2c_master.h`, `driver/i2s_std.h` and `driver/spi_common.h` came from the monolithic `driver` component. In **ESP-IDF v6** these were split into `esp_driver_gpio` / `esp_driver_i2c` / `esp_driver_i2s` / `esp_driver_spi`, so `esp_codec_dev` 1.3.4 fails to build with:
+```
+I (947)  app_init: Project name:     smartring
+I (963)  smartring: Smart Ring Plus starting (ringkit 1.0.0, app: glyph-anime)
+I (1910) ringkit: display=ok battery=ok(AXP2101/V2) power=ok audio=ok sd=ok imu=ok
+I (2943) glyph-anime: ready (idle): 169 glyphs, 13 cells, 9 layers
+I (2944) smartring: app 'glyph-anime' is on screen
+```
+
+### Build result (reference)
+
+```
+glyph-anime: smartring.bin 0xb64d0  729 KB  29% of the 1 MB app partition free
+hello:       smartring.bin 0xc7f40  800 KB  22% free
+```
+
+`hello` is the larger image because it is the only app using
+`lv_font_montserrat_48`, which pulls in the 48 px font tables.
+
+### Fix 1 — ESP-IDF v6 compatibility (`esp_codec_dev` 1.3.4)
+
+The BSP pins `espressif/esp_codec_dev ==1.3.4`. That version targets ESP-IDF v5,
+where `driver/gpio.h`, `driver/i2c_master.h`, `driver/i2s_std.h` and
+`driver/spi_common.h` came from the monolithic `driver` component. In
+**ESP-IDF v6** these were split into `esp_driver_gpio` / `esp_driver_i2c` /
+`esp_driver_i2s` / `esp_driver_spi`, so 1.3.4 fails to build with:
 
 ```
 fatal error: driver/gpio.h: No such file or directory
@@ -428,24 +524,33 @@ fatal error: driver/gpio.h: No such file or directory
 Compilation failed because audio_codec_gpio.c includes driver/gpio.h, provided by esp_driver_gpio...
 ```
 
-**Fix (applied in this repo):** a local component override `components/espressif__esp_codec_dev/` (project components take precedence over `managed_components/` per the IDF build-system docs), with two edits:
+**Fix (applied in this repo):** a local component override at
+`components/espressif__esp_codec_dev/` (project components take precedence over
+`managed_components/` per the IDF build-system docs), with two edits:
 
 1. `CMakeLists.txt` — add the split driver components to `PRIV_REQUIRES`:
    `PRIV_REQUIRES freertos esp_driver_gpio esp_driver_i2c esp_driver_i2s esp_driver_spi`
-2. `platform/audio_codec_ctrl_spi.c` — add `#include "esp_idf_version.h"` (the `ESP_IDF_VERSION`/`ESP_IDF_VERSION_VAL` macros are no longer pulled in transitively; on v6.x the `SPI2_HOST` branch is taken, so the removed `HSPI_HOST` symbol is never compiled).
+2. `platform/audio_codec_ctrl_spi.c` — add `#include "esp_idf_version.h"` (the
+   `ESP_IDF_VERSION` / `ESP_IDF_VERSION_VAL` macros are no longer pulled in
+   transitively; on v6.x the `SPI2_HOST` branch is taken, so the removed
+   `HSPI_HOST` symbol is never compiled).
 
-This override survives `idf.py fullclean` / dependency re-downloads (unlike patching `managed_components/`). Verify the override is actually used:
+This override survives `idf.py fullclean` and dependency re-downloads (unlike
+patching `managed_components/`). Verify it is the copy actually compiled:
 
 ```bash
-grep -oE "(components|managed_components)/espressif__esp_codec_dev" build/compile_commands.json | sort | uniq -c
-# -> 171 components/espressif__esp_codec_dev   (override used)
+grep -oE "(components|managed_components)/espressif__esp_codec_dev" \
+    build/<app>/compile_commands.json | sort | uniq -c
+# ->  204 components/espressif__esp_codec_dev      (override used)
 ```
 
-> If you bump ESP-IDF or re-pull deps and the component manager recreates `managed_components/espressif__esp_codec_dev`, the `components/` override still wins; nothing to do.
+> If the component manager re-creates `managed_components/espressif__esp_codec_dev`,
+> the `components/` override still wins; nothing to do.
 
-### Second fix: FreeRTOS tick rate (`xTaskDelayUntil` assert)
+### Fix 2 — FreeRTOS tick rate (`xTaskDelayUntil` assert)
 
-At the **default 100 Hz FreeRTOS tick** the device booted, initialized display/touch/battery/SD, then **crashed** after IMU init:
+At the **default 100 Hz FreeRTOS tick** the device booted, initialised
+display/touch/battery/SD, then **crashed** right after IMU init:
 
 ```
 I (2078) QMI8658: QMI8658 initialized successfully
@@ -455,26 +560,12 @@ assert failed: xTaskDelayUntil tasks.c:1499 (( xTimeIncrement > 0U ))
 Rebooting...   # infinite boot loop
 ```
 
-Cause: `bsp_imu.c:89` runs its 250 Hz sample task with `vTaskDelayUntil(&last, pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS))` where `IMU_SAMPLE_PERIOD_MS = 4`. At 100 Hz, `pdMS_TO_TICKS(4) = 4*100/1000 = 0` ticks → the `xTimeIncrement > 0` assert.
+Cause: `bsp_imu.c:89` runs its 250 Hz sample task with
+`vTaskDelayUntil(&last, pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS))` where
+`IMU_SAMPLE_PERIOD_MS = 4`. At 100 Hz, `pdMS_TO_TICKS(4) = 4*100/1000 = 0`
+ticks → the `xTimeIncrement > 0` assert.
 
-**Fix:** `CONFIG_FREERTOS_HZ=1000` in `sdkconfig.defaults` (1 ms tick). This is what the 250 Hz IMU task and 48 kHz audio need.
-
-```
-# in sdkconfig.defaults
-CONFIG_FREERTOS_HZ=1000
-```
-
-Apply by regenerating sdkconfig (`rm sdkconfig && idf.py reconfigure`) since `sdkconfig.defaults` is only read on creation. After the fix the boot log completes:
-
-```
-I (2140) bsp_imu: bsp_imu init done (accel 2G/250Hz + gyro on, 250Hz task)
-I (2193) bsp_audio: 音频初始化完成：48000 Hz / 16bit / 立体声, MCLK=384x
-I (2237) smartring: Hello World is on screen.
-```
-
-### Build result (reference)
-
-```
-smartring_hello.bin binary size 0xb1210 bytes. Smallest app partition is 0x100000 bytes. 0x4edf0 bytes (31%) free.
-Project build complete.
-```
+**Fix:** `CONFIG_FREERTOS_HZ=1000` in `sdkconfig.defaults` (1 ms tick). This is
+also what the 250 Hz IMU task and 48 kHz audio want. Apply with
+`rm -f sdkconfig && idf.py reconfigure`, since `sdkconfig.defaults` is only read
+when `sdkconfig` is created.
