@@ -24,19 +24,36 @@ Default firmware (`glyph-anime`): a full-screen 13×13 glyph grid with a layered
 ```bash
 idf.py set-target esp32s3          # first time / after deleting build dir
 idf.py reconfigure                 # after changing idf_component.yml or sdkconfig.defaults
-idf.py build                       # builds examples/glyph-anime (default)
+
+# default app (glyph-anime), default build dir
+idf.py build
 idf.py -p /dev/ttyACM0 flash       # flash + reset the ring
 idf.py -p /dev/ttyACM0 monitor     # follow serial log (Ctrl-] to exit)
 
-# pick another app — ALWAYS its own build dir (see examples/README.md)
+# any other app — ALWAYS its own build dir (see examples/README.md)
 idf.py -DRING_APP=hello -B build/hello build
 idf.py -DRING_APP=hello -B build/hello -p /dev/ttyACM0 flash
+idf.py -B build/hello -p /dev/ttyACM0 monitor
 ```
 
 > **Use a per-app build directory (`-B build/<app>`).** Switching `RING_APP` inside one
-> build tree leaves stale objects and produces confusing link errors.
+> build tree leaves stale objects and produces confusing link errors. Pass the **same**
+> `-B` to `build`, `flash` and `monitor` — `flash` reads the image from that build dir,
+> so a mismatched `-B` silently flashes something other than what you just built.
 
-> **sdkconfig.defaults is only applied when `sdkconfig` is (re)created.** If you change
+> **Which app is on the device?** Read the boot log — it prints `app: <name>`:
+> ```
+> I (963) smartring: Smart Ring Plus starting (ringkit 1.0.0, app: hello)
+> I (1929) smartring: app 'hello' is on screen
+> ```
+
+> **An invalid `RING_APP` fails fast** at configure time and lists the choices:
+> `RING_APP='nope' is not an example: no examples/nope/CMakeLists.txt.` → `Available: glyph-anime, hello`
+
+> **`sdkconfig` and `sdkconfig.defaults` are shared by every build dir** — they live at the
+> project root, not per app. So a config change affects all apps; there is no per-app config.
+>
+> **`sdkconfig.defaults` is only applied when `sdkconfig` is (re)created.** If you change
 > `sdkconfig.defaults`, run `rm -f sdkconfig && idf.py reconfigure` so the new defaults take effect.
 
 To capture the boot log non-interactively (e.g. from a script), reset the board and read the port.
@@ -92,7 +109,9 @@ EOF
 └── notes/
     ├── esp-smartring.md         # product research + full BSP API reference
     ├── launcher-spec.md         # glyph-anime design document
-    └── restructure-proposal.md  # how this layout came about
+    ├── restructure-proposal.md  # how this layout came about (§10 = the two IDF traps)
+    ├── meta-muse.md             # research: Meta Muse gadget path (no code yet)
+    └── xiaozhi.md               # research: open-source Xiaozhi assistant (no code yet)
 ```
 
 ### Skeleton (`components/ringkit/`)
@@ -159,8 +178,10 @@ All LVGL object creation/updates **must** happen inside
 - Power: `ring_power_shutdown()` (holds GPIO47 ~3.5 s; normally doesn't return)
 - Audio: `ring_audio_codec()`, `ring_audio_read()`, `ring_audio_write()`, `ring_audio_set_mute()`
 - IMU: `ring_imu_accel()`, `ring_imu_tilt()`, `ring_imu_calib_start/poll/info()`
-- SD: `ring_sd_list()`, `ring_sd_free_list()`, `ring_sd_is_mounted()`
-- UI: `ring_ui_screen()`, `ring_ui_add_label()`, `ring_ui_place_centered()`
+- SD: `ring_sd_list()`, `ring_sd_free_list()`, `ring_sd_is_mounted()`, `ring_sd_card()`, `ring_sd_deinit()`
+- UI: `ring_ui_screen()`, `ring_ui_add_label()`, `ring_ui_place_centered()`, `ring_ui_lock()`, `ring_ui_unlock()`
+- RNG: `ring_rand_seed()`, `ring_rand_u32()`, `ring_rand_below()`, `ring_rand_bool()` — do **not**
+  replace with `esp_random()`; determinism is the point (a plain LCG breaks `% n` / `& 1`).
 
 ## Critical fixes already applied — DO NOT revert
 
@@ -179,11 +200,12 @@ The repo carries a **local override** at `components/espressif__esp_codec_dev/` 
 - `CMakeLists.txt`: `PRIV_REQUIRES freertos esp_driver_gpio esp_driver_i2c esp_driver_i2s esp_driver_spi`
 - `platform/audio_codec_ctrl_spi.c`: added `#include "esp_idf_version.h"` (the `ESP_IDF_VERSION` macros are no longer pulled in transitively)
 
-Verify the override is the one compiled:
+Verify the override is the one compiled (use the same `-B` dir you build in):
 
 ```bash
-grep -oE "(components|managed_components)/espressif__esp_codec_dev" build/compile_commands.json | sort | uniq -c
-# expect:  NNN components/espressif__esp_codec_dev
+grep -oE "(components|managed_components)/espressif__esp_codec_dev" \
+    build/<app>/compile_commands.json | sort | uniq -c
+# expect:  204 components/espressif__esp_codec_dev   (0 managed_components/)
 ```
 
 ### 2. `CONFIG_FREERTOS_HZ=1000` (boot crash fix)
@@ -220,6 +242,38 @@ CONFIG_FREERTOS_HZ=1000
 - Adding an app: copy an existing `examples/<name>/` (three files) and build with
   `idf.py -DRING_APP=<name> -B build/<name> build`. See `examples/README.md`.
 
+## Verifying a change
+
+Minimum bar before you claim something works — do all of it, from clean dirs when
+you touched CMake, `sdkconfig.defaults`, or `ringkit` headers:
+
+1. **Both apps build** (a change that only builds the app you care about can still
+   break the other one, since both share `ringkit`):
+   ```bash
+   rm -rf build/glyph-anime build/hello
+   idf.py -B build/glyph-anime -DRING_APP=glyph-anime build
+   idf.py -B build/hello     -DRING_APP=hello       build
+   ```
+2. **The vendored codec override still wins** (see "Critical fixes").
+3. **Flash and read the boot log** — expect the `ringkit:` summary line with all
+   peripherals `ok`, then the app's own `ready` line, and **no** `panic` /
+   `assert` / `Guru Meditation`.
+4. **Touch paths need a human.** There is no way to synthesise a tap from the
+   host: animations and gestures must be checked on the device. Do not report a
+   UI interaction as verified from the log alone — say it needs a visual check.
+
+## Repo hygiene
+
+Tracked: source, `CMakeLists.txt`, `sdkconfig.defaults`, `AGENTS.md`, `notes/`,
+`components/` (incl. the vendored codec override).
+
+Git-ignored on purpose: `build/`, `sdkconfig`, `sdkconfig.old`, `dependencies.lock`,
+`managed_components/`. Never commit a resolved `sdkconfig` — `sdkconfig.defaults`
+is the source of truth.
+
+`managed_components/` is regenerated by the component manager; the one exception
+that must stay committed is the override *copy* in `components/`.
+
 ## Gotchas
 
 - **Console back-pressure looks like a hang (most important).** `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`
@@ -232,6 +286,13 @@ CONFIG_FREERTOS_HZ=1000
 - **Panel revision:** the BSP uses the vendor "B" init table (`BOARD_LCD_VERSION_A`); a mismatch gives vertical stripes.
 - **SD "no card" vs "mount failure"** can't be distinguished in software.
 - **Reserved GPIOs:** 0 (BOOT), 19/20 (USB), 43/44 (UART0), 33–37 (PSRAM). Never reconfigure.
+- **`hello` is bigger than `glyph-anime`** (~819 KB vs ~731 KB). Not a regression: it is
+  the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables. App
+  partition is 1 MB, so both fit with room to spare — but think before adding another
+  large font.
+- **Stale `build/` after the rename.** The project used to be `smartring_hello`; an old
+  `build/` may still hold that artifact. If CMake behaves strangely, `rm -rf build build/*`
+  and reconfigure.
 
 ## Flashing / reset notes
 
@@ -242,4 +303,9 @@ CONFIG_FREERTOS_HZ=1000
 ## Deep-dive docs
 
 - `notes/esp-smartring.md` — full product research, BSP API reference, pin map, and both fix write-ups.
+- `notes/launcher-spec.md` — glyph-anime design: layered reveal maths, layer timeline, risks.
+- `notes/restructure-proposal.md` — why the layout is `ringkit` + fragments; §10 has the two
+  ESP-IDF traps (EXTRA_COMPONENT_DIRS ordering, double CMake evaluation).
+- `notes/meta-muse.md`, `notes/xiaozhi.md` — assistant feasibility research; no code yet.
+- `examples/README.md` — app contract and how to add one.
 - BSP upstream: `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus` on the ESP Component Registry).
