@@ -7,6 +7,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | App | Description |
 |-----|-------------|
 | `glyph-anime` | Full-screen glyph grid with a layered center-out reveal and hue-cycling accents. Touch to open/close. |
+| `imu-dash` | Live IMU dashboard: bubble level (tilt) + accel (m/s²) + gyro (°/s) + temperature + level calibration. Tap to calibrate. |
 | `gesture-test` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. |
 | `hello` | Bring-up smoke test: white screen, one large "Hello" glyph. |
 

@@ -228,6 +228,17 @@ ESP_ERROR_CHECK(bsp_audio_read(buf, sizeof(buf), 1000));
 | `esp_err_t bsp_imu_init(void)` | ±2 g / 250 Hz accel + 250 Hz sample task + EMA filter. Needs shared I2C (`bsp_display_init()` first). |
 | `void bsp_imu_get_accel(float *ax, float *ay, float *az)` | Filtered acceleration (m/s²), board axes, thread-safe. |
 | `void bsp_imu_get_tilt(float *gx, float *gy)` | Screen-plane tilt vector (m/s²); subtracts calib zero if calibrated. `+gx` = right, `+gy` = down. |
+| `void bsp_imu_get_gyro(float *gx, float *gy, float *gz)` | Filtered gyro rate (°/s), board axes, ±512 dps, thread-safe. *(vendored BSP)* |
+| `void bsp_imu_get_temp(float *temperature)` | Die temperature (°C, `raw/256`, no offset), thread-safe. *(vendored BSP)* |
+
+> The stock BSP reads **only the accelerometer** in its 250 Hz sample task
+> (`qmi8658_read_accel`, 6 bytes at `0x35..0x3A`); the gyro (`0x3B..0x40`) and
+> temperature (`0x33..0x34`) registers are enabled but never read. To expose
+> them, this repo carries a vendored override at `components/viewesmart__smartring_plus/`
+> whose `bsp_imu.c` uses `qmi8658_read_sensor_data()` — one 12-byte burst returns
+> accel + gyro (consistent snapshot) plus temperature — and stores all under the
+> same lock. Gyro defaults to ±512 dps (`°/s`); temperature is `raw/256` °C
+> (QMI8658A datasheet: 1 LSB = 1/256 °C, no offset).
 
 **Level calibration (optional reference):**
 
@@ -240,9 +251,14 @@ ESP_ERROR_CHECK(bsp_audio_read(buf, sizeof(buf), 1000));
 ```c
 ESP_ERROR_CHECK(bsp_imu_init());
 
-float ax, ay, az, gx, gy;
+float ax, ay, az, gx, gy, gz, tx, ty, temp;
+float std_g, tilt_deg;
+uint32_t elapsed_ms;
+
 bsp_imu_get_accel(&ax, &ay, &az);
-bsp_imu_get_tilt(&gx, &gy);
+bsp_imu_get_gyro(&gx, &gy, &gz);
+bsp_imu_get_temp(&temp);
+bsp_imu_get_tilt(&tx, &ty);
 
 bsp_imu_calib_start();
 while (bsp_imu_calib_poll() == BSP_IMU_CALIB_RUNNING) {
@@ -436,7 +452,7 @@ directly; everything goes through `ringkit/ringkit.h`:
 | `ring_battery` | PMIC type, `ring_battery_get()` snapshot, percent / voltage / charging |
 | `ring_power` | `ring_power_shutdown()` (GPIO47 hold) |
 | `ring_audio` | codec handle, I2S RX, blocking read/write, mute |
-| `ring_imu` | accel, screen-plane tilt, level calibration |
+| `ring_imu` | accel, gyro, temperature, screen-plane tilt, level calibration |
 | `ring_sd` | mount state, card handle, sorted directory listing |
 | `ring_ui` | LVGL lock + `RING_UI_LOCKED(-1) { ... }`, label add, exact centring |
 | `ring_theme.h` | colours, panel geometry (360×360, CX/CY), motion timings |

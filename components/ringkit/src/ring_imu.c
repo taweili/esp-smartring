@@ -15,6 +15,16 @@ void ring_imu_tilt(float *gx, float *gy)
     bsp_imu_get_tilt(gx, gy);
 }
 
+void ring_imu_gyro(float *gx, float *gy, float *gz)
+{
+    bsp_imu_get_gyro(gx, gy, gz);
+}
+
+void ring_imu_temp(float *temperature)
+{
+    bsp_imu_get_temp(temperature);
+}
+
 void ring_imu_calib_start(void)
 {
     bsp_imu_calib_start();

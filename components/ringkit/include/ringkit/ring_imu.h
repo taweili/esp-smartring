@@ -23,6 +23,12 @@ void ring_imu_accel(float *ax, float *ay, float *az);
  */
 void ring_imu_tilt(float *gx, float *gy);
 
+/** Latest filtered gyro rate, board axes, deg/s (thread safe). */
+void ring_imu_gyro(float *gx, float *gy, float *gz);
+
+/** Latest die temperature, deg C (raw/256, driver convention; thread safe). */
+void ring_imu_temp(float *temperature);
+
 /* ---- level calibration (optional; reference implementation) ---- */
 
 /** (Re)start calibration: resets the window and the 30 s deadline. */
