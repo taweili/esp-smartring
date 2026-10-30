@@ -95,3 +95,13 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `notes/architecture.md` | Architecture rationale: why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
 | `notes/meta-muse.md`, `notes/xiaozhi.md` | Assistant feasibility research (no code yet). |
 | BSP upstream | `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus`). |
+
+## License
+
+This project is released under the **GNU General Public License v3.0**
+(GPL-3.0). See the full text in [`LICENSE`](LICENSE).
+
+> **Note:** GPL-3.0 applies to the firmware in this repository only. The
+> vendored component overrides under `components/` and any components pulled
+> from the ESP Component Registry keep their own licenses; check each
+> component's `LICENSE` / `README` before redistributing.
