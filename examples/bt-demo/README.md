@@ -1,18 +1,44 @@
-# Smart Ring Plus — Bluetooth / BLE Research & Implementation Guide
+# bt-demo — Bluetooth LE peripheral bring-up on the round screen
 
-> This note answers **"how do I use Bluetooth on the Smart Ring Plus?"** for the
-> working project in this repo. It covers what the silicon supports, which stack
-> to pick, the exact `sdkconfig` knobs for **ESP-IDF v6.1 / esp32s3**, a minimal
-> GATT-server bring-up adapted to the `ringkit` skeleton, Wi-Fi coexistence, and
-> the board-specific pitfalls (RAM, partitions, NVS, core pinning).
->
-> The BSP (`viewesmart/smartring_plus`) does **not** touch the radio — Bluetooth
-> is a pure ESP-IDF feature, exactly like the Wi-Fi that `ringkit/ring_wifi.c`
-> already wraps. Nothing below requires a BSP change.
+Design & implementation guide for `examples/bt-demo/`, the Bluetooth LE
+peripheral demo on the Smart Ring Plus. This is also the project's **reference
+for "how do I use Bluetooth on the ring?"** — it covers what the silicon
+supports, which stack to pick, the exact `sdkconfig` knobs for **ESP-IDF v6.1 /
+esp32s3**, a minimal GATT-server bring-up adapted to the `ringkit` skeleton,
+Wi-Fi coexistence, and the board-specific pitfalls (RAM, partitions, NVS, core
+pinning).
+
+> The BSP (`viewesmart/smartring_plus`) does **not** touch the radio —
+> Bluetooth is a pure ESP-IDF feature, exactly like the Wi-Fi that
+> `ringkit/ring_wifi.c` already wraps. Nothing here requires a BSP change.
+
+Target: VIEWE Smart Ring Plus, ESP32-S3-N16R8, ESP-IDF v6.1, NimBLE host.
+Implementation: `examples/bt-demo/bt_demo.c` + the `ring_bt` wrapper in
+`components/ringkit/`.
 
 ---
 
-## 1. What the hardware supports (silicon, not marketing)
+## 1. What the app does
+
+The ring advertises itself as a connectable BLE peripheral named **`SmartRing`**
+with one vendor service (**0xFFE0**) and three characteristics:
+
+| Char | UUID | Access | Meaning |
+|------|------|--------|---------|
+| name | `0xFFE1` | READ | the device name (`"SmartRing"`) |
+| battery | `0xFFE2` | READ \| NOTIFY | battery %, updated every 2 s |
+| command | `0xFFE3` | WRITE \| NOTIFY | write a command, get an `"ok"` notification |
+
+A phone (nRF Connect / LightBlue) can scan for `SmartRing`, connect, pair
+(bonding is on), read the name/battery, write a command and receive a
+notification. The screen shows the connection state, battery, and last received
+command; a 2 Hz UI timer refreshes it.
+
+The connection itself is asynchronous: `ring_bt_init()` starts the host task and
+advertising starts when the host syncs. The example just reads
+`ring_bt_state()` / `ring_bt_is_connected()` from a UI timer.
+
+## 2. What the hardware supports (silicon, not marketing)
 
 - **SoC:** ESP32-S3-N16R8 (240 MHz dual-core, 8 MB octal PSRAM, 16 MB flash).
 - **Radio:** 2.4 GHz Wi-Fi (802.11 b/g/n) **+ Bluetooth Low Energy only**.
@@ -34,9 +60,7 @@
 classic device. For phone-app UIs, sensor streams, or provisioning, BLE is the
 only path.
 
----
-
-## 2. Stack choice: NimBLE vs Bluedroid
+## 3. Stack choice: NimBLE vs Bluedroid
 
 ESP-IDF v6.1 ships **two** BLE host stacks over the same ESP32-S3 controller
 (`components/bt/host/{bluedroid,nimble}`, controller at `components/bt/controller/esp32s3`):
@@ -60,14 +84,12 @@ bigger API surface.
 > are silently ignored (the S3 controller Kconfig comes from
 > `components/bt/controller/esp32c3/Kconfig.in`, which has no dual-mode option).
 
----
+## 4. The minimal `sdkconfig` delta (verified on ESP-IDF v6.1 / esp32s3)
 
-## 3. The minimal `sdkconfig` delta (verified on ESP-IDF v6.1 / esp32s3)
-
-I generated a real ESP32-S3 `sdkconfig` from the canonical
-`examples/bluetooth/nimble/bleprph` example and captured the values that matter.
-Add to `sdkconfig.defaults` (only the first three are strictly required; the rest
-are the defaults the example relies on, listed so you know what you're getting):
+Generated from a real ESP32-S3 `sdkconfig` from the canonical
+`examples/bluetooth/nimble/bleprph` example. Add to `sdkconfig.defaults` (only
+the first three are strictly required; the rest are the defaults the example
+relies on, listed so you know what you're getting):
 
 ```ini
 # --- BLE: enable the controller + NimBLE host -------------------------------
@@ -114,9 +136,7 @@ CONFIG_BT_CTRL_PINNED_TO_CORE_0=y     # run BT host+controller on core 0 (see §
 There is **no** `CONFIG_BTDM_CTRL_MODE_BLE_ONLY` to set on S3 — that symbol is
 ESP32-only and the example's `sdkconfig.defaults` carries it for other targets.
 
----
-
-## 4. Bring-up sequence (what actually has to happen)
+## 5. Bring-up sequence (what actually has to happen)
 
 This is the exact lifecycle from `examples/bluetooth/nimble/bleprph/main/main.c`,
 annotated for the ring. The critical ordering is **NVS → `nimble_port_init()` →
@@ -142,7 +162,7 @@ ble_hs_cfg.sync_cb            = ring_bt_on_sync;        /* -> start advertising 
 ble_hs_cfg.gatts_register_cb  = ring_bt_gatt_register;  /* logs service handles */
 ble_hs_cfg.store_status_cb    = ble_store_util_status_rr;
 
-/* Optional security (Just Works is default; see §5 for pairing). */
+/* Optional security (Just Works is default; see §6 for pairing). */
 ble_hs_cfg.sm_io_cap  = BLE_SM_IO_CAP_NO_IO;
 ble_hs_cfg.sm_bonding = 1;
 ble_hs_cfg.sm_mitm    = 0;
@@ -222,12 +242,10 @@ passed. The canonical switch (from `bleprph`) is:
 | `BLE_GAP_EVENT_NOTIFY_TX` | a notification/indication was sent (or failed) |
 | `BLE_GAP_EVENT_ENC_CHANGE` | encryption enabled/disabled for the link |
 | `BLE_GAP_EVENT_ADV_COMPLETE` | adv window ended (usually means no connection) |
-| `BLE_GAP_EVENT_PASSKEY_ACTION` | pairing UI — see §5 |
+| `BLE_GAP_EVENT_PASSKEY_ACTION` | pairing UI — see §6 |
 | `BLE_GAP_EVENT_REPEAT_PAIRING` | return `BLE_GAP_REPEAT_PAIRING_RETRY` (after `ble_store_util_delete_peer`) |
 
----
-
-## 5. A minimal GATT server for the ring
+## 6. A minimal GATT server for the ring
 
 NimBLE declares the database as a **static array** of `struct ble_gatt_svc_def`
 (services → characteristics → descriptors), each with an `access_cb`. The callback
@@ -342,9 +360,7 @@ phone app (nRF Connect, LightBlue). If you need encryption or a PIN:
   need bonded reconnects without re-pairing; the store then writes through the
   `conf` subsystem to NVS (`ble_store_nvs.c`).
 
----
-
-## 6. RAM & flash budget (the part that bites on this board)
+## 7. RAM & flash budget (the part that bites on this board)
 
 This board is RAM-constrained in **internal** DRAM even with 8 MB PSRAM, because
 the controller, LVGL, and the FreeRTOS heaps all want internal memory.
@@ -373,9 +389,7 @@ keep `BT_NIMBLE_MAX_CONNECTIONS=1` or 3, and reduce Wi-Fi buffers
 (`CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM`, `CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM`,
 `CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM`) as documented in the coexistence page.
 
----
-
-## 7. Wi-Fi + BLE coexistence (you *will* run both)
+## 8. Wi-Fi + BLE coexistence (you *will* run both)
 
 The ring has **one** 2.4 GHz radio. Wi-Fi and BLE time-share it; the coexistence
 module arbitrates by priority. This is automatic — you don't write coexistence
@@ -406,17 +420,15 @@ code — but it shapes your config and expectations:
 The **reference example** is
 `examples/bluetooth/nimble/bleprph_wifi_coex/` — it runs a GATT server and a Wi-Fi
 STA at once, exactly the ring's future shape. Its `sdkconfig.defaults` is the same
-BT block as §3 plus `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` and
+BT block as §4 plus `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` and
 `CONFIG_ESP_WIFI_IRAM_OPT=n`.
 
----
-
-## 8. Where it plugs into `ringkit`
+## 9. Where it plugs into `ringkit`
 
 Bluetooth is **not** a BSP concern, so it lives in `ringkit` as a module that
 mirrors `ring_wifi` — a thin wrapper the app calls, hiding all NimBLE headers.
-It is **implemented** (`components/ringkit/src/ring_bt.c` + `include/ringkit/ring_bt.h`)
-and exercised by the `bt-demo` example. Public surface:
+It is **implemented** (`components/ringkit/src/ring_bt.c` +
+`include/ringkit/ring_bt.h`) and exercised by this example. Public surface:
 
 ```c
 /* ringkit/ring_bt.h */
@@ -485,13 +497,11 @@ and the ESP32-S3 controller (there is no separate `nimble` component, and no
 in `REQUIRES` (not `PRIV_REQUIRES`) because NimBLE headers appear in ringkit's
 public `ring_bt.h`… actually they do not; `ring_bt.h` is NimBLE-free, so `bt`
 could be `PRIV_REQUIRES`. It is kept in `REQUIRES` so the include path is
-unambiguous. Enable it globally via `sdkconfig.defaults` (§3) — `sdkconfig`
+unambiguous. Enable it globally via `sdkconfig.defaults` (§4) — `sdkconfig`
 is shared by every app, so this affects all builds (harmless: the linker
 garbage-collects the BT code for apps that never call `ring_bt_init()`).
 
----
-
-## 9. Gotchas specific to this board
+## 10. Gotchas specific to this board
 
 1. **No Bluetooth Classic.** Don't plan A2DP/SPP/headset. If you see an SDK or
    library wanting `esp_bt_gap_*` / `esp_bt_dev_*`, it won't work on S3.
@@ -522,9 +532,44 @@ garbage-collects the BT code for apps that never call `ring_bt_init()`).
    connection/notification path is a human/phone test** — log evidence alone is
    not proof, same as the touch caveat in `AGENTS.md`.
 
----
+## 11. Files
 
-## 10. Reference examples & links
+1. **`examples/bt-demo/bt_demo.c`** — the app: GATT table, UI, 2 Hz refresh.
+2. **`examples/bt-demo/include/ring_example.h`** — `ring_example_start()` /
+   `ring_example_name()`.
+3. **`examples/bt-demo/CMakeLists.txt`** — fragment listing `RING_EXAMPLE_SRCS`.
+4. **`components/ringkit/src/ring_bt.c`** + **`include/ringkit/ring_bt.h`** — the
+   NimBLE wrapper (§9).
+5. **`sdkconfig.defaults`** — the BLE block from §4.
+6. **`main/main.c`** — app-agnostic; calls `ring_board_init()` then
+   `ring_example_start()`.
+
+> Remember: `sdkconfig.defaults` is only applied when `sdkconfig` is
+> (re)created → run `rm -f sdkconfig && idf.py reconfigure` after editing it.
+
+## 12. Build & verify
+
+```bash
+idf.py -DRING_APP=bt-demo -B build/bt-demo build
+idf.py -DRING_APP=bt-demo -B build/bt-demo -p /dev/ttyACM0 flash monitor
+```
+
+Expected log (TAG `bt-demo`):
+
+```
+bt-demo: BLE host up, advertising as 'SmartRing' (svc 0xFFE0)
+bt-demo: status: advertising, battery 87%
+bt-demo: peer connected (handle 0)
+bt-demo: status: connected, battery 87%
+bt-demo: command received: 'hello' (5 B)
+```
+
+Visual/phone check: scan with nRF Connect / LightBlue → connect to `SmartRing`,
+pair (bonding), read `name`/`battery`, write to `command` and observe the `ok`
+notification and the on-screen `last:` line. **A connection/notification path is
+a human/phone test** — log evidence alone is not proof (see §10.9).
+
+## 13. Reference examples & links
 
 All under `$IDF_PATH/examples/` (v6.1):
 
@@ -554,5 +599,5 @@ Docs:
 `components/bt/{host/nimble,controller/esp32s3}`), the official v6.1 docs
 (ESP32-S3 BLE overview + RF coexistence + NimBLE API), and a real `esp32s3`
 `bleprph` configure to confirm the Kconfig values. The `ring_bt` wrapper and the
-`bt-demo` example described in §8 are implemented in this repo and verified on
+`bt-demo` example described in §9 are implemented in this repo and verified on
 the device (boot log shows advertising as `SmartRing`). No BSP change is required.*

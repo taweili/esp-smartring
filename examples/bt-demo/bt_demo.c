@@ -28,7 +28,7 @@
 
 #define UI_PERIOD_MS 500    /* 2 Hz status + battery refresh */
 
-/* Vendor service + characteristics (see notes/bluetooth.md §5). */
+/* Vendor service + characteristics (see examples/bt-demo/README.md §1, §6). */
 #define BT_SVC_UUID     0xFFE0
 #define BT_CHR_NAME     0xFFE1
 #define BT_CHR_BATTERY  0xFFE2
