@@ -85,7 +85,7 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `AGENTS.md` | Developer guidance: build/flash commands, verification bar, critical fixes, gotchas. **Start here before changing code.** |
 | `examples/README.md` | App contract, how apps are selected and added. |
 | `notes/esp-smartring.md` | Hardware + BSP research reference: product overview, full `bsp_*` API, pin map, gotchas. |
-| `notes/launcher-spec.md` | glyph-anime design document (layered reveal maths, risks). |
-| `notes/restructure-proposal.md` | Why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
+| `examples/glyph-anime/README.md` | glyph-anime design & build spec (layered reveal maths, risks). |
+| `notes/architecture.md` | Architecture rationale: why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
 | `notes/meta-muse.md`, `notes/xiaozhi.md` | Assistant feasibility research (no code yet). |
 | BSP upstream | `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus`). |

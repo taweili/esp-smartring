@@ -49,7 +49,7 @@ so every example can use the same `ring_example.h` name.
 > *after* `main`, and `__component_set_dependencies()` silently drops a
 > `REQUIRES` entry whose component isn't registered yet — losing both the
 > include path and the link, with a misleading error. Detail in
-> `notes/restructure-proposal.md` §10.1.
+> `notes/architecture.md` §6.1.
 
 ## Adding an example
 
@@ -75,6 +75,9 @@ Rules:
 - Use the directory name for the app; keep it `[a-z0-9-]+`.
 - **Do not** add an `idf_component.yml` per example. Managed dependencies live
   in `main/idf_component.yml`.
+- An app may carry its own `README.md` for a design/spec (see
+  `glyph-anime/README.md`) — it is inert to the build, so it never touches the
+  CMake fragment.
 - **Do not** include `bsp/smartring_plus.h` and **do not** call `bsp_*`
   directly — everything goes through `ringkit/ringkit.h`.
 - All LVGL work happens under `RING_UI_LOCKED(-1) { ... }`.
