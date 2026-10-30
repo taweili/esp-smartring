@@ -30,5 +30,5 @@
 /* ------------------------------------------------------------- motion */
 
 /** Layered glyph reveal (examples/glyph-anime). */
-#define RING_MS_REVEAL_OPEN  450
-#define RING_MS_REVEAL_CLOSE 350
+#define RING_MS_REVEAL_OPEN  1350  /* 3x slower than the original 450 */
+#define RING_MS_REVEAL_CLOSE 1050  /* 3x slower than the original 350 */

@@ -207,10 +207,10 @@ Shrinking progress removes rings outside-in.
 
 | Transition | Progress | Duration | Ease |
 |-----------|----------|----------|------|
-| Open | 384 → `9·256` (2304) | 450 ms | `lv_anim_path_ease_out` |
-| Close | 2304 → 384 | 350 ms | `lv_anim_path_ease_in` |
+| Open | 384 → `9·256` (2304) | 1350 ms (3x slower) | `lv_anim_path_ease_out` |
+| Close | 2304 → 384 | 1050 ms (3x slower) | `lv_anim_path_ease_in` |
 
-With 9 layers over 450 ms each layer gets a ~50 ms slot (≈25 ms fade, ≈25 ms
+With 9 layers over 1350 ms each layer gets a ~150 ms slot (≈75 ms fade, ≈75 ms
 gap). Tune `OPEN_MS` / `LAYER_FADE` to make the stepping more or less obvious;
 lowering `LAYER_FADE` makes each ring snap in harder.
 
