@@ -1,19 +1,15 @@
-# glyph-anime — glyph-grid layered-reveal design & build spec
+# glyph-anime — ring-rotation-driven glyph reveal
 
 Design document for `examples/glyph-anime/`, the **default** application on the
-Smart Ring Plus. It replicates the interaction seen in
-`@KINDOFDEVICE_`'s Smart Ring Plus demo: a **full-screen grid of glyphs** that
-is **built up layer by layer from the center outward** (concentric rings of
-glyphs added until the edge), **color-cycles its accent icons**, and
-**collapses back** to a small lit cluster at the center.
+Smart Ring Plus. It implements the **rotation-driven glyph reveal**: a **fixed
+grid of glyphs** whose lit set grows and shrinks as the **ring is turned
+clockwise / counter-clockwise**.
 
-> **Correction:** the interface does **not** scale. There is no zoom/scale
-> transform anywhere. The screen is a fixed grid of glyph labels; the open/close
-> effect is a **layered reveal** — the grid is split into concentric layers by
-> distance from the center, and layers light up one at a time. Glyphs in a layer
-> that has not been reached are invisible (painted the background color), so
-> rings of glyphs appear to be added around the center outward (and are removed
-> outside-in on close).
+> **The grid does NOT rotate, scale or move.** Cells are fixed. The interaction
+> is a **reveal**: turning the ring clockwise lights up more cells (center-out)
+> until the panel is full; turning it counter-clockwise un-lights them
+> (outside-in). The reveal is driven by the on-board **IMU gyro Z**, integrated
+> into a turn angle and mapped to a reveal radius. A tap resets to the idle core.
 
 Target: VIEWE Smart Ring Plus, ESP32-S3, 1.8" 360×360 ST77916 round panel,
 LVGL **9.4.0**, BSP `viewesmart/smartring_plus`. Implementation:
@@ -21,57 +17,135 @@ LVGL **9.4.0**, BSP `viewesmart/smartring_plus`. Implementation:
 
 ---
 
-## 1. Observed behavior (from video)
+## 1. Observed behavior (from the reference stills)
 
-| Phase | Visual |
+The pattern is defined by three stills — three samples of **one continuous
+growth sequence**, not three discrete states:
+
+| Still | File | Coverage | Description |
+|-------|------|----------|-------------|
+| 1 | `~/Pictures/screenshot-2026-10-30_20-37-11.png` | ~3.9 % of panel disc | small lit cluster near centre |
+| 2 | `~/Pictures/screenshot-2026-10-30_20-37-23.png` | ~5.7 % of panel disc | mid-size lit region |
+| 3 | `~/Pictures/screenshot-2026-10-30_20-37-34.png` | ~17.5 % of panel disc | most of the panel lit |
+
+Turning the ring clockwise grows the pattern; counter-clockwise shrinks it. The
+growth runs all the way until the grid fills the whole round screen.
+
+### 1.1 The grid — axis-aligned square, fixed cells
+
+The pattern is a **regular square grid** of glyph cells:
+
+```c
+int x = RING_CX + (i - half) * GRID_STEP;   /* i over grid rows */
+int y = RING_CY + (j - half) * GRID_STEP;   /* j over grid cols */
+```
+
+There is **no 45° lattice, no checkerboard parity** — every `(i, j)` cell is
+used. The cells are a **fixed size** and their **positions never change** — only
+whether each cell is lit changes.
+
+> **Why the stills look 45°-rotated.** Because the glyphs are fixed to the
+> panel, physically rotating the ring rotates the *whole device* in the camera
+> frame — the pattern is tilted in the photo, but it is **not** rotated relative
+> to the panel. The on-screen grid is a plain square grid; the 45° appearance is
+> the ring's physical orientation at the moment the photo was taken. (The same
+> reason the circular bezel reads as an ellipse in the stills.)
+
+### 1.2 Growth sequence — a centre-out reveal
+
+Frame 1 → 2 → 3 shows **more and more cells lighting up** from the centre
+outward. The lit region is a growing blob that starts as a tiny central cluster
+and expands until the cells near the bezel light up and the grid fills the round
+screen. Shrinking is the exact reverse: cells un-light **outside-in**.
+
+Because the glyphs are fixed to the panel, the reveal grows **from the centre
+outward** — the centre stays lit and lit cells appear at the growing edge.
+
+- **Centre lights first, stays lit.** A compact core of glyphs near the centre
+  is the "seed". In frame 1 it is nearly all you see.
+- **Lit set grows outward.** Single glyphs light up progressively toward the
+  bezel; the region between the lit edge and the bezel is dark.
+
+### 1.3 Palette — green + warm yellow, multiple brightness levels
+
+The palette is **green and warm yellow** (amber/gold), each at **several degrees
+of brightness** — the same hue at different luminance, not a single flat colour.
+
+| Class | Intent |
 |-------|--------|
-| Idle | Screen dark; a small cluster of glyphs lit near the center (innermost 2 layers, ~9 cells) |
-| Open | **Layers of glyphs are added ring by ring from the center outward** (~0.4–0.5 s, ease-out) until the panel is full — a layered reveal, not a zoom; each concentric ring fades in as one unit |
-| Open (held) | Dense grid fills the panel using only **~6 distinct glyph shapes** (`#`, `+`, `×`, filled square, dot, open-circle). **Green vs accent is scattered at random** (not in rings); green stays constant while accents cycle hue: orange → pink → blue → cream |
-| Close | Rings **disappear outside-in** (~0.3–0.4 s) until only the tiny center cluster remains |
+| warm yellow | amber / gold accent, hue ~35–45°, several brightness tiers |
+| green | the fixed `RING_COLOR_GREEN`-family green, several brightness tiers |
+| background | black (`RING_COLOR_BG`) |
 
-> The demo's timings were ~450 ms open / ~350 ms close. This app deliberately
-> runs them **3× slower** via `RING_MS_REVEAL_OPEN` (1350 ms) and
-> `RING_MS_REVEAL_CLOSE` (1050 ms) so the layering reads clearly — see §6.
+Warm yellow dominates the stills (~84–95 % of glyph pixels); green is the
+minority colour. The **brightness variation** is the key visual texture: a cell
+is not simply on/off, it is one of N brightness levels (dim / mid / full), so
+the lit region has a soft, uneven luminance rather than a hard edge.
+
+### 1.4 Glyph shapes
+
+Visible shapes: **filled squares, rotated squares (diamonds), 4/5-point
+stars/asterisks, filled dots, plus/cross, short bars**. This app uses ~6
+distinct shapes (`+`, `×`, filled square, dot, triangle, bars) from the
+Montserrat `LV_SYMBOL_*` set — a compatible repertoire.
 
 ---
 
-## 2. Architecture
+## 2. Interaction contract
+
+| Input | Effect |
+|-------|--------|
+| Ring **clockwise** | Reveal radius grows → more cells light up, center-out, until the panel is full |
+| Ring **counter-clockwise** | Reveal radius shrinks → cells un-light outside-in, back to the idle core |
+| Ring **held still** | Reveal holds (position control — it stays where you leave it) |
+| **Tap** | Reset the reveal to the small idle core (`s_turn_deg = 0`) |
+
+- **Fixed grid:** 169 glyphs on a 13×13 square grid; cells never move, never
+  scale, never rotate with the ring.
+- **Reveal, not scale:** only each cell's lit/unlit state changes.
+- **IMU-driven:** the turn is detected from `ring_imu_gyro()` gyro **Z** — the
+  axis through the finger, perpendicular to the screen. No touch is needed to
+  grow/shrink.
+
+---
+
+## 3. Architecture
 
 ```
 examples/glyph-anime/
 ├── CMakeLists.txt              # fragment: RING_EXAMPLE_SRCS etc. (see examples/)
 ├── include/ring_example.h      # esp_err_t ring_example_start(void);
-├── glyph_anime.c               # state machine + glyph grid + reveal anim + input
+├── glyph_anime.c               # fixed grid + IMU turn -> reveal repaint
 └── README.md                   # this design & build spec
-components/ringkit/             # skeleton: board, LVGL lock, theme, RNG
+components/ringkit/             # skeleton: board, LVGL lock, theme, RNG, IMU
 ```
 
-- No new BSP code. Everything uses `lv_*` under `RING_UI_LOCKED(-1)`.
+- No new BSP code. Everything uses `lv_*` under `RING_UI_LOCKED(-1)` and
+  `ring_imu_gyro()`.
 - `glyph_anime.c` owns the whole UI; `main.c` only calls `ring_example_start()`.
 - One `lv_obj` (screen). All glyphs are `lv_label` children of the screen placed
-  on a **fixed grid**.
-- There is **no scale transform**. The open/close effect is a **layered
-  reveal**: the grid is split into concentric layers by distance from center,
-  and a progress value advances one layer at a time. A glyph is lit (target
-  color) once its layer's window has been passed, otherwise it is painted the
-  **background color** (black), i.e. invisible. Each layer lights up as a whole
-  ring, so the lit set grows layer by layer outward from the center.
+  on a **fixed grid**, built once and never re-laid-out.
 
-### State machine
+### Data flow
 
 ```
-IDLE ──tap──▶ OPENING ──(reveal anim done)──▶ OPEN
-  ▲                                            │
-  │                                            │ tap
-  └───────CLOSING ◀──(reveal anim done)─────────┘
+lv_timer (20 ms) ── ring_imu_gyro(&gx,&gy,&gz)
+                     │  gz = turn rate about the finger axis (deg/s)
+                     ▼
+               s_turn_deg += TURN_SIGN * gz * dt     (deadbanded)
+                     ▼
+               reveal = REVEAL_IDLE + (s_turn_deg / DEG_PER_REVEAL) * 100
+                     ▼   (clamped to [REVEAL_IDLE, REVEAL_MAX])
+               repaint(reveal)  → per-cell lit/unlit colour
 ```
 
-States: `L_IDLE`, `L_OPENING`, `L_OPEN`, `L_CLOSING` (`state_t`).
+No `lv_anim` for the reveal — rotation is a **position control**, so the radius
+is computed directly from the IMU integral and repainted when it moves by
+>0.5 px.
 
 ---
 
-## 3. Layout (fixed grid, 360×360)
+## 4. Layout (fixed grid, 360×360)
 
 Panel center = `(RING_CX, RING_CY)` = (180, 180). Glyphs sit on a square grid;
 nothing moves.
@@ -80,13 +154,14 @@ nothing moves.
 |-------|-------|------|
 | `GRID_N` | 13 | 13×13 = **169** glyphs |
 | `GRID_STEP` | 27 px | extent = 13·27 = 351 px → ~4.5 px margin each side |
-| `LAYER_UNIT` | 256 | fixed-point progress units per layer |
-| `LAYER_FADE` | 128 | fade window per layer (½ a slot → visible step between rings) |
-| `MAX_LAYERS` | 10 | safety cap on the layer index |
-| `n_layers` | 9 | derived: `max(round(dist/GRID_STEP)) + 1` |
-| `IDLE_PROGRESS` | 384 | `1·LAYER_UNIT + LAYER_FADE` → lights layers 0–1 (the idle cluster) |
+| `REVEAL_IDLE` | 40.5 px | `1.5 · GRID_STEP` — the small idle core |
+| `REVEAL_MAX` | 180 px | `RING_RADIUS` — lights every cell on the round panel |
+| `DEG_PER_REVEAL` | 90 | degrees of ring turn per 100 px of reveal |
+| `GYRO_DEADBAND_DPS` | 1.5 | deg/s; ignore below this (kills offset drift) |
+| `EDGE_FADE` | 27 px | `GRID_STEP` — soft reveal edge blend |
+| `POLL_MS` | 20 | IMU poll cadence (50 Hz) |
 
-Glyph position for cell (i, j), i,j ∈ [0, 12]:
+Glyph position for cell (i, j), i,j ∈ [0, 12] — **fixed at build time**:
 
 ```c
 int half = (GRID_N - 1) / 2;                    /* 6 */
@@ -94,175 +169,154 @@ int x = RING_CX + (i - half) * GRID_STEP;
 int y = RING_CY + (j - half) * GRID_STEP;
 ```
 
-Each glyph is assigned to a **concentric layer** by its distance from center.
-The layer — not a raw radius — is the reveal key:
+Distance from center (the reveal key) is computed once:
 
 ```c
-uint16_t dist  = (uint16_t)roundf(hypotf(x - RING_CX, y - RING_CY));
-int      layer = (int)roundf((float)dist / GRID_STEP);   // clamp to MAX_LAYERS-1
+uint16_t dist = (uint16_t)roundf(hypotf(x - RING_CX, y - RING_CY));
 ```
 
-On this grid that yields **9 layers**, with these glyph counts (a square grid
-means layers are not perfectly even rings — that is expected):
+### Turn → reveal mapping
 
-| Layer | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
-|-------|---|---|---|---|---|---|---|---|---|
-| Glyphs | 1 | 8 | 12 | 16 | 32 | 28 | 40 | 20 | 12 |
+```c
+#define DEG_PER_REVEAL 90.0f     /* deg per 100 px */
+#define REVEAL_IDLE   (1.5f * GRID_STEP)   /* 40.5 px */
+#define REVEAL_MAX    ((float)RING_RADIUS) /* 180 px  */
+#define GYRO_DEADBAND_DPS 1.5f
+#define TURN_SIGN 1.0f           /* +1: clockwise = +gz grows the reveal */
 
-Layers 0–1 (9 glyphs) form the idle cluster; the rest fade in one layer at a
-time as the reveal advances.
+/* in the 20 ms poll */
+float gx, gy, gz;
+ring_imu_gyro(&gx, &gy, &gz);
+if (fabsf(gz) > GYRO_DEADBAND_DPS)
+    s_turn_deg += TURN_SIGN * gz * dt;
+
+float reveal = REVEAL_IDLE + (s_turn_deg / DEG_PER_REVEAL) * 100.0f;
+if (reveal < REVEAL_IDLE) reveal = REVEAL_IDLE;
+if (reveal > REVEAL_MAX)  reveal = REVEAL_MAX;
+```
 
 ---
 
-## 4. Icon (glyph) model
+## 5. Icon (glyph) model
 
 ```c
-typedef enum {
-    ICON_STATIC_GREEN,   /* fixed green — the "app" pattern */
-    ICON_ACCENT,         /* hue-cycling                     */
-} glyph_class_t;
+typedef enum { GLYPH_GREEN, GLYPH_YELLOW } glyph_class_t;
 
 typedef struct {
     const char *symbol;
     glyph_class_t cls;
-    int16_t x, y;      /* cell position (px)                        */
-    uint16_t dist;     /* distance from center (px)                 */
-    uint8_t layer;     /* concentric layer = round(dist / GRID_STEP) */
+    uint8_t bright;    /* brightness tier 0..N_BRIGHTNESS-1 */
+    int16_t x, y;      /* cell position (px) — FIXED        */
+    uint16_t dist;     /* distance from center (px)         */
     lv_obj_t *obj;
 } glyph_t;
 
 static glyph_t s_glyphs[GRID_N * GRID_N];   /* 169 entries */
 ```
 
-- **Only ~6 distinct glyph shapes**, approximating the footage's pixel marks
-  (`#`, `+`, `×`, filled square, dot, open-circle). The video uses custom pixel
-  glyphs; we approximate with a small `LV_SYMBOL_*` set:
+- **~6 distinct glyph shapes** from a small `LV_SYMBOL_*` set (`+`, `×`,
+  square, dot, triangle, bars), picked pseudo-randomly per cell
+  (`s_syms[ring_rand_below(N_SYMS)]`), not cycled — organic field.
+- **Green / warm-yellow split is random** (`ring_rand_bool()`), no ring bands.
+- **Each cell gets a random brightness tier** (`ring_rand_below(3)`):
+  dim / mid / full (`s_bright = {0.35, 0.65, 1.0}`). This gives the uneven
+  luminance seen in the stills.
+- Full-lit color = class color **mixed toward black by `(1 - frac)`**, so only
+  luminance changes, hue is preserved:
 
   ```c
-  static const char *const s_syms[6] = {
-      LV_SYMBOL_PLUS,    /* +        */
-      LV_SYMBOL_CLOSE,   /* x        */
-      LV_SYMBOL_STOP,    /* square   */
-      LV_SYMBOL_BULLET,  /* dot      */
-      LV_SYMBOL_PLAY,    /* triangle */
-      LV_SYMBOL_PAUSE,   /* bars     */
-  };
+  lv_color_t base = (g->cls == GLYPH_GREEN) ? RING_COLOR_GREEN
+                                            : RING_COLOR_YELLOW; /* 0xFFB74D */
+  return lv_color_mix(base, RING_COLOR_BG, (uint8_t)((1.0f - frac) * 255.0f));
   ```
 
-  Assign each cell a glyph with a deterministic pseudo-random pick
-  (`s_syms[ring_rand_below(N_SYMS)]`), **not** a cyclic walk, so the field looks
-  organic.
-- **Class assignment is random, not concentric bands.** Each cell is
-  `ICON_ACCENT` with ~50 % probability (`ring_rand_bool()`) so green glyphs are
-  scattered randomly across the field like the footage, with no ring structure.
-- `ICON_STATIC_GREEN` → `RING_COLOR_GREEN` (theme).
-- `ICON_ACCENT` → colored from the cycling hue (see §5).
-- Glyphs are `lv_label`s (symbols render with the built-in Montserrat fonts —
-  symbol glyphs are baked in, no extra font needed).
-- **Randomness is `ringkit`'s `ring_rand`**, seeded once with
-  `ring_rand_seed(0x9E3779B9u)` at start. The whole field is reproducible
-  across boots. (The LCG low-bit trap that made a local RNG unsuitable is
-  documented in `ringkit/ring_rand`.)
-
 ---
 
-## 5. Accent color cycle
-
-A single `lv_anim` on a `float hue` (0–360) runs while the launcher is OPEN.
-Each frame the exec callback repaints every `ICON_ACCENT` label (this shares the
-reveal repaint — see §6):
+## 6. Reveal repaint (cells fixed, only colour changes)
 
 ```c
-/* palette stops from the footage: orange → pink → blue → cream */
-static const uint16_t s_palette[4] = { 30, 320, 230, 45 };
-
-static void color_cb(void *var, int32_t v)
-{
-    s_hue = v;
-    repaint(s_progress);
-}
-/* lv_anim: start_hue -> start_hue + 360 over 6000 ms, linear, repeat infinite */
-```
-
-- The sweep starts at the current palette stop `s_palette[s_palette_idx]` and
-  runs one full 360° pass, so orange→pink→blue→cream reads like the footage.
-- The fixed green pattern provides contrast exactly like the footage.
-
----
-
-## 6. Open / close reveal — layers of glyphs (no scaling)
-
-Progress is a fixed-point value in `LAYER_UNIT` (256) units per layer, animated
-from `IDLE_PROGRESS` to `n_layers · LAYER_UNIT`. Each glyph maps its own layer
-onto that progress:
-
-```c
-static void repaint(int32_t progress)
+static void repaint(float reveal)
 {
     for (int i = 0; i < N_GLYPHS; i++) {
-        int32_t local = progress - (int32_t)s_glyphs[i].layer * LAYER_UNIT;
+        const glyph_t *g = &s_glyphs[i];
         lv_color_t c;
 
-        if (local <= 0) {
-            c = RING_COLOR_BG;                    /* layer not reached yet */
-        } else if (local >= LAYER_FADE) {
-            c = target_color(&s_glyphs[i]);       /* layer fully lit       */
+        if ((float)g->dist > reveal) {
+            c = RING_COLOR_BG;                        /* outside the reveal */
         } else {
-            c = lv_color_mix(target_color(&s_glyphs[i]), RING_COLOR_BG,
-                             (uint8_t)(local * 255 / LAYER_FADE));
+            lv_color_t base = base_color(g);
+            float edge = (float)g->dist - (reveal - EDGE_FADE);
+            if (edge > 0.0f) {
+                float f = 1.0f - edge / EDGE_FADE;    /* 0..1 blend */
+                c = lv_color_mix(base, RING_COLOR_BG,
+                                 (uint8_t)((1.0f - f) * 255.0f));
+            } else {
+                c = base;                             /* fully lit */
+            }
         }
-        lv_obj_set_style_text_color(s_glyphs[i].obj, c, LV_PART_MAIN);
+        lv_obj_set_style_text_color(g->obj, c, LV_PART_MAIN);
     }
 }
 ```
 
-Because a whole layer shares the same `layer` value, **all glyphs in a layer
-light up together as one ring**; because the windows are sequential, rings are
-added one after another outward — *layers and layers of glyphs growing from the
-center*. `LAYER_FADE` (128) is half a slot, so each ring finishes fading in
-before the next starts, leaving a short gap that makes the steps readable.
-Shrinking progress removes rings outside-in.
-
-| Transition | Progress | Duration | Ease |
-|-----------|----------|----------|------|
-| Open | 384 → `9·256` (2304) | `RING_MS_REVEAL_OPEN` (1350 ms, 3× slower) | `lv_anim_path_ease_out` |
-| Close | 2304 → 384 | `RING_MS_REVEAL_CLOSE` (1050 ms, 3× slower) | `lv_anim_path_ease_in` |
-
-With 9 layers over 1350 ms each layer gets a ~150 ms slot (≈75 ms fade, ≈75 ms
-gap). Tune `RING_MS_REVEAL_OPEN` / `LAYER_FADE` to make the stepping more or
-less obvious; lowering `LAYER_FADE` makes each ring snap in harder.
-
-On open-complete → state `OPEN`, start color anim (`open_done`).
-On close-complete → state `IDLE`, stop/delete color anim, re-paint at
-`IDLE_PROGRESS` (`close_done`).
-
-Use `lv_anim_set_ready_cb` to transition the state machine at the end of each
-reveal. The idle cluster IS the same grid with progress `IDLE_PROGRESS` — no
-separate widget, no scale.
-
-> `lv_color_mix(c1, c2, mix)` takes `mix = 255 → c1`, `0 → c2`, so
-> `lv_color_mix(target, RING_COLOR_BG, t)` fades a glyph from the black
-> background up to its target color.
+- A cell is lit once `dist <= reveal`; near the edge it blends from black over
+  `EDGE_FADE` (one cell step), so the lit region has a **soft, uneven boundary**
+  rather than a hard circle.
+- Cells never move — only `lv_obj_set_style_text_color` is called. No scale, no
+  position, no transform.
 
 ---
 
-## 7. Input
+## 7. IMU turn detection
 
-`esp_lv_adapter` already registers the CST816 touch indev, so use standard
-LVGL events on the screen / grid:
+The ring is worn on a finger; turning it clockwise/counter-clockwise is a
+rotation about the axis through the finger — the board **Z** axis, perpendicular
+to the screen. `ring_imu_gyro()` returns the BSP's 250 Hz EMA-filtered gyro
+(deg/s), so `gz` is already smooth.
 
-- **Tap (`LV_EVENT_CLICKED`)** while `IDLE` → `launcher_open()`.
-- **Tap (`LV_EVENT_CLICKED`)** while `OPEN` → `launcher_close()`.
-- **Swipe (`LV_EVENT_GESTURE`)** while `OPEN` → advance `s_palette_idx` to the
-  next stop (orange→pink→blue→cream) and restart the hue sweep from there.
+```c
+static void poll_cb(lv_timer_t *timer)
+{
+    int64_t now = esp_timer_get_time();
+    float dt = (float)(now - s_last_us) / 1e6f;
+    s_last_us = now;
 
-Register on the **screen** so taps anywhere toggle, not just on glyphs.
-Guard state transitions with `lv_anim` so a tap mid-animation either queues the
-reverse or is ignored (the anim's `ready_cb` owns the transition).
+    float gx, gy, gz;
+    ring_imu_gyro(&gx, &gy, &gz);
+    if (fabsf(gz) > GYRO_DEADBAND_DPS)
+        s_turn_deg += TURN_SIGN * gz * dt;
+
+    float reveal = REVEAL_IDLE + (s_turn_deg / DEG_PER_REVEAL) * 100.0f;
+    if (reveal < REVEAL_IDLE) reveal = REVEAL_IDLE;
+    if (reveal > REVEAL_MAX)  reveal = REVEAL_MAX;
+
+    if (fabsf(reveal - s_reveal) > 0.5f) {
+        s_reveal = reveal;
+        RING_UI_LOCKED(-1) { repaint(reveal); }
+    }
+}
+```
+
+> **`TURN_SIGN` must match the board.** It is `+1.0` here (a clockwise turn
+> gives `+gz` and grows the reveal on this ring). If a unit grows on
+> counter-clockwise instead, flip `TURN_SIGN` to `-1.0`. Verify by rotating
+> ~90° clockwise and watching the telemetry `turn` value increase and the panel
+> fill.
 
 ---
 
-## 8. Files
+## 8. Input — tap resets
+
+`esp_lv_adapter` registers the CST816 touch indev. Only one gesture is used:
+
+- **Tap (`LV_EVENT_CLICKED`)** → `s_turn_deg = 0`, `s_reveal = REVEAL_IDLE`,
+  repaint. An explicit way back to the idle core.
+
+Growth/shrink needs no touch — it is IMU-driven.
+
+---
+
+## 9. Files
 
 1. **`examples/glyph-anime/glyph_anime.c`** — the whole implementation.
 2. **`examples/glyph-anime/include/ring_example.h`** — `ring_example_start()` /
@@ -270,20 +324,16 @@ reverse or is ignored (the anim's `ready_cb` owns the transition).
 3. **`examples/glyph-anime/CMakeLists.txt`** — fragment listing `RING_EXAMPLE_SRCS`.
 4. **`main/main.c`** — app-agnostic; calls `ring_board_init()` then
    `ring_example_start()`.
-5. **`sdkconfig.defaults`** — fonts (already set):
-   ```
-   CONFIG_LV_FONT_MONTSERRAT_20=y
-   CONFIG_LV_FONT_MONTSERRAT_24=y
-   ```
-   (symbol glyphs are included in the built-in Montserrat fonts.)
-6. **`examples/glyph-anime/README.md`** — this document.
+5. **`sdkconfig.defaults`** — fonts (already set): `CONFIG_LV_FONT_MONTSERRAT_20=y`.
+6. **`components/ringkit/`** — `ring_imu_gyro()`, `ring_ui_add_label()`,
+   `ring_ui_place_centered()`, `ring_rand_*`, `RING_UI_LOCKED`.
 
 > Remember: `sdkconfig.defaults` is only applied when `sdkconfig` is
 > (re)created → run `rm -f sdkconfig && idf.py reconfigure` after editing it.
 
 ---
 
-## 9. Build & verify
+## 10. Build & verify
 
 ```bash
 idf.py build
@@ -293,218 +343,53 @@ idf.py -p /dev/ttyACM0 flash monitor     # watch TAG "glyph-anime"
 Expected log:
 
 ```
-glyph-anime: ready (idle): 169 glyphs, 13 cells, 9 layers
-glyph-anime: opening: 9 layers
-glyph-anime: opened
-glyph-anime: palette -> 320
-glyph-anime: closing...
-glyph-anime: closed -> idle
+glyph-anime: ready: 169 glyphs, 13 cells, reveal 40..180 px, 90 deg/100px, turn sign +1.0
+glyph-anime: turn 0 deg, reveal 40 px (40..180)       # at rest (idle core)
+glyph-anime: turn 13 deg, reveal 55 px (40..180)      # after a clockwise turn
+glyph-anime: turn -95 deg, reveal 40 px (40..180)     # counter-clockwise → idle
 ```
 
-Visual check: tap → rings of glyphs are added one after another from the center
-outward until the panel is full (no scaling), green pattern fixed, accents cycle
-orange→pink→blue→cream; swipe advances the palette; tap again → rings disappear
-outside-in back to the tiny center cluster.
+Visual check: rotate the ring clockwise → more glyphs light up from the center
+outward until the panel is full (cells never move or scale, green + warm yellow
+at varied brightness); counter-clockwise → they un-light outside-in; hold → it
+stays; tap → reset to the small idle core.
 
 ---
 
-## 10. Risks / notes
+## 11. Open questions / to verify on device
 
-- **No transform scaling** — the layered-reveal repaint approach avoids LVGL
-  transform pivot/scale quirks entirely. Glyphs never move.
-- **PSRAM flush limit:** do NOT enlarge the BSP's 40-line draw buffer
-  (full-panel buffering exhausts internal RAM → `ESP_ERR_NO_MEM`). The reveal
-  only changes text colors; LVGL clips/redraws in software on the same buffer.
-- **Reveal cost:** up to 169 `lv_obj_set_style_text_color` calls per anim frame
-  (plus the color cycle while OPEN). This is cheap (style property writes) and
-  fine at 60 fps; avoid anything heavier per frame.
-- **All LVGL calls inside `RING_UI_LOCKED(-1) { ... }`.** The `lv_anim`
-  exec/ready callbacks run on the LVGL task, so they're already locked;
-  user-input callbacks are dispatched by the adapter's task too.
-- **These are square-grid layers, not perfect circles** — layer counts are
-  uneven (1/8/12/16/32/28/40/20/12). That is the intended look: rings
-  quantized to the grid, not a smooth circular wavefront.
-- **`lv_color_hsv_to_rgb`** and **`lv_color_mix`** are available in LVGL 9.4
-  (`lv_color_mix(c1, c2, mix)`: `mix=255 → c1`, `0 → c2`); no extra component.
-- **Symbol fonts:** the `LV_SYMBOL_*` glyphs (0xF000+) ship inside the
-  built-in Montserrat fonts — `CONFIG_LV_FONT_MONTSERRAT_20` is already on.
-- **Timings come from the theme** (`RING_MS_REVEAL_OPEN` / `_CLOSE` in
-  `ring_theme.h`), not from the app, so all apps share one motion language.
+1. **Sign of `gz` for clockwise.** Currently `TURN_SIGN = +1.0` (verified on the
+   dev unit: clockwise grows the reveal). Confirm on each new unit.
+2. **Brightness-tier model** (§1.3): is a cell's brightness distance-based
+   (brighter core / dimmer rim), random per cell (current implementation), or
+   cycling? All three read as "varying brightness" in a still — pick on
+   hardware.
+3. **Gyro offset drift** over minutes — the deadband mitigates it; add a slow
+   leak of `s_turn_deg` toward 0 when `|gz|` is below the deadband if it creeps.
+4. **Reveal edge softness.** `EDGE_FADE = GRID_STEP` blends the edge; tune it if
+   the boundary should be harder/softer.
 
 ---
 
-## 11. Reference implementation skeleton (`examples/glyph-anime/glyph_anime.c`)
+## 12. Risks / notes
 
-```c
-#include "ring_example.h"
-#include "ringkit/ringkit.h"
-#include "esp_log.h"
-#include <math.h>
-
-#define TAG "glyph-anime"
-
-#define GRID_N    13   /* 13x13 = 169 glyphs                         */
-#define GRID_STEP 27   /* px between cells (extent = 13*27 = 351 px) */
-#define LAYER_UNIT 256 /* progress units per layer (fixed point)     */
-#define LAYER_FADE 128 /* fade window per layer (half a slot)        */
-#define MAX_LAYERS 10  /* safety cap on the layer index              */
-#define IDLE_PROGRESS (1 * LAYER_UNIT + LAYER_FADE)  /* lights layers 0-1 */
-
-#define ICON_FONT (&lv_font_montserrat_20)
-
-/* Palette stops from the footage: orange → pink → blue → cream. */
-static const uint16_t s_palette[4] = { 30, 320, 230, 45 };
-
-/* ~6 distinct glyph shapes, approximated with LV_SYMBOL. */
-static const char *const s_syms[6] = {
-    LV_SYMBOL_PLUS,   /* +        */
-    LV_SYMBOL_CLOSE,  /* x        */
-    LV_SYMBOL_STOP,   /* square   */
-    LV_SYMBOL_BULLET, /* dot      */
-    LV_SYMBOL_PLAY,   /* triangle */
-    LV_SYMBOL_PAUSE,  /* bars     */
-};
-
-typedef enum { ICON_STATIC_GREEN, ICON_ACCENT } glyph_class_t;
-
-typedef struct {
-    const char *symbol;
-    glyph_class_t cls;
-    int16_t x, y;
-    uint16_t dist;
-    uint8_t layer;    /* concentric layer = round(dist / GRID_STEP) */
-    lv_obj_t *obj;
-} glyph_t;
-
-static glyph_t s_glyphs[GRID_N * GRID_N];
-#define N_GLYPHS (GRID_N * GRID_N)
-
-static int32_t s_hue = 0;          /* animated hue (var for lv_anim) */
-static int32_t s_progress = 0;     /* layered reveal progress        */
-static int     s_n_layers = 1;     /* highest layer index + 1        */
-static int     s_palette_idx = 0;  /* current palette stop           */
-
-typedef enum { L_IDLE, L_OPENING, L_OPEN, L_CLOSING } state_t;
-static state_t s_state = L_IDLE;
-
-static lv_color_t target_color(const glyph_t *g)
-{
-    if (g->cls == ICON_STATIC_GREEN)
-        return RING_COLOR_GREEN;
-    return lv_color_hsv_to_rgb((uint16_t)s_hue, RING_HUE_SAT, RING_HUE_VAL);
-}
-
-/* Layered reveal: each glyph's layer lights as a whole ring, in order. */
-static void repaint(int32_t progress)
-{
-    for (int i = 0; i < N_GLYPHS; i++) {
-        int32_t local = progress - (int32_t)s_glyphs[i].layer * LAYER_UNIT;
-        lv_color_t c;
-
-        if (local <= 0)
-            c = RING_COLOR_BG;                    /* layer not reached yet */
-        else if (local >= LAYER_FADE)
-            c = target_color(&s_glyphs[i]);       /* layer fully lit       */
-        else
-            c = lv_color_mix(target_color(&s_glyphs[i]), RING_COLOR_BG,
-                             (uint8_t)(local * 255 / LAYER_FADE));
-
-        lv_obj_set_style_text_color(s_glyphs[i].obj, c, LV_PART_MAIN);
-    }
-}
-
-static void reveal_cb(void *var, int32_t v)
-{
-    s_progress = v;
-    repaint(v);
-}
-
-static void color_cb(void *var, int32_t v)
-{
-    s_hue = v;
-    repaint(s_progress);
-}
-
-static void open_done(lv_anim_t *a);  /* -> L_OPEN, start_color_anim() */
-static void close_done(lv_anim_t *a); /* -> L_IDLE, stop_color_anim()  */
-
-static void reveal(int32_t from, int32_t to, uint32_t dur,
-                   lv_anim_path_cb_t path, lv_anim_ready_cb_t ready)
-{
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, &s_progress);
-    lv_anim_set_values(&a, from, to);
-    lv_anim_set_duration(&a, dur);
-    lv_anim_set_path_cb(&a, path);
-    lv_anim_set_exec_cb(&a, reveal_cb);
-    lv_anim_set_ready_cb(&a, ready);
-    lv_anim_start(&a);
-}
-
-/* launcher_open():  reveal(IDLE_PROGRESS, s_n_layers * LAYER_UNIT,
- *                          RING_MS_REVEAL_OPEN, lv_anim_path_ease_out, open_done);
- * launcher_close(): reveal(s_n_layers * LAYER_UNIT, IDLE_PROGRESS,
- *                          RING_MS_REVEAL_CLOSE, lv_anim_path_ease_in, close_done); */
-
-esp_err_t ring_example_start(void)
-{
-    ring_rand_seed(0x9E3779B9u);   /* reproducible field */
-
-    RING_UI_LOCKED(-1) {
-        lv_obj_t *scr = ring_ui_screen();
-        const int half = (GRID_N - 1) / 2;
-
-        /* Build the 13x13 grid of glyph labels, classify accents. */
-        for (int i = 0; i < GRID_N; i++) {
-            for (int j = 0; j < GRID_N; j++) {
-                int idx = i * GRID_N + j;
-                int x = RING_CX + (i - half) * GRID_STEP;
-                int y = RING_CY + (j - half) * GRID_STEP;
-
-                s_glyphs[idx].x = x;
-                s_glyphs[idx].y = y;
-                s_glyphs[idx].dist =
-                    (uint16_t)roundf(hypotf(x - RING_CX, y - RING_CY));
-                s_glyphs[idx].symbol = s_syms[ring_rand_below(N_SYMS)];
-                s_glyphs[idx].cls =
-                    ring_rand_bool() ? ICON_ACCENT : ICON_STATIC_GREEN;
-
-                /* Concentric layer = grid distance from center (reveal key). */
-                int layer = (int)roundf((float)s_glyphs[idx].dist / GRID_STEP);
-                if (layer >= MAX_LAYERS) layer = MAX_LAYERS - 1;
-                s_glyphs[idx].layer = (uint8_t)layer;
-                if (layer + 1 > s_n_layers) s_n_layers = layer + 1;
-
-                lv_obj_t *l = lv_label_create(scr);
-                lv_label_set_text(l, s_glyphs[idx].symbol);
-                lv_obj_set_style_text_font(l, ICON_FONT, LV_PART_MAIN);
-                lv_obj_set_style_text_color(l, RING_COLOR_BG, LV_PART_MAIN);
-                lv_obj_set_pos(l, x, y);
-                s_glyphs[idx].obj = l;
-            }
-        }
-
-        s_progress = IDLE_PROGRESS;
-        repaint(s_progress);            /* paint the idle cluster */
-        lv_obj_add_event_cb(scr, input_cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_add_event_cb(scr, input_cb, LV_EVENT_GESTURE, NULL);
-    }
-
-    ESP_LOGI(TAG, "ready (idle): %d glyphs, %d cells, %d layers",
-             (int)N_GLYPHS, GRID_N, s_n_layers);
-    return ESP_OK;
-}
-
-const char *ring_example_name(void)
-{
-    return "glyph-anime";
-}
-```
-
-> The skeleton is illustrative — the full version fills the symbol/class
-> assignment, the palette swipe and the state-machine transitions.
-> `ring_ui_screen()` already clears the screen to the theme background, and
-> `RING_UI_LOCKED` releases the lock on every exit path. See
-> `examples/glyph-anime/glyph_anime.c` for the implementation that actually
-> ships.
+- **No transform scaling** — cells never move; only text colours change, so
+  LVGL pivot/scale quirks are avoided entirely.
+- **`TURN_SIGN` is board-specific.** Confirm clockwise grows the reveal on the
+  actual unit; flip if not.
+- **Gyro drift:** the `GYRO_DEADBAND_DPS` deadband stops offset drift while the
+  ring is still. If the reveal still creeps over minutes, add a slow leak of
+  `s_turn_deg` toward 0 when `|gz|` is below the deadband.
+- **Reveal cost:** up to 169 `lv_obj_set_style_text_color` calls per change.
+  Repaint only fires when the reveal moves >0.5 px, so at rest it's zero work.
+- **All LVGL calls inside `RING_UI_LOCKED(-1) { ... }`.** The `lv_timer`
+  callback runs on the LVGL task (already inside the adapter lock), so the
+  scoped lock is re-entrant-safe; `ring_imu_gyro()` takes the BSP mutex
+  independently.
+- **Square-grid layers, not circles** — the lit set is quantized to the grid, so
+  the edge is stepped, not a smooth circle. That is the intended look; the
+  `EDGE_FADE` blend softens it.
+- **`lv_color_mix(c1, c2, mix)`** (LVGL 9.4): `mix=255 → c1`, `0 → c2`; no extra
+  component.
+- **Symbol fonts:** the `LV_SYMBOL_*` glyphs (0xF000+) ship inside the built-in
+  Montserrat fonts — `CONFIG_LV_FONT_MONTSERRAT_20` is already on.

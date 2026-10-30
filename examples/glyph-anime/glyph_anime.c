@@ -1,26 +1,29 @@
 /*
- * glyph-anime — full-screen glyph grid with a layered reveal.
+ * glyph-anime — ring-rotation-driven glyph reveal.
  *
- * A 13x13 grid of glyph labels covering the 360x360 round panel. There is NO
- * scale/zoom transform: the open/close effect is a LAYERED REVEAL. The grid is
- * split into concentric layers by distance from the screen center; progress
- * advances one layer at a time, so each layer of glyphs fades in as a complete
- * ring and the lit set grows outward -- layers and layers of glyphs added
- * around the center until the panel is full. Closing removes them outside-in.
- * Glyphs not yet reached are painted the background color, i.e. invisible.
+ * A fixed 13x13 axis-aligned square grid of glyph labels on the 360x360 round
+ * panel. Cells NEVER move, scale or rotate. The grid is built once and never
+ * re-laid-out.
  *
- * While OPEN, accent glyphs cycle hue (orange -> pink -> blue -> cream); fixed
- * green glyphs are scattered pseudo-randomly and stay constant. Only ~6 glyph
- * shapes are used, matching the source footage.
+ * Interaction (see examples/glyph-anime/README.md):
+ *   - Turning the ring CLOCKWISE reveals MORE cells, center-out, until the
+ *     panel is full. Turning it COUNTER-CLOCKWISE un-reveals them outside-in.
+ *   - The reveal is a single radius, driven by the on-board IMU: gyro Z (the
+ *     turn axis through the finger) is integrated into a turn angle and mapped
+ *     to a reveal radius in px. No touch is needed; the grid is a position
+ *     control (it holds where you leave it).
+ *   - A tap resets the reveal to the small idle core.
  *
- * State machine: IDLE -> OPENING -> OPEN -> CLOSING -> IDLE
- *
- * See notes/launcher-spec.md for the full design document.
+ * Palette: green + warm yellow, each cell at one of N_BRIGHTNESS brightness
+ * tiers (pseudo-random per cell), giving the soft, uneven luminance seen in
+ * the stills. The reveal edge is blended across one cell step rather than a
+ * hard threshold.
  */
 #include "ring_example.h"
 
 #include "ringkit/ringkit.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include <math.h>
 
@@ -29,31 +32,66 @@
 #define GRID_N    13   /* 13x13 = 169 glyphs                        */
 #define GRID_STEP 27   /* px between cells (extent = 13*27 = 351 px) */
 
-#define LAYER_UNIT 256 /* progress units per layer (fixed point)     */
-#define LAYER_FADE 128 /* fade window per layer (half a slot)        */
-#define MAX_LAYERS 10  /* safety cap on the layer index              */
-
 #define ICON_FONT (&lv_font_montserrat_20)
 
-/* Palette stops from the footage: orange, pink, blue, cream. */
-static const uint16_t s_palette[4] = { 30, 320, 230, 45 };
-#define N_PALETTE (sizeof(s_palette) / sizeof(s_palette[0]))
+/* ------------------------------------------------------------------------- */
+/* Turn -> reveal mapping                                                    */
+/* ------------------------------------------------------------------------- */
+
+/* Degrees of ring turn per 100 px of reveal (feel knob). */
+#define DEG_PER_REVEAL 90.0f
+
+/* Idle core radius: the small lit cluster shown when the reveal is at minimum.
+ * ~1.5 cells lights the innermost few glyphs. */
+#define REVEAL_IDLE (1.5f * GRID_STEP)
+
+/* Full-panel radius. 180 px is the panel radius, which lights every cell that
+ * is actually on the round panel. */
+#define REVEAL_MAX ((float)RING_RADIUS)
+
+/* Gyro deadband (deg/s): ignore rotation below this so offset drift does not
+ * creep the reveal while the ring is still. */
+#define GYRO_DEADBAND_DPS 1.5f
+
+/* Turn direction sign. +1.0 assumes a clockwise turn gives +gz. If the ring
+ * grows on counter-clockwise instead, flip this to -1.0. Verify on device:
+ * rotate ~90 deg clockwise and confirm the reveal expands. */
+#define TURN_SIGN 1.0f
+
+/* Soft reveal edge: cells within this distance of the reveal radius blend from
+ * black to full color instead of snapping. One cell step reads as a soft edge. */
+#define EDGE_FADE ((float)GRID_STEP)
+
+/* IMU poll cadence (ms). 50 Hz is plenty for a position-controlled reveal. */
+#define POLL_MS 20
+
+/* ------------------------------------------------------------------------- */
+/* Palette                                                                   */
+/* ------------------------------------------------------------------------- */
+
+/* Warm amber/yellow accent. Green uses RING_COLOR_GREEN (0x00E676). */
+#define RING_COLOR_YELLOW lv_color_hex(0xFFB74D)
+
+/* Brightness tiers per cell: dim / mid / full. Each cell picks one at build
+ * time (pseudo-random), so the lit field has uneven luminance like the stills. */
+#define N_BRIGHTNESS 3
+static const float s_bright[N_BRIGHTNESS] = { 0.35f, 0.65f, 1.0f };
 
 /* ------------------------------------------------------------------------- */
 /* Glyph model                                                               */
 /* ------------------------------------------------------------------------- */
 
 typedef enum {
-    ICON_STATIC_GREEN,   /* fixed green — the "app" pattern */
-    ICON_ACCENT,         /* hue-cycling                     */
+    GLYPH_GREEN,   /* fixed green        */
+    GLYPH_YELLOW,  /* warm yellow accent */
 } glyph_class_t;
 
 typedef struct {
     const char *symbol;
     glyph_class_t cls;
-    int16_t x, y;      /* cell position (px)                        */
-    uint16_t dist;     /* distance from center (px)                 */
-    uint8_t layer;     /* concentric layer = round(dist / GRID_STEP) */
+    uint8_t bright;    /* brightness tier index 0..N_BRIGHTNESS-1 */
+    int16_t x, y;      /* cell position (px) — FIXED, never changes */
+    uint16_t dist;     /* distance from center (px)                */
     lv_obj_t *obj;
 } glyph_t;
 
@@ -79,184 +117,105 @@ static glyph_t s_glyphs[N_GLYPHS];
 /* Runtime state                                                             */
 /* ------------------------------------------------------------------------- */
 
-typedef enum {
-    L_IDLE, L_OPENING, L_OPEN, L_CLOSING,
-} state_t;
+static float    s_turn_deg = 0.0f;  /* accumulated ring turn, degrees      */
+static float    s_reveal   = REVEAL_IDLE;
+static int64_t  s_last_us  = 0;
+static uint32_t s_poll_n   = 0;     /* for periodic telemetry              */
 
-static state_t s_state = L_IDLE;
-static int32_t s_hue = 0;         /* animated hue (var for lv_anim)        */
-static int32_t s_progress = 0;    /* layered reveal progress               */
-static int     s_n_layers = 1;    /* highest layer index + 1               */
-static int     s_palette_idx = 0; /* current palette stop                  */
+/* ------------------------------------------------------------------------- */
+/* Colour helpers                                                            */
+/* ------------------------------------------------------------------------- */
 
-/* Idle shows the innermost two layers only (the tiny center cluster). A glyph
- * in layer L is fully lit once progress >= L*LAYER_UNIT + LAYER_FADE. */
-#define IDLE_PROGRESS (1 * LAYER_UNIT + LAYER_FADE)
+/* A glyph's full-lit colour: its class colour scaled down to its brightness
+ * tier by mixing toward black (keeps the hue; only luminance changes). */
+static lv_color_t base_color(const glyph_t *g)
+{
+    lv_color_t base = (g->cls == GLYPH_GREEN) ? RING_COLOR_GREEN
+                                              : RING_COLOR_YELLOW;
+    float frac = s_bright[g->bright];
+    return lv_color_mix(base, RING_COLOR_BG, (uint8_t)((1.0f - frac) * 255.0f));
+}
 
 /* ------------------------------------------------------------------------- */
 /* Repaint                                                                   */
 /* ------------------------------------------------------------------------- */
 
-static lv_color_t target_color(const glyph_t *g)
-{
-    if (g->cls == ICON_STATIC_GREEN) {
-        return RING_COLOR_GREEN;
-    }
-    return lv_color_hsv_to_rgb((uint16_t)s_hue, RING_HUE_SAT, RING_HUE_VAL);
-}
-
-/* Paint every glyph from the layered reveal progress.
- *
- * The reveal is NOT one continuous radius: it advances one concentric layer at
- * a time. A layer starts fading in when progress reaches its slot and is fully
- * lit LAYER_FADE units later, then stays lit. So the lit set grows layer by
- * layer outward, and shrinking progress removes them outside-in. Because
- * LAYER_FADE < LAYER_UNIT there is a short gap between layers, which is what
- * makes each ring read as a distinct step rather than a smooth bloom. */
-static void repaint(int32_t progress)
+/* Paint every glyph from the reveal radius. Cells never move; only their
+ * colour changes. A cell is lit (at its brightness-tier colour) once the
+ * reveal radius passes it; near the edge it blends from black over EDGE_FADE,
+ * so the lit region has a soft, uneven boundary instead of a hard circle. */
+static void repaint(float reveal)
 {
     for (int i = 0; i < (int)N_GLYPHS; i++) {
-        int32_t local = progress - (int32_t)s_glyphs[i].layer * LAYER_UNIT;
+        const glyph_t *g = &s_glyphs[i];
         lv_color_t c;
 
-        if (local <= 0) {
-            c = RING_COLOR_BG;                    /* layer not reached yet */
-        } else if (local >= LAYER_FADE) {
-            c = target_color(&s_glyphs[i]);       /* layer fully lit       */
+        if ((float)g->dist > reveal) {
+            c = RING_COLOR_BG;                    /* outside the reveal    */
         } else {
-            /* Fading this layer in: blend from background to target. */
-            c = lv_color_mix(target_color(&s_glyphs[i]), RING_COLOR_BG,
-                             (uint8_t)(local * 255 / LAYER_FADE));
+            lv_color_t base = base_color(g);
+            float edge = (float)g->dist - (reveal - EDGE_FADE);
+            if (edge > 0.0f) {
+                /* In the fade window: blend black -> base. */
+                float f = 1.0f - edge / EDGE_FADE;      /* 0..1 */
+                c = lv_color_mix(base, RING_COLOR_BG, (uint8_t)((1.0f - f) * 255.0f));
+            } else {
+                c = base;                             /* fully lit           */
+            }
         }
-        lv_obj_set_style_text_color(s_glyphs[i].obj, c, LV_PART_MAIN);
+        lv_obj_set_style_text_color(g->obj, c, LV_PART_MAIN);
     }
 }
 
 /* ------------------------------------------------------------------------- */
-/* Animations                                                                */
+/* IMU poll                                                                  */
 /* ------------------------------------------------------------------------- */
 
-static void reveal_cb(void *var, int32_t v)
+static void poll_cb(lv_timer_t *timer)
 {
-    (void)var;
-    s_progress = v;
-    repaint(v);
-}
+    (void)timer;
 
-static void color_cb(void *var, int32_t v)
-{
-    (void)var;
-    s_hue = v;
-    repaint(s_progress);
-}
+    int64_t now = esp_timer_get_time();
+    float dt = (float)(now - s_last_us) / 1e6f;
+    s_last_us = now;
 
-static void reveal(int32_t from, int32_t to, uint32_t dur,
-                   lv_anim_path_cb_t path, lv_anim_ready_cb_t ready)
-{
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, &s_progress);
-    lv_anim_set_values(&a, from, to);
-    lv_anim_set_duration(&a, dur);
-    lv_anim_set_path_cb(&a, path);
-    lv_anim_set_exec_cb(&a, reveal_cb);
-    lv_anim_set_ready_cb(&a, ready);
-    lv_anim_start(&a);
-}
-
-static void start_color_anim(void)
-{
-    uint16_t start = s_palette[s_palette_idx];
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, &s_hue);
-    lv_anim_set_values(&a, start, start + 360);   /* one full hue sweep */
-    lv_anim_set_duration(&a, 6000);
-    lv_anim_set_path_cb(&a, lv_anim_path_linear);
-    lv_anim_set_exec_cb(&a, color_cb);
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_start(&a);
-    s_hue = start;
-    repaint(s_progress);
-}
-
-static void stop_color_anim(void)
-{
-    lv_anim_del(&s_hue, NULL);
-}
-
-/* ------------------------------------------------------------------------- */
-/* State transitions                                                         */
-/* ------------------------------------------------------------------------- */
-
-static void open_done(lv_anim_t *a)
-{
-    (void)a;
-    s_state = L_OPEN;
-    start_color_anim();
-    ESP_LOGI(TAG, "opened");
-}
-
-static void close_done(lv_anim_t *a)
-{
-    (void)a;
-    s_state = L_IDLE;
-    stop_color_anim();
-    repaint(IDLE_PROGRESS);   /* ensure the idle cluster is painted */
-    ESP_LOGI(TAG, "closed -> idle");
-}
-
-static void launcher_open(void)
-{
-    if (s_state != L_IDLE) {
-        return;
+    /* Gyro Z is the turn axis through the finger (perpendicular to the
+     * screen). Deadband kills offset drift; TURN_SIGN sets the direction. */
+    float gx, gy, gz;
+    ring_imu_gyro(&gx, &gy, &gz);
+    if (fabsf(gz) > GYRO_DEADBAND_DPS) {
+        s_turn_deg += TURN_SIGN * gz * dt;
     }
-    s_state = L_OPENING;
-    ESP_LOGI(TAG, "opening: %d layers", s_n_layers);
-    reveal(IDLE_PROGRESS, s_n_layers * LAYER_UNIT, RING_MS_REVEAL_OPEN,
-           lv_anim_path_ease_out, open_done);
-}
 
-static void launcher_close(void)
-{
-    if (s_state != L_OPEN) {
-        return;
+    float reveal = REVEAL_IDLE + (s_turn_deg / DEG_PER_REVEAL) * 100.0f;
+    if (reveal < REVEAL_IDLE) reveal = REVEAL_IDLE;
+    if (reveal > REVEAL_MAX)  reveal = REVEAL_MAX;
+
+    if (fabsf(reveal - s_reveal) > 0.5f) {
+        s_reveal = reveal;
+        RING_UI_LOCKED(-1) { repaint(reveal); }
     }
-    s_state = L_CLOSING;
-    ESP_LOGI(TAG, "closing...");
-    reveal(s_n_layers * LAYER_UNIT, IDLE_PROGRESS, RING_MS_REVEAL_CLOSE,
-           lv_anim_path_ease_in, close_done);
-}
 
-static void palette_next(void)
-{
-    s_palette_idx = (s_palette_idx + 1) % N_PALETTE;
-    if (s_state == L_OPEN) {
-        stop_color_anim();
-        start_color_anim();
-        ESP_LOGI(TAG, "palette -> %u", s_palette[s_palette_idx]);
+    /* Periodic telemetry so the mapping can be calibrated on-device. */
+    if ((s_poll_n++ % 50) == 0) {   /* ~1 s */
+        ESP_LOGI(TAG, "turn %.0f deg, reveal %.0f px (%.0f..%.0f)",
+                 s_turn_deg, s_reveal, REVEAL_IDLE, REVEAL_MAX);
     }
 }
 
 /* ------------------------------------------------------------------------- */
-/* Input                                                                     */
+/* Input — tap resets to the idle core                                       */
 /* ------------------------------------------------------------------------- */
 
 static void input_cb(lv_event_t *e)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-
-    if (code == LV_EVENT_CLICKED) {
-        if (s_state == L_IDLE) {
-            launcher_open();
-        } else if (s_state == L_OPEN) {
-            launcher_close();
-        }
-    } else if (code == LV_EVENT_GESTURE) {
-        if (s_state == L_OPEN) {
-            palette_next();
-        }
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
     }
+    s_turn_deg = 0.0f;
+    s_reveal = REVEAL_IDLE;
+    RING_UI_LOCKED(-1) { repaint(s_reveal); }
+    ESP_LOGI(TAG, "reset -> idle core");
 }
 
 /* ------------------------------------------------------------------------- */
@@ -280,25 +239,17 @@ static void build_grid(lv_obj_t *scr)
             s_glyphs[idx].dist   = (uint16_t)roundf(hypotf(x - RING_CX, y - RING_CY));
             s_glyphs[idx].symbol = s_syms[ring_rand_below(N_SYMS)];
 
-            /* Random green/accent split (no concentric bands). */
-            s_glyphs[idx].cls = ring_rand_bool() ? ICON_ACCENT : ICON_STATIC_GREEN;
-
-            /* Concentric layer = grid distance from center (reveal key). */
-            int layer = (int)roundf((float)s_glyphs[idx].dist / GRID_STEP);
-            if (layer >= MAX_LAYERS) {
-                layer = MAX_LAYERS - 1;
-            }
-            s_glyphs[idx].layer = (uint8_t)layer;
-            if (layer + 1 > s_n_layers) {
-                s_n_layers = layer + 1;
-            }
+            /* Random green/warm-yellow split + random brightness tier. */
+            s_glyphs[idx].cls    = ring_rand_bool() ? GLYPH_YELLOW : GLYPH_GREEN;
+            s_glyphs[idx].bright = (uint8_t)ring_rand_below(N_BRIGHTNESS);
 
             s_glyphs[idx].obj = ring_ui_add_label(scr, s_glyphs[idx].symbol,
                                                   ICON_FONT, RING_COLOR_BG);
         }
     }
 
-    /* Centre every glyph on its cell point. */
+    /* Centre every glyph on its cell point. This is the ONLY layout pass —
+     * positions are never touched again (cells do not move). */
     for (int i = 0; i < (int)N_GLYPHS; i++) {
         ring_ui_place_centered(s_glyphs[i].obj, s_glyphs[i].x, s_glyphs[i].y);
     }
@@ -315,15 +266,17 @@ esp_err_t ring_example_start(void)
 
         build_grid(scr);
 
-        s_progress = IDLE_PROGRESS;
-        repaint(s_progress);   /* start collapsed to the tiny idle cluster */
+        s_last_us = esp_timer_get_time();
+        repaint(s_reveal);   /* start at the idle core */
 
         lv_obj_add_event_cb(scr, input_cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_add_event_cb(scr, input_cb, LV_EVENT_GESTURE, NULL);
+        lv_timer_create(poll_cb, POLL_MS, NULL);
     }
 
-    ESP_LOGI(TAG, "ready (idle): %d glyphs, %d cells, %d layers",
-             (int)N_GLYPHS, GRID_N, s_n_layers);
+    ESP_LOGI(TAG, "ready: %d glyphs, %d cells, reveal %.0f..%.0f px, "
+                  "%d deg/100px, turn sign %+.1f",
+             (int)N_GLYPHS, GRID_N, REVEAL_IDLE, REVEAL_MAX,
+             (int)DEG_PER_REVEAL, TURN_SIGN);
     return ESP_OK;
 }
 
