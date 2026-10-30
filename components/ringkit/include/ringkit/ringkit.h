@@ -21,6 +21,7 @@
 #include "ringkit/ring_audio.h"
 #include "ringkit/ring_imu.h"
 #include "ringkit/ring_sd.h"
+#include "ringkit/ring_wifi.h"
 
 #include "ringkit/ring_ui.h"
 #include "ringkit/ring_rand.h"

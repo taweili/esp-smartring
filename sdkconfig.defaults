@@ -14,6 +14,11 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n
 CONFIG_LV_USE_CLIB_MALLOC=y
 
+# Wi-Fi/LWIP buffers are large; with a UI also using PSRAM, allocate them
+# from PSRAM instead of the tight internal heap. Only matters when an app
+# actually calls ring_wifi_start().
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
 # The BSP's IMU sample task runs at 250 Hz (vTaskDelayUntil(pdMS_TO_TICKS(4))).
 # At the default 100 Hz FreeRTOS tick that rounds to 0 -> xTaskDelayUntil assert.
 # A 1 kHz tick is required (also standard for 48 kHz audio + 250 Hz IMU).
@@ -22,6 +27,11 @@ CONFIG_FREERTOS_HZ=1000
 # --- Headroom for UI construction from app_main (launcher builds 37 label
 #     objects in one call chain). 3584 is the IDF default; 8192 is comfortable.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# --- App partition. The Wi-Fi stack (esp_wifi + lwip + wpa_supplicant) pushes
+#     a Wi-Fi-enabled app past the default 1 MB factory partition; the LARGE
+#     table gives 1500K. Harmless for the non-Wi-Fi apps.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
 # --- LVGL 9 fonts. 20 is what the launcher icons use (LV_SYMBOL_* glyphs are
 #     baked into the built-in Montserrat fonts). 14/16/24/48 kept for general use.

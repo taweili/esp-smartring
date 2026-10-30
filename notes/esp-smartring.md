@@ -303,6 +303,35 @@ if (bsp_sd_init() == ESP_OK) {
 
 ---
 
+### 4.7 Wi-Fi (ringkit wrapper — NOT part of the BSP)
+
+The BSP does **not** touch the radio; Wi-Fi is an ESP-IDF feature and this
+project wraps it in **`ringkit/ring_wifi.h`** (station mode, NVS-persisted
+credentials). The ESP32-S3-N16R8 has 2.4 GHz Wi-Fi + BLE 5; the on-module PCB
+antenna needs no external wiring.
+
+Credentials live in NVS (namespace `ring_wifi`), seeded on first boot from
+`RING_WIFI_DEFAULT_SSID` / `RING_WIFI_DEFAULT_PASSWORD` (compile-time,
+override with `-D`). `ring_wifi_set_credentials()` re-provisions at runtime.
+
+| Function | Description |
+|----------|-------------|
+| `esp_err_t ring_wifi_init(void)` | NVS + netif + event loop + driver. Idempotent. Does not start the radio. |
+| `esp_err_t ring_wifi_start(void)` | Load creds from NVS (seed defaults if empty) + connect. Non-blocking. |
+| `esp_err_t ring_wifi_set_credentials(const char *ssid, const char *pass)` | Persist to NVS, then disconnect/reconnect. |
+| `esp_err_t ring_wifi_get_credentials(char *ssid, size_t sl, char *pass, size_t pl)` | Read persisted creds (NULL-tolerant). |
+| `esp_err_t ring_wifi_disconnect(void)` / `ring_wifi_stop(void)` | Drop the link / stop the radio (keeps NVS creds). |
+| `ring_wifi_state_t ring_wifi_state(void)` | OFF / DISCONNECTED / CONNECTING / CONNECTED. |
+| `bool ring_wifi_is_connected(void)` | True after `IP_EVENT_STA_GOT_IP`. |
+| `esp_err_t ring_wifi_get_ip(char *buf, size_t len)` | Dotted-quad IPv4. |
+| `esp_err_t ring_wifi_wait_connected(uint32_t timeout_ms)` | Block until IP or timeout. |
+
+Disconnects auto-reconnect with a 2 s backoff. Requires
+`CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` (Wi-Fi + lwip + wpa_supplicant push
+the app past 1 MB) and benefits from `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`.
+
+---
+
 ## 5. Pin map (from `include/bsp/board_config.h`)
 
 | Function | GPIOs / notes |

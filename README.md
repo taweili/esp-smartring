@@ -57,6 +57,7 @@ An invalid `RING_APP` fails fast at configure time and lists the valid choices.
 | `imu-dash` | Live IMU dashboard: bubble level (tilt) + accel + gyro + temperature + level calibration. |
 | `gesture-test` | Reports every single-finger gesture (tap / hold / swipe / press / release) the moment it happens. |
 | `voice-note` | Mic + speaker loop-back: hold to record, release to play the capture back. |
+| `wifi-demo` | Wi-Fi station: connects to the NVS-stored SSID (default `HUAWEI-10P8UN`), shows state/SSID/IP on screen. |
 | `hello` | Bring-up smoke test: white screen + one large label. |
 
 ## Architecture
