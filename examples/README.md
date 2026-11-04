@@ -7,6 +7,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | App | Description |
 |-----|-------------|
 | `glyph-anime` | Full-screen glyph grid with a layered center-out reveal and hue-cycling accents. Touch to open/close. |
+| `gbuddy` | The GEODIS buddy face: four expressions cut out of `medias/gbuddy-00N.png` as alpha sprites — blinks, IMU gaze, twist look, sleep on hold, battery mood. See `gbuddy/README.md`. |
 | `imu-dash` | Live IMU dashboard: bubble level (tilt) + accel (m/s²) + gyro (°/s) + temperature + level calibration. Tap to calibrate. |
 | `gesture-test` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. |
 | `voice-note` | Mic + speaker loop-back: one round button — hold to record (ES8311 mic), release to play the captured PCM back through the speaker. Captures up to 8 s into PSRAM. |

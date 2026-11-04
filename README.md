@@ -58,6 +58,7 @@ An invalid `RING_APP` fails fast at configure time and lists the valid choices.
 | App | Description |
 |-----|-------------|
 | `glyph-anime` | **Default.** 13×13 glyph grid, layered center-out reveal, hue-cycling accents. Touch to open/close. |
+| `gbuddy` | The buddy face: 4 expressions from `medias/gbuddy-00N.png` as alpha sprites, with blink, IMU gaze, twist look and sleep. |
 | `imu-dash` | Live IMU dashboard: bubble level (tilt) + accel + gyro + temperature + level calibration. |
 | `gesture-test` | Reports every single-finger gesture (tap / hold / swipe / press / release) the moment it happens. |
 | `voice-note` | Mic + speaker loop-back: hold to record, release to play the capture back. |
@@ -93,6 +94,8 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `examples/bt-demo/README.md` | Bluetooth/BLE on the ring: what the silicon supports, NimBLE vs Bluedroid, exact `sdkconfig`, GATT-server bring-up, Wi-Fi coexistence, the `ring_bt` wrapper spec. |
 | `examples/glyph-anime/README.md` | glyph-anime design & build spec (layered reveal maths, risks). |
 | `notes/architecture.md` | Architecture rationale: why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
+| `notes/gbuddy.md` | GBuddy face animation design note: measured still geometry, asset/flash budget, LVGL image-format limits, offline asset pipeline, animation plan; §12 records what shipped. |
+| `examples/gbuddy/README.md` | GBuddy app summary: moods, blink/gaze/sleep behaviour, how to regenerate the sprite assets. |
 | `notes/meta-muse.md`, `notes/xiaozhi.md` | Assistant feasibility research (no code yet). |
 | BSP upstream | `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus`). |
 
