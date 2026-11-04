@@ -349,6 +349,8 @@ that must stay committed are the override *copies* in `components/`
   over WebSocket, Realtime over WebRTC).
 - `notes/qianwenai.md` — 千问 AI 平台 (qianwenai.com) reference: model catalog by category and the API surface
   (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async/batch).
+- `notes/qianwenai-button.md` — design for `examples/qianwenai-button`: one green button, hold-to-talk to
+  `qwen-audio-3.1-realtime-flash` over WebRTC (connection, audio pipeline, UI/state machine, risks).
 - `notes/meta-muse.md`, `notes/xiaozhi.md` — assistant feasibility research; no code yet.
 - `notes/gbuddy.md` — GBuddy face-animation design note: measured still geometry, flash/asset
   budget, LVGL image-format limits, offline asset pipeline, animation plan; §12 = what shipped
