@@ -344,6 +344,9 @@ that must stay committed are the override *copies* in `components/`
 - `examples/glyph-anime/README.md` — glyph-anime design & build spec: layered reveal maths, layer timeline, risks.
 - `notes/architecture.md` — architecture rationale: why the layout is `ringkit` + fragments; §6 has the two
   ESP-IDF traps (EXTRA_COMPONENT_DIRS ordering, double CMake evaluation).
+- `notes/networking.md` — networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/
+  cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and OpenAI API paths (REST, Realtime
+  over WebSocket, Realtime over WebRTC).
 - `notes/meta-muse.md`, `notes/xiaozhi.md` — assistant feasibility research; no code yet.
 - `notes/gbuddy.md` — GBuddy face-animation design note: measured still geometry, flash/asset
   budget, LVGL image-format limits, offline asset pipeline, animation plan; §12 = what shipped
