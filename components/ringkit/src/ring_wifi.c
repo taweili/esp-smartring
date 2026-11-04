@@ -19,7 +19,6 @@
 #include "esp_event.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -47,16 +46,24 @@ static ring_wifi_ctx_t s_state = {
 static SemaphoreHandle_t s_mutex = NULL;
 static bool s_initialized = false;   /* driver/event-loop once-guard */
 
-/* Backoff so WIFI_EVENT_STA_DISCONNECTED storms don't spin on esp_wifi_connect. */
-static int64_t s_last_connect_ms = 0;
 #define RECONNECT_BACKOFF_MS 2000
+/* Backoff so WIFI_EVENT_STA_DISCONNECTED storms don't spin on esp_wifi_connect.
+ * Initialised negative so the FIRST disconnect always reconnects: the clock
+ * starts at ~1.2 s (scheduler/timer come up with app_main), so with 0 the
+ * first delta is < RECONNECT_BACKOFF_MS and the only attempt is swallowed,
+ * leaving the station stuck until reboot. */
+static int64_t s_last_connect_ms = -RECONNECT_BACKOFF_MS;
 
 static void state_lock(void)   { if (s_mutex) xSemaphoreTake(s_mutex, portMAX_DELAY); }
 static void state_unlock(void) { if (s_mutex) xSemaphoreGive(s_mutex); }
 
 static int64_t now_ms(void)
 {
-    return (int64_t)(esp_timer_get_time() / 1000);
+    /* FreeRTOS ticks, not esp_timer_get_time(): the timer subsystem starts
+     * at app_main (~1 s after boot on this board), so the first disconnect
+     * would look like it happened at t=1.2 s and the backoff below would
+     * swallow the only reconnect attempt. */
+    return (int64_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
 /* --- NVS helpers -------------------------------------------------------- */
