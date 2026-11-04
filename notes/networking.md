@@ -60,7 +60,12 @@ you ask for it** — the two supported ways:
 * `cert_pem` / `cert_der` — a single CA (PEM string or DER buffer) for one host.
 * `crt_bundle_attach = esp_crt_bundle_attach` — the full Mozilla root bundle
   (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y`, default `..._DEFAULT_FULL`). This is
-  the right choice for a device that talks to arbitrary cloud APIs.
+  the right choice for a device that talks to arbitrary cloud APIs. If the
+  server sends a **cross-signed root** (GlobalSign, used by baidu.com, does),
+  also enable `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y`:
+  without it `esp-x509-crt-bundle` cannot build the chain and the handshake
+  dies with `MBEDTLS_ERR_X509_FATAL_ERROR` (-0x3000) even though the root is
+  present in the bundle.
 
 Other useful `esp_http_client_config_t` fields:
 

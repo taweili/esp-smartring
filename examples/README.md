@@ -11,7 +11,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `imu-dash` | Live IMU dashboard: bubble level (tilt) + accel (m/s²) + gyro (°/s) + temperature + level calibration. Tap to calibrate. |
 | `gesture-test` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. |
 | `voice-note` | Mic + speaker loop-back: one round button — hold to record (ES8311 mic), release to play the captured PCM back through the speaker. Captures up to 8 s into PSRAM. |
-| `wifi-demo` | Wi-Fi station bring-up: connects to the NVS-stored SSID (default `HUAWEI-10P8UN`), shows state/SSID/IP on the round screen. First boot seeds credentials into NVS. |
+| `wifi-demo` | Wi-Fi station bring-up: connects to the NVS-stored SSID, shows state/SSID/IP on the round screen, then probes `https://baidu.com` over HTTPS. Credentials are seeded from `secrets.local` on first boot, then persisted to NVS. |
 | `qianwenai-button` | Push-to-talk voice assistant: one green round button, hold to talk to `qwen-audio-3.1-realtime-flash` over WebRTC (Opus 48 kHz). See `qianwenai-button/README.md`. |
 | `bt-demo` | Bluetooth LE peripheral: advertises as `SmartRing`, exposes a vendor service (0xFFE0) with a readable name/battery (READ/NOTIFY) and a writable command pipe (WRITE/NOTIFY). Pairable/bondable; scan + connect with a phone (nRF Connect / LightBlue). See `bt-demo/README.md`. |
 | `hello` | Bring-up smoke test: white screen, one large "Hello" glyph. |

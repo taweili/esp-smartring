@@ -48,6 +48,11 @@ CONFIG_MBEDTLS_X509_CREATE_C=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# Some CAs (e.g. GlobalSign, used by baidu.com) serve a cross-signed root
+# whose issuer is an older root that is not in the bundle. The default
+# non-cross-signed path cannot build that chain; this makes esp-tls use the
+# bundle's subject+key entries as synthetic trust anchors instead.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 # SNTP: allow multiple NTP servers (Aliyun + public pool) for clock sync.
 CONFIG_LWIP_SNTP_MAX_SERVERS=3
 

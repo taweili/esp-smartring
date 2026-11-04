@@ -3,7 +3,8 @@
  *
  * Design notes:
  *  - NVS holds the SSID/password. On first boot ring_wifi_start() seeds it
- *    from the compile-time defaults so the ring auto-joins "HUAWEI-10P8UN".
+ *    from the compile-time defaults (the local secrets header); with none
+ *    configured it returns ESP_ERR_NOT_FOUND instead of joining a bogus AP.
  *  - All state transitions happen in the Wi-Fi / IP event handlers (event
  *    loop task); ringkit only reports them, protected by a mutex.
  *  - Disconnect auto-reconnects with a 2 s backoff so a flaky AP does not

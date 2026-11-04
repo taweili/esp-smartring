@@ -5,4 +5,4 @@
 
 set(RING_EXAMPLE_SRCS         "wifi_demo.c")
 set(RING_EXAMPLE_INCLUDE_DIRS "include")
-set(RING_EXAMPLE_REQUIRES     "")
+set(RING_EXAMPLE_REQUIRES     "esp_http_client esp-tls esp_netif")
