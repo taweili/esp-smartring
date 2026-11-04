@@ -254,6 +254,34 @@ From `platform.qianwenai.com/docs/api-reference/realtime-api/overview`:
 | Realtime S2S | `qwen-audio-3.1-realtime-plus/flash`, `qwen-audio-3.0-realtime-*` | ✓ | ✓ | ✓ |
 | Multimodal dialog kit | `multimodal-dialog` | ✓ | ✓ | ✓ |
 
+**WebRTC-supported models (explicit list).** WebRTC works with 10 realtime
+models:
+
+- **Realtime omni:** `qwen3.8-omni-flash-realtime`,
+  `qwen3.5-omni-plus-realtime`, `qwen3.5-omni-flash-realtime`
+- **Realtime speech dialogue (S2S):** `qwen-audio-3.1-realtime-plus`,
+  `qwen-audio-3.1-realtime-flash`, `qwen-audio-3.0-realtime-plus`,
+  `qwen-audio-3.0-realtime-flash`
+- **Realtime speech translation:** `qwen3.8-livetranslate-flash-realtime`,
+  `qwen3.5-livetranslate-flash-realtime`
+- **Multimodal dialog kit:** `multimodal-dialog` (dev kit, not a single model)
+
+**Not available over WebRTC** (AOQ or WebSocket only):
+
+- **Realtime ASR:** `qwen-audio-3.1-asr-flash-message`,
+  `qwen-audio-3.1-asr-flash-streaming`, `qwen-audio-3.0-asr-flash-streaming`,
+  Fun-ASR-Realtime series
+- **Realtime TTS:** `qwen-audio-3.1-tts-plus`, `qwen-audio-3.1-tts-flash`,
+  `qwen-audio-3.0-tts-flash`, `qwen-audio-3.0-tts-plus`, CosyVoice series
+
+WebRTC access is a server-side SDP exchange:
+`POST https://maas.qianwenaiapi.com/api/v1/webrtc/realtime?model=<model>`
+with `Content-Type: application/sdp` and the Offer SDP as the body (returns the
+Answer SDP); auth via `Authorization: Bearer <key>`. Media travels over RTP,
+model events over a DataChannel, with built-in AEC/noise suppression and
+`server_vad`/`semantic_vad` turn detection. See
+`developer-guides/tutorials/realtime/webrtc-omni-realtime`.
+
 ---
 
 ## 4. Pricing (examples; check the model pages for current numbers)
