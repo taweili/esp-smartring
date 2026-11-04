@@ -22,13 +22,16 @@ platform, `qianwenai.com`).
 The whole interaction is one press: there is no separate "connect" step the user
 sees. The app boots, brings up Wi-Fi, connects WebRTC, and shows the idle button.
 
-> **Why hold-to-talk instead of always-on VAD.** The ring has a speaker next to
-> the microphone. The model supports `server_vad`, but while the speaker is
-> playing the model hears itself and can start a reply loop. Hold-to-talk gives
-> a deterministic half-duplex window: **mic open only while the button is down,
-> speaker only while it is up.** WebRTC's built-in AEC/noise suppression still
-> runs on the uplink. `server_vad` remains an option for a later "hands-free"
-> mode, with `response.cancel` as the off switch.
+> **Why hold-to-talk (manual turn-taking) in v1.** The ring has a speaker next
+> to the microphone. The model supports `server_vad`, but with the button still
+> held the model would detect its own reply as "silence" and answer again — a
+> reply loop. So **v1 sends no `turn_detection`** and takes turns manually:
+> **mic open only while the button is down, speaker only while it is up.** This
+> is the Qianwen manual mode (`turn_detection` omitted), not VAD mode.
+> WebRTC's built-in AEC/noise suppression still runs on the uplink. A later
+> "hands-free" mode can enable `server_vad` (or `smart_turn_v2` voiceprint
+> turn detection) once the echo behaviour is measured; `response.cancel` is the
+> off switch if the model is speaking while the user wants the floor.
 
 ---
 
@@ -109,7 +112,13 @@ the UI and the button state machine, exactly like `voice-note`.
 From `qianwenai.com` / `platform.qianwenai.com/docs/api-reference/realtime-api/webrtc-access`:
 
 1. **Wi-Fi first.** `ring_wifi_start()` + `ring_wifi_wait_connected()` (NVS
-   credentials). No TLS/WebRTC without an IP and a working clock.
+   credentials). Then **sync the clock with SNTP** — `esp_netif_sntp_init()` /
+   `esp_netif_sntp_start()` / `esp_netif_sntp_sync_wait()` (from `esp_netif`;
+   the underlying `esp_sntp` client lives in `lwip`). This is **mandatory**, not
+   optional: the HTTPS SDP POST and the DTLS handshake both validate the
+   server certificate against the wall clock, and an unset clock makes every
+   connection fail with a cert error. No TLS/WebRTC without an IP **and** a
+   working clock.
 2. **Build an Offer SDP.** `esp_peer` gathers local ICE candidates; the offer
    must contain an **`m=audio`** section. Audio directions: `sendrecv`
    (Qianwen-Audio-Realtime is send-audio + receive-audio; no video).
@@ -136,12 +145,13 @@ From `qianwenai.com` / `platform.qianwenai.com/docs/api-reference/realtime-api/w
        "modalities": ["text", "audio"],
        "voice": "longanqian_v3.1",
        "input_audio_format": "pcm",
-       "output_audio_format": "pcm",
-       "turn_detection": { "type": "server_vad", "threshold": 0.5,
-                           "silence_duration_ms": 800 }
+       "output_audio_format": "pcm"
      } }
    ```
-   (`turn_detection` can be omitted for manual hold-to-talk.)
+   **No `turn_detection`** in v1: this is the manual hold-to-talk mode. The
+   client decides the turn boundary (button up ⇒ stop uplink, wait for reply);
+   the server must not auto-terminate the turn from its own VAD. Add
+   `turn_detection` only when moving to a hands-free mode.
 6. **Ready → show the green idle button.**
 
 **Audio formats (from `qianwenai.com` model page):**
@@ -279,7 +289,7 @@ turn could never be processed — the exact bug `voice-note` documents.
 | WebRTC connect fails | Log the `esp_peer` error, drop to idle with "connection failed — tap to retry". Reconnect in the background; do not spin. |
 | Model replies after release | Drain the downlink buffer to the speaker, then idle. If the user presses again, `response.cancel` over the DataChannel cancels the reply. |
 | Very short press (<150 ms) | Ignore (treat as a tap) to avoid sending a click/pop. |
-| Button held too long | No hard limit; the model's VAD/`silence_duration_ms` ends the turn. Optional 60 s safety cap. |
+| Button held too long | There is **no server VAD** in v1, so nothing ends the turn except the button. Add a client-side safety cap (e.g. 60 s) that stops the uplink and falls back to idle, so a stuck press cannot stream indefinitely. |
 | Speaker pop | Always `ring_audio_set_mute(false)` before the first write and `true` after the last. |
 | Console back-pressure | Log sparingly during a turn (see `AGENTS.md`); a flood of `ESP_LOGI` stalls the firmware. |
 
@@ -308,8 +318,9 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 **`components/ringkit/`**: add `ring_net` (or `ring_webrtc`) with
 `ring_net_webrtc_start(model, key)`, `ring_net_webrtc_send_audio()`,
 `ring_net_webrtc_recv_audio()`, `ring_net_webrtc_stop()`, and callbacks for
-state/events. `REQUIRES esp_peer esp_http_client esp-tls esp_wifi esp_netif
-mbedtls nvs_flash`.
+state/events. `REQUIRES esp_peer esp_http_client esp-tls esp_wifi esp_netif lwip
+mbedtls nvs_flash`. (`lwip` supplies `esp_sntp`; `esp_netif` supplies
+`esp_netif_sntp_*` — see §4 step 1.)
 
 **Example fragment** (`examples/qianwenai-button/`):
 ```cmake
@@ -329,9 +340,11 @@ existing `ring_wifi.h` default credentials are a bad example to copy.
 ## 10. Build order & verification
 
 1. **Bring-up probe (highest risk first).** A minimal `examples/qianwenai-button`
-   that only connects: Wi-Fi → SDP exchange → `session.created`/`session.updated`
-   → log `ESP_PEER_STATE_CONNECTED`. No audio, no button. This de-risks the
-   `esp_peer` ↔ Qianwen interop before any UI work.
+   that only connects: Wi-Fi → **SNTP** → SDP exchange →
+   `session.created`/`session.updated` → log `ESP_PEER_STATE_CONNECTED`. No
+   audio, no button. This de-risks the `esp_peer` ↔ Qianwen interop before any
+   UI work. (If the SDP POST fails with a certificate error, the clock is the
+   first thing to check.)
 2. **Audio loopback over WebRTC.** Send a fixed PCM tone, receive the reply,
    verify the 16 k/24 k conversion and the level meter.
 3. **Button UI.** Add the green button, hold-to-talk, state machine.
