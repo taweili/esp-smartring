@@ -95,7 +95,15 @@ static esp_err_t load_or_seed_credentials(char *ssid, size_t ssid_len,
     }
 
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        /* First boot: seed from compile-time defaults and persist. */
+        /* First boot: seed from the compile-time defaults (secrets.local) and
+         * persist. Without credentials the app must provision them instead of
+         * trying to join "". */
+        if (RING_WIFI_DEFAULT_SSID[0] == '\0') {
+            nvs_close(h);
+            ESP_LOGE(TAG, "no Wi-Fi credentials: set RING_WIFI_SSID/_PASSWORD in "
+                          "secrets.local or call ring_wifi_set_credentials()");
+            return ESP_ERR_NOT_FOUND;
+        }
         snprintf(ssid, ssid_len, "%s", RING_WIFI_DEFAULT_SSID);
         snprintf(password, pass_len, "%s", RING_WIFI_DEFAULT_PASSWORD);
         err = nvs_set_str(h, RING_WIFI_NVS_KEY_SSID, ssid);

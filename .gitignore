@@ -9,3 +9,7 @@ managed_components/
 .vscode/
 .idea/
 *.swp
+
+# Local secrets (API keys, Wi-Fi credentials) — never commit.
+secrets.local
+secrets.local.*

@@ -8,5 +8,11 @@
 dependencies:
   idf: ">=5.5"
   viewesmart/smartring_plus: "^1.1.2"
+  # WebRTC PeerConnection for examples/qianwenai-button (hold-to-talk to
+  # qwen-audio-3.1-realtime-flash). Pulls espressif/esp_libsrtp.
+  espressif/esp_peer: "^1.5.8"
+  # Opus codec: the Qianwen WebRTC endpoint accepts only Opus on m=audio, and
+  # esp_peer carries encoded frames (it has no codec of its own).
+  espressif/esp_audio_codec: "^2.6.2"
 
 license: "GPL-3.0-or-later"

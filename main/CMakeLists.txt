@@ -43,3 +43,42 @@ idf_component_register(
     INCLUDE_DIRS ${_incs}
     REQUIRES ringkit ${RING_EXAMPLE_REQUIRES}
 )
+
+# ---------------------------------------------------------------------------
+# Local secrets (git-ignored): Wi-Fi credentials and the Qianwen API key.
+#
+# Preferred path: ./secrets.local (sourced by tools/dev.sh) is turned into a
+# generated header, so the values never appear on a command line or in
+# CMakeCache.txt — passing them as -D puts secrets into build/log/ and the
+# cache, where they persist in plaintext.
+#
+# The legacy -DQIANWEN_API_KEY=... form still works; it is only honoured when
+# secrets.local is absent.
+# ---------------------------------------------------------------------------
+# Written into the build's config directory: every component already has it on
+# its include path, so ringkit (a dependency of main) sees the same values.
+set(_ring_secrets_header "${CMAKE_BINARY_DIR}/config/ring_secrets.h")
+
+file(WRITE "${_ring_secrets_header}"
+     "/* Generated from the environment / secrets.local — do not commit. */\n"
+     "#pragma once\n")
+
+foreach(_pair
+        "QIANWEN_API_KEY:QIANWEN_API_KEY"
+        "RING_WIFI_DEFAULT_SSID:RING_WIFI_DEFAULT_SSID"
+        "RING_WIFI_DEFAULT_PASSWORD:RING_WIFI_DEFAULT_PASSWORD")
+    string(REPLACE ":" ";" _kv "${_pair}")
+    list(GET _kv 0 _env)
+    list(GET _kv 1 _macro)
+    if(DEFINED ENV{${_env}} AND NOT "$ENV{${_env}}" STREQUAL "")
+        set(_val "$ENV{${_env}}")
+    elseif(DEFINED ${_env} AND NOT "${${_env}}" STREQUAL "")
+        set(_val "${${_env}}")     # legacy -D form
+    else()
+        continue()
+    endif()
+    file(APPEND "${_ring_secrets_header}"
+         "#ifndef ${_macro}\n#define ${_macro} \"${_val}\"\n#endif\n")
+endforeach()
+
+target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_BINARY_DIR}/config")

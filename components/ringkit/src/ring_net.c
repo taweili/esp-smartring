@@ -1,0 +1,969 @@
+/*
+ * ringkit — WebRTC realtime voice (Qianwen AI platform). See ring_net.h.
+ *
+ * Design notes:
+ *  - Wi-Fi and SNTP come first: the HTTPS SDP POST and the DTLS handshake both
+ *    validate the server certificate against the wall clock, so an unset clock
+ *    fails every connection with a certificate error.
+ *  - Signaling is the Qianwen SDP exchange over HTTPS; esp_peer produces the
+ *    Offer (with gathered candidates) and consumes the Answer.
+ *  - The peer main loop and the SDP exchange run in separate tasks so a slow
+ *    HTTPS round trip never stalls RTP.
+ *  - Audio is Opus at 48 kHz mono inside RTP. The endpoint accepts only Opus
+ *    on m=audio (PCMA/PCMU offers are rejected with "SDP format and content
+ *    error"), and esp_peer carries encoded frames — it has no codec of its own,
+ *    so esp_audio_codec does the Opus work here.
+ *
+ * Memory discipline (this ran out of both heap and stack on the first cut):
+ *  - No large stack arrays: SDP buffers are heap-allocated.
+ *  - The peer callback runs on the peer thread that also runs
+ *    esp_peer_main_loop — it must stay tiny and must not log big strings.
+ *  - State changes are marshalled to a worker task, so the application's
+ *    callback (which takes the LVGL lock) never runs on a peer thread.
+ */
+#include "ringkit/ring_net.h"
+#include "ringkit/ring_wifi.h"
+
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include "esp_log.h"
+#include "esp_err.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "esp_http_client.h"
+#include "esp_netif.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
+#include "arpa/inet.h"
+#include "esp_peer.h"
+#include "esp_peer_default.h"
+#include "esp_audio_enc.h"
+#include "esp_audio_enc_default.h"
+#include "esp_opus_enc.h"
+#include "esp_audio_dec.h"
+#include "esp_audio_dec_reg.h"
+#include "esp_audio_dec_default.h"
+#include "esp_opus_dec.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
+
+#define TAG "ring_net"
+
+/* Embedded trust anchors (see assets/qianwen_ca.pem). */
+extern const uint8_t qianwen_ca_pem_start[] asm("_binary_qianwen_ca_pem_start");
+extern const uint8_t qianwen_ca_pem_end[]   asm("_binary_qianwen_ca_pem_end");
+
+const char *ring_net_ca_pem(void)
+{
+    return (const char *)qianwen_ca_pem_start;
+}
+
+size_t ring_net_ca_pem_len(void)
+{
+    return (size_t)(qianwen_ca_pem_end - qianwen_ca_pem_start);
+}
+
+/* ------------------------------------------------------------- config */
+
+#ifndef RING_NET_HOST
+#define RING_NET_HOST "maas.qianwenaiapi.com"
+#endif
+
+/* The endpoint only accepts Opus on m=audio, so this is fixed at 48 kHz.
+ * RING_NET_FRAME_SAMPLES (960 = 20 ms) comes from the public header. */
+#define RING_NET_SAMPLE_RATE    48000
+#define RING_NET_CHANNELS       1
+#define RING_NET_FRAME_BYTES    (RING_NET_FRAME_SAMPLES * 2)   /* 16-bit */
+#define RING_NET_BITRATE        32000
+
+/* Downlink PCM ring buffer: 4 s of 48 kHz / 16-bit / mono = 384 KB (PSRAM). */
+#define RING_NET_DL_BYTES       (RING_NET_SAMPLE_RATE * 2 * 4)
+
+/* Internal RAM is scarce (250 Hz IMU task + LVGL panel buffers live there),
+ * so keep our tasks lean. TLS work happens in the esp-tls task, not here. */
+/* esp_peer_main_loop also runs the DTLS handshake, which is stack-hungry
+ * (mbedTLS). 16 KB is sized from the observed high-water mark. */
+#define PEER_TASK_STACK        16384
+#define PEER_TASK_PRIO          5
+#define SIGNAL_TASK_STACK       4096
+#define SIGNAL_TASK_PRIO        4
+#define EVENT_TASK_STACK        3584
+#define EVENT_TASK_PRIO         4
+
+#define SDP_MAX_BYTES           4096
+#define HTTP_TIMEOUT_MS         10000
+#define SNTP_TIMEOUT_MS         15000
+#define SESSION_TIMEOUT_MS      20000
+
+/* ------------------------------------------------------------- state */
+
+typedef struct {
+    ring_net_state_t         state;
+    ring_net_state_cb_t      state_cb;
+    ring_net_transcript_cb_t text_cb;
+    void                    *user;
+
+    esp_peer_handle_t        peer;
+    TaskHandle_t             peer_task;
+    TaskHandle_t             signal_task;
+    TaskHandle_t             event_task;
+
+    char                     model[64];
+    char                     api_key[128];
+
+    /* SCTP stream the server's event channel ('txt') uses. The server pushes
+     * session events on its own channel and expects replies on the same one,
+     * so sends must carry this id (esp_peer defaults to stream 0, which is
+     * not a channel the server opened and makes esp_peer_send_data fail). */
+    uint16_t                 send_stream_id;
+
+    /* Local Offer handed from the peer callback to the signalling task. */
+    char                     local_sdp[SDP_MAX_BYTES];
+    SemaphoreHandle_t        sdp_mutex;
+
+    /* Opus codec. Encoder runs on the app's audio task, decoder on the peer
+     * thread, hence separate handles and a lock around the decoder. */
+    esp_audio_enc_handle_t   enc;
+    int                      enc_in_size;
+    int                      enc_out_size;
+    uint8_t                 *enc_out;
+
+    esp_audio_dec_handle_t   dec;
+    SemaphoreHandle_t        dec_mutex;
+    uint8_t                 *dec_out;
+    int                      dec_out_size;
+    /* Stereo decode -> mono fold scratch (the ring's audio path is mono). */
+    uint8_t                 *dec_mono;
+
+    /* Downlink PCM ring buffer (48 kHz mono). */
+    uint8_t                 *dl_ring;
+    size_t                   dl_head;
+    size_t                   dl_tail;
+    size_t                   dl_count;
+    SemaphoreHandle_t        dl_mutex;
+
+    QueueHandle_t            event_queue;
+    volatile bool            speaking;
+} ring_net_ctx_t;
+
+static ring_net_ctx_t s;
+
+/* FreeRTOS calls this on stack overflow. The stock hook aborts with an
+ * unusable backtrace; name the offending task and its headroom instead. */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName);
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    ESP_DRAM_LOGE("ring_net", "*** STACK OVERFLOW in task '%s' (hwm %u words)",
+                  pcTaskName, (unsigned)uxTaskGetStackHighWaterMark(xTask));
+    abort();
+}
+
+/* ------------------------------------------------------------- helpers */
+
+const char *ring_net_state_name(ring_net_state_t state)
+{
+    switch (state) {
+    case RING_NET_OFF:        return "off";
+    case RING_NET_CONNECTING: return "connecting";
+    case RING_NET_READY:      return "ready";
+    case RING_NET_LISTENING:  return "listening";
+    case RING_NET_SPEAKING:   return "speaking";
+    case RING_NET_ERROR:      return "error";
+    }
+    return "?";
+}
+
+/* Updates the state and notifies the event task, which runs the app callback.
+ * Safe to call from any task, including the peer thread. */
+static void state_set(ring_net_state_t st)
+{
+    if (s.state == st) {
+        return;
+    }
+    s.state = st;
+    ESP_LOGI(TAG, "state -> %s", ring_net_state_name(st));
+    if (s.event_queue) {
+        xQueueOverwrite(s.event_queue, &st);
+        if (s.event_task) {
+            xTaskNotifyGive(s.event_task);
+        }
+    }
+}
+
+static uint32_t now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+/* ------------------------------------------------------------- downlink ring */
+
+static void dl_push(const uint8_t *pcm, size_t len)
+{
+    if (s.dl_ring == NULL || len == 0) {
+        return;
+    }
+    xSemaphoreTake(s.dl_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < len; i++) {
+        if (s.dl_count >= RING_NET_DL_BYTES) {
+            s.dl_tail = (s.dl_tail + 1) % RING_NET_DL_BYTES;   /* newest wins */
+            s.dl_count--;
+        }
+        s.dl_ring[s.dl_head] = pcm[i];
+        s.dl_head = (s.dl_head + 1) % RING_NET_DL_BYTES;
+        s.dl_count++;
+    }
+    xSemaphoreGive(s.dl_mutex);
+}
+
+static size_t dl_pop(uint8_t *pcm, size_t len)
+{
+    size_t got = 0;
+    xSemaphoreTake(s.dl_mutex, portMAX_DELAY);
+    while (got < len && s.dl_count > 0) {
+        pcm[got++] = s.dl_ring[s.dl_tail];
+        s.dl_tail = (s.dl_tail + 1) % RING_NET_DL_BYTES;
+        s.dl_count--;
+    }
+    xSemaphoreGive(s.dl_mutex);
+    return got;
+}
+
+/* ------------------------------------------------------------- codec */
+
+static esp_err_t opus_open(void)
+{
+    esp_audio_enc_register_default();
+    esp_audio_dec_register_default();
+
+    esp_opus_enc_config_t cfg = ESP_OPUS_ENC_CONFIG_DEFAULT();
+    cfg.sample_rate = RING_NET_SAMPLE_RATE;
+    cfg.channel = RING_NET_CHANNELS;
+    cfg.bits_per_sample = 16;
+    cfg.bitrate = RING_NET_BITRATE;
+    cfg.frame_duration = ESP_OPUS_ENC_FRAME_DURATION_20_MS;
+    cfg.application_mode = ESP_OPUS_ENC_APPLICATION_VOIP;
+    cfg.complexity = 0;          /* lowest CPU: the ESP32-S3 is also running Wi-Fi */
+    cfg.enable_fec = true;
+    cfg.enable_vbr = false;
+
+    esp_audio_enc_config_t ecfg = {
+        .type = ESP_AUDIO_TYPE_OPUS,
+        .cfg = &cfg,
+        .cfg_sz = sizeof(cfg),
+    };
+    esp_audio_err_t e = esp_audio_enc_open(&ecfg, &s.enc);
+    if (e != ESP_AUDIO_ERR_OK) {
+        ESP_LOGE(TAG, "opus encoder open failed: %d", e);
+        return ESP_FAIL;
+    }
+    esp_audio_enc_get_frame_size(s.enc, &s.enc_in_size, &s.enc_out_size);
+    s.enc_out = malloc(s.enc_out_size > 0 ? s.enc_out_size : 1024);
+    if (s.enc_out == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "opus encoder: in %d B out %d B", s.enc_in_size, s.enc_out_size);
+
+    esp_opus_dec_cfg_t dcfg = ESP_OPUS_DEC_CONFIG_DEFAULT();
+    dcfg.sample_rate = RING_NET_SAMPLE_RATE;
+    /* The endpoint negotiates stereo Opus (a=rtpmap:opus/48000/2), so the
+     * decoder must be opened for two channels; on_audio_data folds to mono. */
+    dcfg.channel = ESP_AUDIO_DUAL;
+    dcfg.frame_duration = ESP_OPUS_DEC_FRAME_DURATION_20_MS;
+
+    esp_audio_dec_cfg_t adcfg = {
+        .type = ESP_AUDIO_TYPE_OPUS,
+        .cfg = &dcfg,
+        .cfg_sz = sizeof(dcfg),
+    };
+    e = esp_audio_dec_open(&adcfg, &s.dec);
+    if (e != ESP_AUDIO_ERR_OK) {
+        ESP_LOGE(TAG, "opus decoder open failed: %d", e);
+        return ESP_FAIL;
+    }
+    /* Worst case output for one 20 ms frame: stereo 16-bit PCM. */
+    s.dec_out_size = RING_NET_FRAME_BYTES * 2;
+    s.dec_out = malloc(s.dec_out_size);
+    s.dec_mono = malloc(RING_NET_FRAME_BYTES);
+    if (s.dec_out == NULL || s.dec_mono == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    s.dec_mutex = xSemaphoreCreateMutex();
+    return s.dec_mutex ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+/* ------------------------------------------------------------- SNTP */
+
+static esp_err_t sync_clock(void)
+{
+    static bool inited = false;
+    if (!inited) {
+        /* Init once: a retry must not re-init SNTP, and the clock may already
+         * be valid (waiting for a fresh sync event would then just time out). */
+        esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
+            2, ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "pool.ntp.org"));
+        config.start = true;
+        config.wait_for_sync = true;
+        esp_err_t err = esp_netif_sntp_init(&config);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "sntp init: %s", esp_err_to_name(err));
+            return err;
+        }
+        inited = true;
+    }
+    esp_netif_sntp_start();
+
+    if (esp_sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
+        esp_err_t err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_TIMEOUT_MS));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "sntp sync wait: %s", esp_err_to_name(err));
+            return err;
+        }
+    }
+
+    time_t now = 0;
+    struct tm ti = { 0 };
+    time(&now);
+    localtime_r(&now, &ti);
+    ESP_LOGI(TAG, "clock synced: %04d-%02d-%02d %02d:%02d:%02d",
+             ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+             ti.tm_hour, ti.tm_min, ti.tm_sec);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------- SDP exchange */
+
+/* esp_peer emits SDP with bare LF; WebRTC wants CRLF. */
+static void normalise_sdp_crlf(const char *in, char *out, size_t out_len)
+{
+    size_t j = 0;
+    for (size_t i = 0; in[i] != '\0' && j + 2 < out_len; i++) {
+        if (in[i] == '\n' && (i == 0 || in[i - 1] != '\r')) {
+            out[j++] = '\r';
+        }
+        out[j++] = in[i];
+    }
+    out[j] = '\0';
+}
+
+static void log_http_error(esp_http_client_handle_t c)
+{
+    char buf[257];
+    int n = esp_http_client_read_response(c, buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        ESP_LOGW(TAG, "HTTP %d: %s", esp_http_client_get_status_code(c), buf);
+    } else {
+        ESP_LOGW(TAG, "HTTP %d (no body)", esp_http_client_get_status_code(c));
+    }
+}
+
+/**
+ * POST the Offer to the Qianwen WebRTC endpoint and return the Answer SDP.
+ * All buffers are on the heap so this can run on a small task stack.
+ */
+static esp_err_t sdp_exchange(const char *offer, char *answer, size_t answer_len)
+{
+    char url[192];
+    snprintf(url, sizeof(url), "https://%s/api/v1/webrtc/realtime?model=%s",
+             RING_NET_HOST, s.model);
+
+    char *offer_crlf = malloc(SDP_MAX_BYTES);
+    if (offer_crlf == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    normalise_sdp_crlf(offer, offer_crlf, SDP_MAX_BYTES);
+
+    esp_http_client_config_t http = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        /* The bundled cert chain for this endpoint (assets/qianwen_ca.pem):
+         * the server does not send its intermediate CA. */
+        .cert_pem = ring_net_ca_pem(),
+        .cert_len = ring_net_ca_pem_len(),
+        .timeout_ms = HTTP_TIMEOUT_MS,
+        .buffer_size = SDP_MAX_BYTES,
+        .buffer_size_tx = 1024,
+    };
+
+    esp_http_client_handle_t c = esp_http_client_init(&http);
+    if (c == NULL) {
+        free(offer_crlf);
+        return ESP_ERR_NO_MEM;
+    }
+
+    char auth[160];
+    snprintf(auth, sizeof(auth), "Bearer %s", s.api_key);
+    esp_http_client_set_header(c, "Content-Type", "application/sdp");
+    esp_http_client_set_header(c, "Authorization", auth);
+
+    /* Stream instead of perform(): perform() swallows the response body, and
+     * the Answer SDP *is* the body. */
+    esp_err_t err = esp_http_client_open(c, (int)strlen(offer_crlf));
+    if (err == ESP_OK) {
+        if (esp_http_client_write(c, offer_crlf, (int)strlen(offer_crlf)) < 0) {
+            err = ESP_FAIL;
+        }
+    }
+    free(offer_crlf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SDP POST open/write failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(c);
+        return err;
+    }
+
+    esp_http_client_fetch_headers(c);
+    int status = esp_http_client_get_status_code(c);
+    int total = esp_http_client_get_content_length(c);
+
+    if (status != 200) {
+        ESP_LOGE(TAG, "SDP POST returned HTTP %d", status);
+        log_http_error(c);
+        esp_http_client_cleanup(c);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    /* Read the whole Answer (chunked responses report length -1). */
+    int n = 0;
+    while (n < (int)answer_len - 1) {
+        int r = esp_http_client_read(c, answer + n, (int)answer_len - 1 - n);
+        if (r <= 0) {
+            break;
+        }
+        n += r;
+    }
+    esp_http_client_cleanup(c);
+    if (n <= 0) {
+        ESP_LOGE(TAG, "SDP answer empty (content-length %d)", total);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    answer[n] = '\0';
+    ESP_LOGI(TAG, "SDP answer: %d bytes", n);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------- peer callbacks
+ *
+ * Everything here runs on the peer task, which also runs
+ * esp_peer_main_loop: keep the stack small and never log big strings.
+ */
+
+static int on_state(esp_peer_state_t state, void *ctx)
+{
+    (void)ctx;
+    switch (state) {
+    case ESP_PEER_STATE_CONNECTED:
+        ESP_LOGI(TAG, "peer connected");
+        break;
+    case ESP_PEER_STATE_DATA_CHANNEL_OPENED:
+        ESP_LOGI(TAG, "data channel open");
+        break;
+    case ESP_PEER_STATE_DISCONNECTED:
+    case ESP_PEER_STATE_CONNECT_FAILED:
+        ESP_LOGW(TAG, "peer lost (%d)", state);
+        state_set(RING_NET_ERROR);
+        break;
+    default:
+        break;
+    }
+    return 0;
+}
+
+static int on_msg(esp_peer_msg_t *msg, void *ctx)
+{
+    (void)ctx;
+    if (msg == NULL || msg->type != ESP_PEER_MSG_TYPE_SDP || msg->data == NULL) {
+        return 0;
+    }
+    if ((size_t)msg->size >= SDP_MAX_BYTES) {
+        ESP_LOGE(TAG, "local SDP too big");
+        return 0;
+    }
+    xSemaphoreTake(s.sdp_mutex, portMAX_DELAY);
+    memcpy(s.local_sdp, msg->data, (size_t)msg->size);
+    s.local_sdp[msg->size] = '\0';
+    xSemaphoreGive(s.sdp_mutex);
+
+    ESP_LOGI(TAG, "local SDP ready");
+    if (s.signal_task) {
+        xTaskNotifyGive(s.signal_task);
+    }
+    return 0;
+}
+
+static int on_audio_info(esp_peer_audio_stream_info_t *info, void *ctx)
+{
+    (void)ctx;
+    ESP_LOGI(TAG, "remote audio: codec %d, %lu Hz, %u ch",
+             info->codec, (unsigned long)info->sample_rate, info->channel);
+    return 0;
+}
+
+static int on_audio_data(esp_peer_audio_frame_t *frame, void *ctx)
+{
+    (void)ctx;
+    if (frame == NULL || frame->data == NULL || frame->size <= 0 || s.dec == NULL) {
+        return 0;
+    }
+
+    xSemaphoreTake(s.dec_mutex, portMAX_DELAY);
+    esp_audio_dec_in_raw_t raw = {
+        .buffer = frame->data,
+        .len = (uint32_t)frame->size,
+    };
+    esp_audio_dec_out_frame_t out = {
+        .buffer = s.dec_out,
+        .len = (uint32_t)s.dec_out_size,
+    };
+    esp_audio_err_t e = esp_audio_dec_process(s.dec, &raw, &out);
+    xSemaphoreGive(s.dec_mutex);
+
+    if (e == ESP_AUDIO_ERR_OK && out.decoded_size > 0) {
+        /* The endpoint sends stereo; the ring's audio path is mono. Fold
+         * L/R here (the decoder is opened for two channels, so the buffer
+         * holds interleaved stereo and decoded_size counts both channels). */
+        const int16_t *stereo = (const int16_t *)s.dec_out;
+        size_t frames = out.decoded_size / (2 * sizeof(int16_t));
+        if (frames > RING_NET_FRAME_SAMPLES) {
+            frames = RING_NET_FRAME_SAMPLES;
+        }
+        int16_t *mono = (int16_t *)s.dec_mono;
+        for (size_t i = 0; i < frames; i++) {
+            mono[i] = (int16_t)(((int32_t)stereo[2 * i] +
+                                 (int32_t)stereo[2 * i + 1]) / 2);
+        }
+        dl_push(s.dec_mono, frames * sizeof(int16_t));
+    } else if (e != ESP_AUDIO_ERR_OK) {
+        ESP_LOGW(TAG, "opus decode failed: %d", e);
+    }
+
+    s.speaking = true;
+    /* The reply can start after the button was released (state READY), so
+     * accept both pre-turn states here. */
+    if (s.state == RING_NET_LISTENING || s.state == RING_NET_READY) {
+        state_set(RING_NET_SPEAKING);
+    }
+    return 0;
+}
+
+static int on_channel_open(esp_peer_data_channel_info_t *ch, void *ctx)
+{
+    (void)ctx;
+    ESP_LOGI(TAG, "data channel '%s' open (stream %u)", ch->label, ch->stream_id);
+    /* Remember the server's channel: replies must go back on it. */
+    s.send_stream_id = ch->stream_id;
+    /* The session is configured when the server sends session.created (see
+     * on_data_frame): sending session.update from here races that event. */
+    return 0;
+}
+
+/* DataChannel frames arrive as JSON strings. */
+static int on_data_frame(esp_peer_data_frame_t *frame, void *ctx)
+{
+    (void)ctx;
+    if (frame == NULL || frame->data == NULL || frame->size <= 0) {
+        return 0;
+    }
+    /* Remember which channel the event arrived on; replies go back on it. */
+    if (frame->stream_id != 0) {
+        s.send_stream_id = frame->stream_id;
+    }
+
+    /* Bounded copy on the peer thread: no unbounded heap churn there. */
+    char json[512];
+    int n = frame->size < (int)sizeof(json) - 1 ? frame->size : (int)sizeof(json) - 1;
+    memcpy(json, frame->data, (size_t)n);
+    json[n] = '\0';
+
+    ESP_LOGW(TAG, "dc: %s", json);
+
+    if (strstr(json, "\"session.created\"")) {
+        ESP_LOGI(TAG, "session created -> configuring");
+        esp_err_t e = ring_net_send_event(
+            "{\"type\":\"session.update\",\"session\":{\"modalities\":[\"text\",\"audio\"],"
+            "\"voice\":\"longanqian_v3.1\",\"turn_detection\":{\"type\":\"server_vad\","
+            "\"threshold\":0.5,\"silence_duration_ms\":800}}}");
+        ESP_LOGI(TAG, "session.update sent: %s", esp_err_to_name(e));
+    } else if (strstr(json, "\"session.updated\"")) {
+        ESP_LOGI(TAG, "session configured");
+        state_set(RING_NET_READY);
+    } else if (strstr(json, "\"response.done\"")) {
+        s.speaking = false;
+        if (s.state == RING_NET_SPEAKING) {
+            state_set(RING_NET_READY);
+        }
+    } else if (strstr(json, "\"type\":\"error\"")) {
+        ESP_LOGE(TAG, "model error: %s", json);
+    } else if (s.text_cb &&
+               (strstr(json, "response.text.delta") ||
+                strstr(json, "response.audio_transcript.delta"))) {
+        const char *p = strstr(json, "\"delta\"");
+        if (p) {
+            p = strchr(p, ':');
+            if (p) {
+                p++;
+                while (*p == ' ' || *p == '"') p++;
+                const char *end = strchr(p, '"');
+                if (end && end > p) {
+                    s.text_cb(p, (size_t)(end - p), s.user);
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------- tasks */
+
+static void event_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ring_net_state_t st;
+        if (xQueuePeek(s.event_queue, &st, 0) == pdTRUE && s.state_cb) {
+            s.state_cb(st, s.user);
+        }
+    }
+}
+
+static void peer_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        if (s.peer) {
+            esp_peer_main_loop(s.peer);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+static void signal_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        char *offer = malloc(SDP_MAX_BYTES);
+        char *answer = malloc(SDP_MAX_BYTES);
+        if (offer == NULL || answer == NULL) {
+            free(offer);
+            free(answer);
+            continue;
+        }
+
+        xSemaphoreTake(s.sdp_mutex, portMAX_DELAY);
+        strncpy(offer, s.local_sdp, SDP_MAX_BYTES - 1);
+        offer[SDP_MAX_BYTES - 1] = '\0';
+        xSemaphoreGive(s.sdp_mutex);
+
+        if (offer[0] != '\0' &&
+            sdp_exchange(offer, answer, SDP_MAX_BYTES) == ESP_OK) {
+            esp_peer_msg_t m = {
+                .type = ESP_PEER_MSG_TYPE_SDP,
+                .data = (uint8_t *)answer,
+                .size = (int)strlen(answer),
+            };
+            int r = esp_peer_send_msg(s.peer, &m);
+            if (r != ESP_PEER_ERR_NONE) {
+                ESP_LOGE(TAG, "esp_peer_send_msg failed: %d", r);
+                state_set(RING_NET_ERROR);
+            } else {
+                ESP_LOGI(TAG, "remote SDP installed");
+            }
+        } else {
+            state_set(RING_NET_ERROR);
+        }
+
+        free(offer);
+        free(answer);
+    }
+}
+
+/* ------------------------------------------------------------- session */
+
+static esp_err_t peer_open(void)
+{
+    esp_peer_pre_generate_cert();
+
+    esp_peer_default_cfg_t dcfg = {
+        .agent_recv_timeout = 200,
+        .data_ch_cfg = {
+            .send_cache_size = 8192,
+            .recv_cache_size = 8192,
+        },
+        .rtp_cfg = {
+            .audio_recv_jitter = {
+                .cache_size = 16384,
+                .cache_timeout = 200,
+            },
+            .send_pool_size = 16384,
+            .send_queue_num = 32,
+        },
+        .max_candidates = 4,
+    };
+
+    esp_peer_cfg_t cfg = {
+        .role = ESP_PEER_ROLE_CONTROLLING,
+        .audio_dir = ESP_PEER_MEDIA_DIR_SEND_RECV,
+        .audio_info = {
+            .codec = ESP_PEER_AUDIO_CODEC_OPUS,
+            .sample_rate = RING_NET_SAMPLE_RATE,
+            .channel = RING_NET_CHANNELS,
+        },
+        .video_dir = ESP_PEER_MEDIA_DIR_NONE,
+        .enable_data_channel = true,
+        .no_auto_reconnect = true,
+        .extra_cfg = &dcfg,
+        .extra_size = sizeof(dcfg),
+        .on_state = on_state,
+        .on_msg = on_msg,
+        .on_audio_info = on_audio_info,
+        .on_audio_data = on_audio_data,
+        .on_channel_open = on_channel_open,
+        .on_data = on_data_frame,
+        .ctx = NULL,
+    };
+
+    int r = esp_peer_open(&cfg, esp_peer_get_default_impl(), &s.peer);
+    if (r != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "esp_peer_open failed: %d", r);
+        return ESP_FAIL;
+    }
+    if (s.peer_task == NULL) {
+        xTaskCreate(peer_task, "ring-net-peer", PEER_TASK_STACK, NULL,
+                    PEER_TASK_PRIO, &s.peer_task);
+    }
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------- public API */
+
+esp_err_t ring_net_init(ring_net_state_cb_t state_cb,
+                        ring_net_transcript_cb_t text_cb,
+                        void *user)
+{
+    memset(&s, 0, sizeof(s));
+    s.state = RING_NET_OFF;
+    s.state_cb = state_cb;
+    s.text_cb = text_cb;
+    s.user = user;
+
+    s.sdp_mutex = xSemaphoreCreateMutex();
+    s.dl_mutex = xSemaphoreCreateMutex();
+    s.event_queue = xQueueCreate(1, sizeof(ring_net_state_t));
+    if (s.sdp_mutex == NULL || s.dl_mutex == NULL || s.event_queue == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* The downlink buffer is 384 KB: it must live in PSRAM, not internal RAM. */
+    s.dl_ring = heap_caps_malloc(RING_NET_DL_BYTES, MALLOC_CAP_SPIRAM);
+    if (s.dl_ring == NULL) {
+        ESP_LOGW(TAG, "downlink ring allocation failed (%d bytes)",
+                 RING_NET_DL_BYTES);
+    }
+
+    esp_err_t err = opus_open();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "opus init failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    xTaskCreate(signal_task, "ring-net-signal", SIGNAL_TASK_STACK, NULL,
+                SIGNAL_TASK_PRIO, &s.signal_task);
+    xTaskCreate(event_task, "ring-net-event", EVENT_TASK_STACK, NULL,
+                EVENT_TASK_PRIO, &s.event_task);
+
+    ESP_LOGI(TAG, "initialised");
+    return ESP_OK;
+}
+
+esp_err_t ring_net_start(const char *model, const char *api_key)
+{
+    if (model == NULL || api_key == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    snprintf(s.model, sizeof(s.model), "%s", model);
+    snprintf(s.api_key, sizeof(s.api_key), "%s", api_key);
+
+    /* A retry must start from a clean peer: reusing a half-open connection
+     * would send a second offer over an existing DTLS session. */
+    if (s.peer) {
+        esp_peer_disconnect(s.peer);
+        esp_peer_close(s.peer);
+        s.peer = NULL;
+    }
+    state_set(RING_NET_CONNECTING);
+
+    /* 1. Wi-Fi */
+    esp_err_t err = ring_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "wifi start: %s", esp_err_to_name(err));
+        state_set(RING_NET_ERROR);
+        return err;
+    }
+    err = ring_wifi_wait_connected(20000);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "no IP: %s", esp_err_to_name(err));
+        state_set(RING_NET_ERROR);
+        return err;
+    }
+
+    /* 2. Clock — required for TLS/DTLS certificate validation. */
+    err = sync_clock();
+    if (err != ESP_OK) {
+        state_set(RING_NET_ERROR);
+        return err;
+    }
+
+    /* 3. PeerConnection + signaling */
+    err = peer_open();
+    if (err != ESP_OK) {
+        state_set(RING_NET_ERROR);
+        return err;
+    }
+    int r = esp_peer_new_connection(s.peer);
+    if (r != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "new_connection failed: %d", r);
+        state_set(RING_NET_ERROR);
+        return ESP_FAIL;
+    }
+
+    /* 4. Wait for the DataChannel + session.updated. */
+    ESP_LOGI(TAG, "waiting for session...");
+    uint32_t deadline = now_ms() + SESSION_TIMEOUT_MS;
+    while (now_ms() < deadline &&
+           (s.state == RING_NET_CONNECTING || s.state == RING_NET_OFF)) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (s.state != RING_NET_READY) {
+        ESP_LOGW(TAG, "session not ready (%s)", ring_net_state_name(s.state));
+        return ESP_ERR_TIMEOUT;
+    }
+    ESP_LOGI(TAG, "session ready (model %s)", s.model);
+    return ESP_OK;
+}
+
+esp_err_t ring_net_stop(void)
+{
+    if (s.peer) {
+        esp_peer_disconnect(s.peer);
+        esp_peer_close(s.peer);
+        s.peer = NULL;
+    }
+    state_set(RING_NET_OFF);
+    return ESP_OK;
+}
+
+ring_net_state_t ring_net_state(void)
+{
+    return s.state;
+}
+
+esp_err_t ring_net_set_listening(bool on)
+{
+    if (on) {
+        if (s.state != RING_NET_READY) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        s.speaking = false;
+        state_set(RING_NET_LISTENING);
+    } else if (s.state == RING_NET_LISTENING) {
+        /* Releasing while the model is already speaking must not cut the
+         * reply short; the reply finishes and response.done returns us to
+         * READY. */
+        state_set(RING_NET_READY);
+    }
+    return ESP_OK;
+}
+
+esp_err_t ring_net_send_audio(const int16_t *pcm, size_t samples)
+{
+    if (s.peer == NULL || pcm == NULL || samples == 0 || s.enc == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s.state != RING_NET_LISTENING) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Encode exactly one Opus frame per call (the caller feeds
+     * RING_NET_FRAME_SAMPLES at a time). */
+    esp_audio_enc_in_frame_t in = {
+        .buffer = (uint8_t *)pcm,
+        .len = (uint32_t)(samples * 2),
+    };
+    esp_audio_enc_out_frame_t out = {
+        .buffer = s.enc_out,
+        .len = (uint32_t)s.enc_out_size,
+    };
+    esp_audio_err_t e = esp_audio_enc_process(s.enc, &in, &out);
+    if (e != ESP_AUDIO_ERR_OK || out.encoded_bytes == 0) {
+        return ESP_FAIL;
+    }
+
+    esp_peer_audio_frame_t frame = {
+        .data = s.enc_out,
+        .size = (int)out.encoded_bytes,
+        .pts = (uint32_t)now_ms(),
+    };
+    int r = esp_peer_send_audio(s.peer, &frame);
+    if (r != ESP_PEER_ERR_NONE && r != ESP_PEER_ERR_WOULD_BLOCK) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+esp_err_t ring_net_read_audio(int16_t *pcm, size_t samples, size_t *out_samples,
+                               uint32_t timeout_ms)
+{
+    if (pcm == NULL || samples == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    size_t want = samples * 2;
+    uint32_t deadline = now_ms() + timeout_ms;
+    size_t got = 0;
+    while (got < want) {
+        got += dl_pop((uint8_t *)pcm + got, want - got);
+        if (got >= want || now_ms() >= deadline) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    if (out_samples) {
+        *out_samples = got / 2;
+    }
+    return got > 0 ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+bool ring_net_is_speaking(void)
+{
+    return s.speaking;
+}
+
+esp_err_t ring_net_send_event(const char *json)
+{
+    if (s.peer == NULL || json == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_peer_data_frame_t frame = {
+        .type = ESP_PEER_DATA_CHANNEL_STRING,
+        .stream_id = s.send_stream_id,
+        .data = (uint8_t *)json,
+        .size = (int)strlen(json),
+    };
+    int r = esp_peer_send_data(s.peer, &frame);
+    if (r != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "esp_peer_send_data(stream %u) failed: %d",
+                 s.send_stream_id, r);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}

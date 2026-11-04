@@ -17,8 +17,10 @@ idf_component_register(
         "src/ring_sd.c"
         "src/ring_wifi.c"
         "src/ring_bt.c"
+        "src/ring_net.c"
         "src/ring_ui.c"
         "src/ring_rand.c"
     INCLUDE_DIRS "include"
-    REQUIRES smartring_plus lvgl esp_lvgl_adapter esp_wifi esp_netif esp_event nvs_flash bt
+    REQUIRES smartring_plus lvgl esp_lvgl_adapter esp_wifi esp_netif esp_event nvs_flash bt esp_peer esp_http_client esp-tls lwip mbedtls esp_audio_codec
+    EMBED_TXTFILES "assets/qianwen_ca.pem"
 )

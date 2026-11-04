@@ -1,6 +1,10 @@
 # Smart Ring Plus (VIEWE) known-good sdkconfig defaults
 # See notes/esp-smartring.md section 6 for rationale.
 
+# --- Flash size. The module is an ESP32-S3-N16R8 (16 MB flash); the IDF
+#     default of 2 MB would reject the enlarged partition table.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
 # --- Console: send ALL output (including panic/WDT backtraces) to the
 #     USB-Serial-JTAG port (/dev/ttyACM0). The primary console defaulted to
 #     UART0 on GPIO43/44, which is NOT exposed on this board, so crashes were
@@ -28,10 +32,24 @@ CONFIG_FREERTOS_HZ=1000
 #     objects in one call chain). 3584 is the IDF default; 8192 is comfortable.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
-# --- App partition. The Wi-Fi stack (esp_wifi + lwip + wpa_supplicant) pushes
-#     a Wi-Fi-enabled app past the default 1 MB factory partition; the LARGE
-#     table gives 1500K. Harmless for the non-Wi-Fi apps.
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# --- App partition. The Wi-Fi stack (esp_wifi + lwip + wpa_supplicant) and
+#     esp_peer (WebRTC + DTLS + SRTP) push an app past the default 1 MB factory
+#     partition, so the project carries a custom table (partitions.csv) with a
+#     3000K app partition. Harmless for the smaller apps.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- WebRTC / HTTPS (examples/qianwenai-button, ring_net)
+#     DTLS-SRTP is required by esp_peer; it also disables
+#     CONFIG_MBEDTLS_DYNAMIC_BUFFER, so keep the TLS buffers in PSRAM.
+CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
+CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
+CONFIG_MBEDTLS_X509_CREATE_C=y
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# SNTP: allow multiple NTP servers (Aliyun + public pool) for clock sync.
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
 
 # --- Bluetooth LE (NimBLE). Only pulled in when an app calls ring_bt_init();
 #     the BT controller/host code is linked into every app but allocates no

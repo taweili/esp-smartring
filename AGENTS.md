@@ -111,6 +111,7 @@ EOF
 │   ├── imu-dash/                # live IMU dashboard (accel/gyro/temp/tilt)
 │   ├── gesture-test/            # single-finger gesture probe (tap/hold/swipe)
 │   ├── voice-note/              # mic+speaker loop-back (hold to record)
+│   ├── qianwenai-button/        # hold-to-talk WebRTC voice (Qianwen, Opus)
 │   └── hello/                   # bring-up smoke test (white screen + label)
 ├── tools/
 │   └── lvgl_img_pack.py         # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
@@ -349,8 +350,8 @@ that must stay committed are the override *copies* in `components/`
   over WebSocket, Realtime over WebRTC).
 - `notes/qianwenai.md` — 千问 AI 平台 (qianwenai.com) reference: model catalog by category and the API surface
   (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async/batch).
-- `notes/qianwenai-button.md` — design for `examples/qianwenai-button`: one green button, hold-to-talk to
-  `qwen-audio-3.1-realtime-flash` over WebRTC (connection, audio pipeline, UI/state machine, risks).
+- `examples/qianwenai-button/README.md` — hold-to-talk WebRTC voice button (`qwen-audio-3.1-realtime-flash`):
+  SDP exchange, Opus/48 kHz pipeline, `ring_net` module, stack/heap lessons.
 - `notes/meta-muse.md`, `notes/xiaozhi.md` — assistant feasibility research; no code yet.
 - `notes/gbuddy.md` — GBuddy face-animation design note: measured still geometry, flash/asset
   budget, LVGL image-format limits, offline asset pipeline, animation plan; §12 = what shipped
