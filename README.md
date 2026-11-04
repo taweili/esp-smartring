@@ -95,6 +95,7 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `examples/glyph-anime/README.md` | glyph-anime design & build spec (layered reveal maths, risks). |
 | `notes/architecture.md` | Architecture rationale: why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
 | `notes/networking.md` | Networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and the three OpenAI API paths (REST, Realtime-over-WebSocket, Realtime-over-WebRTC). |
+| `notes/qianwenai.md` | 千问 AI 平台 (qianwenai.com) reference: model catalog by category (LLM, vision, image/video/3D generation, speech, omni, embeddings) and the API surface (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async task/batch APIs). |
 | `notes/gbuddy.md` | GBuddy face animation design note: measured still geometry, asset/flash budget, LVGL image-format limits, offline asset pipeline, animation plan; §12 records what shipped. |
 | `examples/gbuddy/README.md` | GBuddy app summary: moods, blink/gaze/sleep behaviour, how to regenerate the sprite assets. |
 | `notes/meta-muse.md`, `notes/xiaozhi.md` | Assistant feasibility research (no code yet). |

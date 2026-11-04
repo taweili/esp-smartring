@@ -347,6 +347,8 @@ that must stay committed are the override *copies* in `components/`
 - `notes/networking.md` — networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/
   cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and OpenAI API paths (REST, Realtime
   over WebSocket, Realtime over WebRTC).
+- `notes/qianwenai.md` — 千问 AI 平台 (qianwenai.com) reference: model catalog by category and the API surface
+  (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async/batch).
 - `notes/meta-muse.md`, `notes/xiaozhi.md` — assistant feasibility research; no code yet.
 - `notes/gbuddy.md` — GBuddy face-animation design note: measured still geometry, flash/asset
   budget, LVGL image-format limits, offline asset pipeline, animation plan; §12 = what shipped
