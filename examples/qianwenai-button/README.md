@@ -1,8 +1,9 @@
-# qianwenai-button — one green button, hold-to-talk over WebRTC
+# qianwenai-button — one round button, hold-to-talk over WebRTC
 
 `examples/qianwenai-button/` is a **push-to-talk voice assistant** for the
-Smart Ring Plus. One round green button fills the screen: **hold it to talk** to
-`qwen-audio-3.1-realtime-flash` on the [Qianwen AI platform](https://www.qianwenai.com),
+Smart Ring Plus. One round button fills the screen: **green when ready to
+talk**, **red while recording or waiting on the server response**. Hold it to
+talk to `qwen-audio-3.1-realtime-flash` on the [Qianwen AI platform](https://www.qianwenai.com),
 **release it** and the model's spoken reply comes out of the ring's speaker.
 
 ```
@@ -11,7 +12,7 @@ Smart Ring Plus. One round green button fills the screen: **hold it to talk** to
         │      ┌───────────────┐      │
         │      │               │      │
         │      │  HOLD TO TALK │      │  ← the one button (r = 78 px,
-        │      │               │      │     green border)
+        │      │               │      │     solid colour fill)
         │      └───────────────┘      │
         │      ready — press & hold   │
         │      ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁      │  ← level bar
@@ -19,13 +20,17 @@ Smart Ring Plus. One round green button fills the screen: **hold it to talk** to
         └─────────────────────────────┘
 ```
 
+The button is a **solid colour-filled circle** — the whole disc is the
+state colour, not an outline:
+
 | State | Button | Status | What happens |
 |---|---|---|---|
-| Idle | green, `HOLD TO TALK` | "ready — press & hold to talk" | session open, mic closed |
-| Talking | **red**, `TALK` | "listening…" + level | 48 kHz mic → Opus → RTP uplink |
-| Replying | orange, `REPLY` | "replying…" + level | Opus → PCM → speaker, uplink closed |
-| Connecting | dim, `···` | "connecting…" | Wi-Fi → SNTP → SDP → DTLS → session |
-| Error | red, `!` | "connection lost — reconnecting" | retries every 5 s |
+| Idle | **green fill**, `HOLD TO TALK` | "ready — press & hold to talk" | session open, mic closed |
+| Talking | **red fill**, `TALK` | "listening…" + level | 48 kHz mic → Opus → RTP uplink |
+| Waiting | **red fill**, `WAIT` | "waiting…" | released, waiting for the server response |
+| Replying | **red fill**, `REPLY` | "replying…" + level | Opus → PCM → speaker, uplink closed |
+| Connecting | grey fill, `···` | "connecting to \<SSID\>…" → "connecting…" | Wi-Fi → SNTP → SDP → DTLS → session |
+| Error | red fill, `!` | "connection lost — reconnecting" | retries every 5 s |
 
 ---
 
@@ -85,8 +90,13 @@ Applications never include `esp_peer`, `esp_http_client` or the codec — the
 
 ## 3. Connection sequence
 
-1. **Wi-Fi.** `ring_wifi_start()` + `ring_wifi_wait_connected(20 s)`, NVS
-   credentials (seeded from `RING_WIFI_DEFAULT_*` on first boot).
+1. **Wi-Fi, first and explicitly.** The app calls `ring_wifi_init()`,
+   `ring_wifi_start()` and `ring_wifi_wait_connected(20 s)` in its connect task
+   *before* starting the session, and shows the link state on screen
+   (`connecting to <SSID>…` → `Wi-Fi connected · <IP>`). A failure retries
+   every 5 s. `ring_net_start()` then reuses the station
+   (`ring_wifi_start()` is idempotent). Credentials come from NVS, seeded
+   from `RING_WIFI_DEFAULT_*` on first boot.
 2. **Clock — mandatory.** `esp_netif_sntp_init()` against `ntp.aliyun.com`
    then `pool.ntp.org`. The HTTPS POST and the DTLS handshake both validate
    certificates against the wall clock; an unset clock fails every connection.
@@ -128,6 +138,7 @@ The first cut crashed repeatedly; the causes are now design rules:
 | Issue | Fix |
 |---|---|
 | `esp_peer_main_loop` runs the **DTLS handshake** on the peer task | peer task stack = **16 KB** (was 6 KB → stack overflow) |
+| Opus `silk_encode_frame_FIX` alone has a **~9.5 KB stack frame**; the SILK path peaks at **~20 KB** (silence/voice) | `qw-talk` stack = **24 KB** (was 8 KB → overflow on the first encoded frame) |
 | The peer callback runs on that same stack | `on_msg` copies with `memcpy` only — no 4 KB arrays, no large `%s` logging |
 | Signaling held a 4 KB `offer` **plus** two 4 KB buffers in `sdp_exchange` | all SDP buffers are `malloc`'d |
 | `state_set()` invoked the app callback (which takes the LVGL lock) **on a peer thread** | state changes are marshalled through a queue to `ring-net-event`, which calls the app |

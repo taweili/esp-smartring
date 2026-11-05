@@ -68,6 +68,9 @@
 /* ------------------------------------------------------------- task */
 
 #define WORKER_STACK    8192
+/* The Opus encoder's SILK path peaks at ~20 KB of stack (silk_encode_frame_FIX
+ * alone has a ~9.5 KB frame); 8 KB overflowed on the first encoded frame. */
+#define TALK_TASK_STACK 24576
 #define WORKER_PRIO     5       /* below LVGL (6): button events win */
 
 /* ------------------------------------------------------------- UI */
@@ -82,11 +85,11 @@
 #define BAR_Y     288
 #define HINT_Y    320
 
-#define COL_BTN_BG lv_color_hex(0x101418)
+#define COL_WAIT   RING_COLOR_GREEN          /* ready to talk   */
+#define COL_CONN   lv_color_hex(0x3A4048)     /* connecting      */
 #define COL_DIM    lv_color_hex(0x9E9E9E)
+/* Red covers both recording and waiting on the server response. */
 #define COL_TALK   lv_color_hex(0xFF1744)
-#define COL_REPLY  lv_color_hex(0xFF9800)
-#define COL_THINK  lv_color_hex(0xFFC107)
 
 /* ------------------------------------------------------------- state */
 
@@ -116,7 +119,11 @@ static void ui_button(const char *text, const lv_font_t *font, lv_color_t color)
         lv_obj_set_style_text_font(s_btn_label, font, LV_PART_MAIN);
         lv_obj_set_style_text_color(s_btn_label, lv_color_white(), LV_PART_MAIN);
         lv_obj_align(s_btn_label, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_set_style_border_color(s_btn, color, LV_PART_MAIN);
+        /* Solid fill: the whole circle is the state colour, not an outline. */
+        lv_obj_set_style_bg_color(s_btn, color, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_btn, lv_color_darken(color, 60),
+                                  LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(s_btn, 0, LV_PART_MAIN);
     }
 }
 
@@ -151,10 +158,12 @@ static void ui_idle(const char *status)
                                    LV_PART_MAIN);
         lv_obj_set_style_text_color(s_btn_label, lv_color_white(), LV_PART_MAIN);
         lv_obj_align(s_btn_label, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_set_style_border_color(s_btn, RING_COLOR_GREEN, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_btn, COL_BTN_BG, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_btn, COL_WAIT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_btn, lv_color_darken(COL_WAIT, 60),
+                                  LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(s_btn, 0, LV_PART_MAIN);
         lv_bar_set_value(s_bar, 0, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(s_bar, RING_COLOR_GREEN, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(s_bar, COL_WAIT, LV_PART_INDICATOR);
         lv_label_set_text(s_status, status ? status : "press & hold to talk");
         lv_obj_set_style_text_color(s_status, COL_DIM, LV_PART_MAIN);
     }
@@ -181,12 +190,12 @@ static void net_state_cb(ring_net_state_t st, void *user)
         ui_bar(0, COL_TALK);
         break;
     case RING_NET_SPEAKING:
-        ui_button("REPLY", &lv_font_montserrat_48, COL_REPLY);
-        ui_status("replying…", COL_REPLY);
-        ui_bar(100, COL_REPLY);
+        ui_button("REPLY", &lv_font_montserrat_48, COL_TALK);
+        ui_status("replying…", COL_TALK);
+        ui_bar(100, COL_TALK);
         break;
     case RING_NET_CONNECTING:
-        ui_button("···", &lv_font_montserrat_48, COL_DIM);
+        ui_button("···", &lv_font_montserrat_48, COL_CONN);
         ui_status("connecting…", COL_DIM);
         ui_bar(0, COL_DIM);
         break;
@@ -265,14 +274,21 @@ static void talk_worker(void *arg)
 
     /* Uplink: one 20 ms Opus frame at a time until released or the model
      * starts answering. */
+    uint32_t frames = 0;
     while (!s_stop && ring_net_state() == RING_NET_LISTENING) {
         if (ring_audio_read(s_stereo, sizeof(s_stereo), 200) != ESP_OK) {
             ESP_LOGW(TAG, "mic read failed");
             break;
         }
         stereo_to_mono(s_stereo, s_mono, FRAME_SAMPLES);
-        if (ring_net_send_audio(s_mono, FRAME_SAMPLES) != ESP_OK) {
+        esp_err_t serr = ring_net_send_audio(s_mono, FRAME_SAMPLES);
+        if (serr != ESP_OK) {
+            ESP_LOGW(TAG, "send audio failed: %s", esp_err_to_name(serr));
             break;
+        }
+        if ((frames++ % 50) == 0) {
+            ESP_LOGI(TAG, "uplink frame %u, mic level %u", (unsigned)frames,
+                     level_of(s_mono, FRAME_SAMPLES));
         }
         ui_bar(level_of(s_mono, FRAME_SAMPLES), COL_TALK);
     }
@@ -281,8 +297,12 @@ static void talk_worker(void *arg)
     ring_net_set_listening(false);
 
     /* Downlink: play the reply until the model reports done and the buffer has
-     * drained. */
-    ui_status("…", COL_THINK);
+     * drained. The button stays red while we wait for the server. If the model
+     * is already speaking, its SPEAKING callback owns the label. */
+    if (ring_net_state() == RING_NET_READY) {
+        ui_button("WAIT", &lv_font_montserrat_48, COL_TALK);
+        ui_status("waiting…", COL_TALK);
+    }
     TickType_t last = xTaskGetTickCount();
     TickType_t start = last;
     ring_audio_set_mute(true);
@@ -298,7 +318,7 @@ static void talk_worker(void *arg)
                 ESP_LOGW(TAG, "speaker write failed");
             }
             ring_audio_set_mute(true);
-            ui_bar(level_of(s_reply, got), COL_REPLY);
+            ui_bar(level_of(s_reply, got), COL_TALK);
         } else if (ring_net_state() == RING_NET_READY &&
                    (xTaskGetTickCount() - last) > pdMS_TO_TICKS(TALK_GRACE_MS)) {
             break;
@@ -336,7 +356,7 @@ static void btn_cb(lv_event_t *e)
             s_worker_busy = false;
             return;
         }
-        if (xTaskCreate(talk_worker, "qw-talk", WORKER_STACK, NULL,
+        if (xTaskCreate(talk_worker, "qw-talk", TALK_TASK_STACK, NULL,
                         WORKER_PRIO, NULL) != pdPASS) {
             s_worker_busy = false;
             ring_net_set_listening(false);
@@ -393,11 +413,58 @@ static void load_api_key(void)
 static void connect_task(void *arg)
 {
     (void)arg;
+
+    /* 1. Wi-Fi first. The WebRTC session needs the link (and, via SNTP, a
+     * wall clock) before it can do anything, so bring the station up and show
+     * the link state on the screen before starting the session. */
+    ui_button("···", &lv_font_montserrat_48, COL_CONN);
+
+    esp_err_t err = ring_wifi_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ring_wifi_init: %s", esp_err_to_name(err));
+    }
+
+    for (;;) {
+        char ssid[32] = "";
+        ring_wifi_get_credentials(ssid, sizeof(ssid), NULL, 0);
+
+        char line[64];
+        snprintf(line, sizeof(line), "connecting to %s…",
+                 ssid[0] ? ssid : "Wi-Fi");
+        ui_status(line, COL_DIM);
+
+        err = ring_wifi_start();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "wifi start: %s", esp_err_to_name(err));
+            ui_status("no Wi-Fi credentials — retrying", COL_TALK);
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+
+        err = ring_wifi_wait_connected(20000);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "wifi connect: %s", esp_err_to_name(err));
+            ui_status("Wi-Fi timed out — retrying", COL_TALK);
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+
+        char ip[16] = "";
+        ring_wifi_get_ip(ip, sizeof(ip));
+        ESP_LOGI(TAG, "Wi-Fi connected, IP %s", ip);
+        snprintf(line, sizeof(line), "Wi-Fi connected · %s", ip);
+        ui_status(line, COL_WAIT);
+        break;
+    }
+
+    /* 2. WebRTC session. ring_net_start() reuses the station we just brought
+     * up (ring_wifi_start() is idempotent). */
     for (;;) {
         if (ring_net_start(QIANWEN_MODEL, s_api_key) == ESP_OK) {
             break;
         }
         ESP_LOGW(TAG, "connect failed — retry in 5 s");
+        ui_status("session failed — retrying", COL_TALK);
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
     vTaskDelete(NULL);
@@ -431,23 +498,22 @@ esp_err_t ring_example_start(void)
                                             RING_COLOR_GREEN);
         ring_ui_place_centered(title, RING_CX, TITLE_Y);
 
-        /* The one big round green button. */
+        /* The one big round button: a solid colour-filled circle. */
         s_btn = lv_obj_create(scr);
         lv_obj_set_size(s_btn, BTN_R * 2, BTN_R * 2);
         lv_obj_set_pos(s_btn, BTN_CX - BTN_R, BTN_CY - BTN_R);
         lv_obj_set_style_radius(s_btn, BTN_R, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_btn, COL_BTN_BG, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_btn, COL_CONN, LV_PART_MAIN);
         lv_obj_set_style_bg_opa(s_btn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(s_btn, 3, LV_PART_MAIN);
-        lv_obj_set_style_border_color(s_btn, RING_COLOR_GREEN, LV_PART_MAIN);
+        lv_obj_set_style_border_width(s_btn, 0, LV_PART_MAIN);
         lv_obj_set_style_shadow_width(s_btn, 0, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_btn, lv_color_hex(0x063A1E),
+        lv_obj_set_style_bg_color(s_btn, lv_color_darken(COL_CONN, 60),
                                   LV_STATE_PRESSED);
         lv_obj_add_flag(s_btn, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_flag(s_btn, LV_OBJ_FLAG_SCROLLABLE);
 
-        s_btn_label = ring_ui_add_label(s_btn, "HOLD\nTO\nTALK",
-                                        &lv_font_montserrat_20,
+        s_btn_label = ring_ui_add_label(s_btn, "···",
+                                        &lv_font_montserrat_48,
                                         lv_color_white());
         lv_obj_center(s_btn_label);
 
