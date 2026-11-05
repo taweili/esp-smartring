@@ -13,3 +13,7 @@ managed_components/
 # Local secrets (API keys, Wi-Fi credentials) — never commit.
 secrets.local
 secrets.local.*
+
+# Host-side test venv and generated reply audio
+scripts/.venv/
+scripts/reply.wav

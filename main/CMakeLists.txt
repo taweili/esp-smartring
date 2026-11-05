@@ -38,10 +38,18 @@ foreach(_d ${RING_EXAMPLE_INCLUDE_DIRS})
     list(APPEND _incs "${_app_dir}/${_d}")
 endforeach()
 
+# Optional binary assets the selected example wants embedded (e.g. a test
+# audio clip). Paths are relative to the example directory.
+set(_ring_embed_files "")
+foreach(_f ${RING_EXAMPLE_EMBED_FILES})
+    list(APPEND _ring_embed_files "${_app_dir}/${_f}")
+endforeach()
+
 idf_component_register(
     SRCS ${_srcs}
     INCLUDE_DIRS ${_incs}
     REQUIRES ringkit ${RING_EXAMPLE_REQUIRES}
+    EMBED_FILES ${_ring_embed_files}
 )
 
 # ---------------------------------------------------------------------------
