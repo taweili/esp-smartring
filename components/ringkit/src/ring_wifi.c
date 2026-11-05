@@ -45,6 +45,7 @@ static ring_wifi_ctx_t s_state = {
 };
 static SemaphoreHandle_t s_mutex = NULL;
 static bool s_initialized = false;   /* driver/event-loop once-guard */
+static bool s_started = false;       /* esp_wifi_start() issued, radio up  */
 
 #define RECONNECT_BACKOFF_MS 2000
 /* Backoff so WIFI_EVENT_STA_DISCONNECTED storms don't spin on esp_wifi_connect.
@@ -244,6 +245,14 @@ esp_err_t ring_wifi_start(void)
     esp_err_t err = ring_wifi_init();
     ESP_RETURN_ON_ERROR(err, TAG, "init failed");
 
+    /* Idempotent. An app may bring the station up explicitly (to show the
+     * link state) before calling ring_net_start(), which calls this again;
+     * esp_wifi_start() rejects a second start, so return early instead. */
+    if (s_started) {
+        ESP_LOGI(TAG, "station already started (state %d)", ring_wifi_state());
+        return ESP_OK;
+    }
+
     char ssid[32] = "", pass[64] = "";
     err = load_or_seed_credentials(ssid, sizeof(ssid), pass, sizeof(pass));
     ESP_RETURN_ON_ERROR(err, TAG, "credential load failed: %s", esp_err_to_name(err));
@@ -261,7 +270,11 @@ esp_err_t ring_wifi_start(void)
     state_unlock();
 
     ESP_LOGI(TAG, "starting station for '%s'", ssid);
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start failed");
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_RETURN_ON_ERROR(err, TAG, "esp_wifi_start failed");
+    }
+    s_started = true;
 
     /* WIFI_EVENT_STA_START -> connect is driven by the event handler. */
     return ESP_OK;
@@ -333,8 +346,9 @@ esp_err_t ring_wifi_stop(void)
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
+    s_started = false;
     state_lock();
-    s_state.state = RING_WIFI_DISCONNECTED;
+    s_state.state = RING_WIFI_OFF;
     s_state.connected = false;
     state_unlock();
     return esp_wifi_stop();

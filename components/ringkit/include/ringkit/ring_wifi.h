@@ -69,6 +69,9 @@ esp_err_t ring_wifi_init(void);
  *
  * Non-blocking: returns after esp_wifi_start()/esp_wifi_connect() are queued.
  * Use ring_wifi_wait_connected() if you need to block until the IP arrives.
+ *
+ * Idempotent: if the radio is already running this returns ESP_OK without
+ * re-issuing esp_wifi_start() (which would fail with ESP_ERR_INVALID_STATE).
  */
 esp_err_t ring_wifi_start(void);
 

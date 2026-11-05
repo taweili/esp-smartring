@@ -317,7 +317,7 @@ override with `-D`). `ring_wifi_set_credentials()` re-provisions at runtime.
 | Function | Description |
 |----------|-------------|
 | `esp_err_t ring_wifi_init(void)` | NVS + netif + event loop + driver. Idempotent. Does not start the radio. |
-| `esp_err_t ring_wifi_start(void)` | Load creds from NVS (seed defaults if empty) + connect. Non-blocking. |
+| `esp_err_t ring_wifi_start(void)` | Load creds from NVS (seed defaults if empty) + connect. Non-blocking, idempotent (safe to call again while the radio is up). |
 | `esp_err_t ring_wifi_set_credentials(const char *ssid, const char *pass)` | Persist to NVS, then disconnect/reconnect. |
 | `esp_err_t ring_wifi_get_credentials(char *ssid, size_t sl, char *pass, size_t pl)` | Read persisted creds (NULL-tolerant). |
 | `esp_err_t ring_wifi_disconnect(void)` / `ring_wifi_stop(void)` | Drop the link / stop the radio (keeps NVS creds). |

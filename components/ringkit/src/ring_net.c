@@ -95,7 +95,9 @@ size_t ring_net_ca_pem_len(void)
 #define PEER_TASK_PRIO          5
 #define SIGNAL_TASK_STACK       4096
 #define SIGNAL_TASK_PRIO        4
-#define EVENT_TASK_STACK        3584
+/* Runs the app callback, which takes the LVGL lock and renders labels with
+ * the 48 px font; 3.5 KB was tight. */
+#define EVENT_TASK_STACK        6144
 #define EVENT_TASK_PRIO         4
 
 #define SDP_MAX_BYTES           4096
@@ -493,6 +495,7 @@ static int on_msg(esp_peer_msg_t *msg, void *ctx)
     xSemaphoreGive(s.sdp_mutex);
 
     ESP_LOGI(TAG, "local SDP ready");
+    ESP_LOGI(TAG, "LOCAL SDP:\n%s", s.local_sdp);
     if (s.signal_task) {
         xTaskNotifyGive(s.signal_task);
     }
@@ -638,9 +641,16 @@ static void event_task(void *arg)
 static void peer_task(void *arg)
 {
     (void)arg;
+    uint32_t ticks = 0;
+    ESP_LOGI(TAG, "peer task started (hwm %u words)",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
     for (;;) {
         if (s.peer) {
             esp_peer_main_loop(s.peer);
+        }
+        if ((ticks++ % 1000) == 0) {
+            ESP_LOGI(TAG, "peer task alive (hwm %u words)",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -678,6 +688,7 @@ static void signal_task(void *arg)
                 state_set(RING_NET_ERROR);
             } else {
                 ESP_LOGI(TAG, "remote SDP installed");
+                ESP_LOGI(TAG, "ANSWER SDP:\n%s", answer);
             }
         } else {
             state_set(RING_NET_ERROR);
@@ -909,11 +920,16 @@ esp_err_t ring_net_send_audio(const int16_t *pcm, size_t samples)
         return ESP_FAIL;
     }
 
+    /* RTP presentation timestamp: the sample count, not the wall clock.
+     * The peer library advances it by the frame size; a ms timestamp here
+     * makes the model reject the stream. */
+    static uint32_t s_pts = 0;
     esp_peer_audio_frame_t frame = {
         .data = s.enc_out,
         .size = (int)out.encoded_bytes,
-        .pts = (uint32_t)now_ms(),
+        .pts = s_pts,
     };
+    s_pts += samples;
     int r = esp_peer_send_audio(s.peer, &frame);
     if (r != ESP_PEER_ERR_NONE && r != ESP_PEER_ERR_WOULD_BLOCK) {
         return ESP_FAIL;
