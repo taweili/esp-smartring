@@ -100,8 +100,8 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `notes/networking.md` | Networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and the three OpenAI API paths (REST, Realtime-over-WebSocket, Realtime-over-WebRTC). |
 | `notes/qianwenai.md` | 千问 AI 平台 (qianwenai.com) reference: model catalog by category (LLM, vision, image/video/3D generation, speech, omni, embeddings) and the API surface (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async task/batch APIs). |
 | `examples/06_qianwenai_push_to_talk/README.md` | The hold-to-talk WebRTC voice button: Qianwen SDP exchange, Opus/48 kHz pipeline, task & memory layout, pinned TLS chain, partition sizing, and the UDP-limited on-device result. |
-| `notes/gbuddy.md` | GBuddy face animation design note: measured still geometry, asset/flash budget, LVGL image-format limits, offline asset pipeline, animation plan; §12 records what shipped. |
-| `examples/01_gbuddy_face/README.md` | GBuddy app summary: moods, blink/gaze/sleep behaviour, how to regenerate the sprite assets. |
+| `examples/01_gbuddy_face/README.md` | GBuddy app: moods, blink/gaze/sleep behaviour, sprite geometry and flash budget, the on-device findings (flat background, feathered matte, LVGL snapshot debugging), and how to regenerate the sprite assets. |
+| `notes/ws-voice-chat.md`, `notes/quic-voice-chat.md` | Voice-chat transport designs (no code yet): WebSocket (`examples/10_qianwen_ws_voice_chat`) and QUIC/AOQ (`examples/11_quic_voice_chat`). |
 | `notes/meta-muse.md`, `notes/xiaozhi.md` | Assistant feasibility research (no code yet). |
 | BSP upstream | `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus`). |
 

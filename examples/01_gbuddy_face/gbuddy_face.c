@@ -5,8 +5,8 @@
  * the same robot, not an animation. Instead of showing a photo, this app cuts
  * the eyes and mouth out of those stills as alpha sprites (tools/ +
  * assets/rebuild.sh) and animates them as small objects on a generated
- * flat "screen" band. See notes/gbuddy.md for the measurements behind every
- * number and §12 for what changed once it ran on the panel.
+ * flat "screen" band. See examples/01_gbuddy_face/README.md for the measurements
+ * behind every number and §4 for what changed once it ran on the panel.
  *
  *   happy      open eyes + smile       (001)
  *   surprised  open eyes + "o" mouth   (002)
@@ -41,8 +41,8 @@
 
 /* ------------------------------------------------------------- layout */
 /* Sprite positions are relative to the 360x222 face container (panel y=69).
- * Measured in notes/gbuddy.md §1.3; the sprites were cut with the exact crop
- * windows that made these numbers true. */
+ * Measured in examples/01_gbuddy_face/README.md §1; the sprites were cut with
+ * the exact crop windows that made these numbers true. */
 
 #define FACE_Y   69
 #define FACE_W   360

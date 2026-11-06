@@ -2,7 +2,7 @@
 """Pack a raw RGB888 blob (+ optional A8 matte) into an LVGL 9 image C file.
 
 No Python imaging dependencies: the caller does the decoding/scaling with
-ImageMagick and hands over raw planes. See notes/gbuddy.md §4.
+ImageMagick and hands over raw planes. See examples/01_gbuddy_face/README.md §1.
 
   magick in.png -resize 360x222! -depth 8 rgb:/tmp/x.rgb
   magick in.png -alpha extract -depth 8 gray:/tmp/x.a8

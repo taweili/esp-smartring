@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate every sprite .c file in this directory from medias/gbuddy-00N.png.
 #
-# Pipeline (see notes/gbuddy.md §4):
+# Pipeline (see ../README.md §1):
 #   fixed crop window -> 118x150 / 110x80 panel-scale RGB
 #   luminance matte -> feather the border -> RGB565 + A8 planes
 #   -> tools/lvgl_img_pack.py -> <name>.c
