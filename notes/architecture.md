@@ -71,9 +71,13 @@ through `ring_*` wrappers plus UI/theme/RNG. Apps **never** include
 | `ring_touch` | `esp_lcd_touch` handle (raw coordinates) |
 | `ring_battery` | PMIC type (V1 ADC / V2 AXP2101), snapshot, percent / voltage / charging |
 | `ring_power` | `ring_power_shutdown()` (GPIO47 hold ~3.5 s) |
-| `ring_audio` | codec handle, I2S RX, blocking read/write, mute |
+| `ring_audio` | codec handle, I2S RX, blocking read/write, mute, stereo↔mono fold |
 | `ring_imu` | accel, gyro, temperature, screen-plane tilt, level calibration |
 | `ring_sd` | mount state, card handle, sorted directory listing |
+| `ring_wifi` | station bring-up, NVS credentials, state/IP, blocking wait |
+| `ring_bt` | NimBLE GATT server wrapper (`examples/08_ble_peripheral`) |
+| `ring_net` | WebRTC voice session (Opus, SDP, DataChannel) + HTTPS probe/clock |
+| `ring_secret` | NVS-backed secret with a build-time fallback (API keys) |
 | `ring_ui` | LVGL lock + `RING_UI_LOCKED(-1) { ... }`, label add, exact centring |
 | `ring_theme.h` | colours, panel geometry (360×360, CX/CY), motion timings |
 | `ring_rand` | deterministic xorshift32 (UI randomness reproducible) |

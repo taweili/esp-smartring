@@ -105,21 +105,25 @@ EOF
 │   ├── espressif__esp_codec_dev/ # VENDORED OVERRIDE (see "Critical fixes")
 │   └── viewesmart__smartring_plus/ # VENDORED OVERRIDE (gyro+temp, 02_imu_dashboard)
 ├── examples/
-│   ├── README.md
-│   ├── 00_glyph_grid_reveal/        # default app: layered glyph-grid reveal (README: design spec)
-│   ├── 01_gbuddy_face/              # animated buddy face (sprite assets in assets/)
-│   ├── 02_imu_dashboard/            # live IMU dashboard (accel/gyro/temp/tilt)
-│   ├── 03_gesture_probe/            # single-finger gesture probe (tap/hold/swipe)
-│   ├── 04_voice_loopback/           # mic+speaker loop-back (hold to record)
-│   ├── 05_wifi_https_demo/          # Wi-Fi STA + HTTPS probe
-│   ├── 06_qianwenai_push_to_talk/   # hold-to-talk WebRTC voice (Qianwen, Opus)
-│   ├── 07_qianwen_realtime_harness/ # hands-free WebRTC test harness
-│   ├── 08_ble_peripheral/           # Bluetooth LE peripheral
-│   ├── 09_hello_smoke_test/         # bring-up smoke test (white screen + label)
-│   ├── 10_qianwen_ws_voice_chat/    # PLANNED (design only) — notes/ws-voice-chat.md
-│   └── 11_quic_voice_chat/          # PLANNED (design only) — notes/quic-voice-chat.md
+│   ├── README.md                # app contract + the app table
+│   ├── 00_glyph_grid_reveal/     # default app: layered glyph-grid reveal (README)
+│   ├── 01_gbuddy_face/          # animated buddy face (sprite assets in assets/, README)
+│   ├── 02_imu_dashboard/        # live IMU dashboard (accel/gyro/temp/tilt, README)
+│   ├── 03_gesture_probe/        # single-finger gesture probe (tap/hold/swipe, README)
+│   ├── 04_voice_loopback/       # mic+speaker loop-back (hold to record, README)
+│   ├── 05_wifi_https_demo/      # Wi-Fi STA + HTTPS probe (README)
+│   ├── 06_qianwenai_push_to_talk/   # hold-to-talk WebRTC voice (Qianwen, Opus; README)
+│   ├── 07_qianwen_realtime_harness/ # hands-free WebRTC voice loop (README)
+│   ├── 08_ble_peripheral/       # Bluetooth LE peripheral (README)
+│   ├── 09_hello_smoke_test/     # bring-up smoke test (white screen + label, README)
+│   ├── 10_qianwen_ws_voice_chat/ # PLANNED (design only) — notes/ws-voice-chat.md
+│   └── 11_quic_voice_chat/      # PLANNED (design only) — notes/quic-voice-chat.md
+├── scripts/
+│   ├── test_qianwen_realtime.py # host-side Qianwen WebRTC test client
+│   └── assets/test_clip.pcm     # clip for its --clip mode (no mic needed)
 ├── tools/
-│   └── lvgl_img_pack.py          # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
+│   ├── dev.sh                   # build/flash/monitor wrapper (secrets + IDF env)
+│   └── lvgl_img_pack.py         # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
 └── notes/
     ├── esp-smartring.md          # hardware + BSP reference (product, BSP API, pin map)
     ├── architecture.md           # architecture rationale (§6 = the two IDF traps)
@@ -193,7 +197,8 @@ All LVGL object creation/updates **must** happen inside
 - Touch: `ring_touch_handle()`
 - Battery: `ring_battery_get()`, `ring_battery_percent()`, `ring_battery_voltage()`, `ring_battery_is_charging()`, `ring_battery_pmic_type()`
 - Power: `ring_power_shutdown()` (holds GPIO47 ~3.5 s; normally doesn't return)
-- Audio: `ring_audio_codec()`, `ring_audio_read()`, `ring_audio_write()`, `ring_audio_set_mute()`
+- Audio: `ring_audio_codec()`, `ring_audio_read()`, `ring_audio_write()`, `ring_audio_set_mute()`,
+  `ring_audio_stereo_to_mono()`, `ring_audio_mono_to_stereo()` (the codec is stereo; voice work is mono)
 - IMU: `ring_imu_accel()`, `ring_imu_tilt()`, `ring_imu_calib_start/poll/info()`,
   `ring_imu_gyro()`, `ring_imu_temp()` (the last two come from the vendored BSP override)
 - SD: `ring_sd_list()`, `ring_sd_free_list()`, `ring_sd_is_mounted()`, `ring_sd_card()`, `ring_sd_deinit()`
@@ -205,6 +210,9 @@ All LVGL object creation/updates **must** happen inside
   `ring_net_state()`, `ring_net_send_event()`, `ring_net_ca_pem()`
 - RNG: `ring_rand_seed()`, `ring_rand_u32()`, `ring_rand_below()`, `ring_rand_bool()` — do **not**
   replace with `esp_random()`; determinism is the point (a plain LCG breaks `% n` / `& 1`).
+- Secrets: `ring_secret_get(ns, key, build_fallback, out, len)` — NVS wins, else the
+  build-time value from `ring_secrets.h`, which is then persisted. Replaces the
+  per-app `load_api_key()` copies.
 
 ## Critical fixes already applied — DO NOT revert
 

@@ -116,6 +116,10 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `notes/architecture.md` | Architecture rationale: why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
 | `examples/00_glyph_grid_reveal/README.md` | Default app design & build spec (layered reveal maths, risks). |
 | `examples/01_gbuddy_face/README.md` | The sprite-asset app: moods, blink/gaze/sleep, sprite geometry and flash budget, on-device findings (flat background, feathered matte, LVGL snapshot debugging), asset regeneration. |
+| `examples/02_imu_dashboard/README.md` | The IMU dashboard: every QMI8658A channel, the bubble level, and the tap-to-calibrate flow. |
+| `examples/03_gesture_probe/README.md` | The single-finger gesture set the CST816S can produce (multi-touch is impossible) and why the screen must be non-scrollable. |
+| `examples/04_voice_loopback/README.md` | Hold-to-record / release-to-play: why audio I/O runs on a worker task and never inside an LVGL event callback. |
+| `examples/05_wifi_https_demo/README.md` | Wi-Fi bring-up + HTTPS probe: credential flow, why the clock must be valid before TLS, and the retry loop. |
 | `examples/06_qianwenai_push_to_talk/README.md` | The hold-to-talk WebRTC voice button: Qianwen SDP exchange, Opus/48 kHz pipeline, task & memory layout, pinned TLS chain, partition sizing, and the UDP-limited on-device result. |
 | `examples/07_qianwen_realtime_harness/README.md` | The hands-free voice loop: explicit network gate, half-duplex turn-taking, task layout, and why the Opus task needs a PSRAM stack. |
 | `examples/08_ble_peripheral/README.md` | Bluetooth/BLE on the ring: what the silicon supports, NimBLE vs Bluedroid, exact `sdkconfig`, GATT-server bring-up, Wi-Fi coexistence, the `ring_bt` wrapper spec. |

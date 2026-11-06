@@ -8,14 +8,14 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 |-----|-------------|
 | `00_glyph_grid_reveal` | Full-screen glyph grid with a layered center-out reveal and hue-cycling accents. Touch to open/close. |
 | `01_gbuddy_face` | The GEODIS buddy face: four expressions cut out of `medias/gbuddy-00N.png` as alpha sprites — blinks, IMU gaze, twist look, sleep on hold, battery mood. See `01_gbuddy_face/README.md`. |
-| `02_imu_dashboard` | Live IMU dashboard: bubble level (tilt) + accel (m/s²) + gyro (°/s) + temperature + level calibration. Tap to calibrate. |
-| `03_gesture_probe` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. |
-| `04_voice_loopback` | Mic + speaker loop-back: one round button — hold to record (ES8311 mic), release to play the captured PCM back through the speaker. Captures up to 8 s into PSRAM. |
-| `05_wifi_https_demo` | Wi-Fi station bring-up: connects to the NVS-stored SSID, shows state/SSID/IP on the round screen, then probes `https://baidu.com` over HTTPS. Credentials are seeded from `secrets.local` on first boot, then persisted to NVS. |
+| `02_imu_dashboard` | Live IMU dashboard: bubble level (tilt) + accel (m/s²) + gyro (°/s) + temperature + level calibration. Tap to calibrate. See `02_imu_dashboard/README.md`. |
+| `03_gesture_probe` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. See `03_gesture_probe/README.md`. |
+| `04_voice_loopback` | Mic + speaker loop-back: one round button — hold to record (ES8311 mic), release to play the captured PCM back through the speaker. Captures up to 8 s into PSRAM. See `04_voice_loopback/README.md`. |
+| `05_wifi_https_demo` | Wi-Fi station bring-up: connects to the NVS-stored SSID, shows state/SSID/IP on the round screen, then probes `https://baidu.com` over HTTPS. Credentials are seeded from `secrets.local` on first boot, then persisted to NVS. See `05_wifi_https_demo/README.md`. |
 | `06_qianwenai_push_to_talk` | Push-to-talk voice assistant: one green round button, hold to talk to `qwen-audio-3.1-realtime-flash` over WebRTC (Opus 48 kHz). See `06_qianwenai_push_to_talk/README.md`. |
 | `07_qianwen_realtime_harness` | Hands-free voice loop: Wi-Fi → SNTP → HTTPS probe → WebRTC session, then mic → Opus → `qwen-audio-3.1-realtime-flash` → Opus → speaker, with server-VAD turn-taking. See `07_qianwen_realtime_harness/README.md`. |
 | `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing`, exposes a vendor service (0xFFE0) with a readable name/battery (READ/NOTIFY) and a writable command pipe (WRITE/NOTIFY). Pairable/bondable; scan + connect with a phone (nRF Connect / LightBlue). See `08_ble_peripheral/README.md`. |
-| `09_hello_smoke_test` | Bring-up smoke test: white screen, one large "Hello" glyph. |
+| `09_hello_smoke_test` | Bring-up smoke test: white screen, one large "Hello" glyph. See `09_hello_smoke_test/README.md`. |
 | `10_qianwen_ws_voice_chat` | **(planned — design only, see `notes/ws-voice-chat.md`)** WebSocket voice chat with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, `smart_turn_v2` / push-to-talk turn-taking, barge-in, function calling. The only realtime transport that works where UDP is blocked. |
 
 ## Building an app
@@ -94,5 +94,6 @@ Rules:
 
 `components/ringkit/` wraps the whole BSP: `ring_board`, `ring_display`,
 `ring_touch`, `ring_battery`, `ring_power`, `ring_audio`, `ring_imu`,
-`ring_sd`, plus `ring_ui` (lock/helpers), `ring_theme` (colours, geometry,
-timings) and `ring_rand` (deterministic xorshift32).
+`ring_sd`, `ring_wifi`, `ring_bt`, `ring_net`, `ring_secret`, plus `ring_ui`
+(lock/helpers), `ring_theme` (colours, geometry, timings) and `ring_rand`
+(deterministic xorshift32).
