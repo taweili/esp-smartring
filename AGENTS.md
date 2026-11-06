@@ -115,18 +115,20 @@ EOF
 │   ├── 06_qianwenai_push_to_talk/   # hold-to-talk WebRTC voice (Qianwen, Opus)
 │   ├── 07_qianwen_realtime_harness/ # hands-free WebRTC test harness
 │   ├── 08_ble_peripheral/           # Bluetooth LE peripheral
-│   └── 09_hello_smoke_test/         # bring-up smoke test (white screen + label)
+│   ├── 09_hello_smoke_test/         # bring-up smoke test (white screen + label)
+│   ├── 10_qianwen_ws_voice_chat/    # PLANNED (design only) — notes/ws-voice-chat.md
+│   └── 11_quic_voice_chat/          # PLANNED (design only) — notes/quic-voice-chat.md
 ├── tools/
-│   └── lvgl_img_pack.py         # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
+│   └── lvgl_img_pack.py          # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
 └── notes/
-    ├── esp-smartring.md         # hardware + BSP reference (product, BSP API, pin map)
-    ├── architecture.md         # architecture rationale (§6 = the two IDF traps)
-    ├── networking.md            # ESP-IDF v6.1 networking/HTTPS/WebRTC reference
-    ├── qianwenai.md             # 千问 AI platform model catalog + API surface
-    ├── ws-voice-chat.md         # design: examples/10_qianwen_ws_voice_chat (no code yet)
-    ├── quic-voice-chat.md       # design: examples/11_quic_voice_chat (no code yet)
-    ├── meta-muse.md             # research: Meta Muse gadget path (no code yet)
-    └── xiaozhi.md               # research: open-source Xiaozhi assistant (no code yet)
+    ├── esp-smartring.md          # hardware + BSP reference (product, BSP API, pin map)
+    ├── architecture.md           # architecture rationale (§6 = the two IDF traps)
+    ├── networking.md             # ESP-IDF v6.1 networking/HTTPS/WebRTC reference
+    ├── qianwenai.md              # 千问 AI platform model catalog + API surface
+    ├── ws-voice-chat.md          # design: examples/10_qianwen_ws_voice_chat (no code yet)
+    ├── quic-voice-chat.md        # design: examples/11_quic_voice_chat (no code yet)
+    ├── meta-muse.md              # research: Meta Muse gadget path (no code yet)
+    └── xiaozhi.md                # research: open-source Xiaozhi assistant (no code yet)
 ```
 
 ### Skeleton (`components/ringkit/`)
@@ -192,9 +194,15 @@ All LVGL object creation/updates **must** happen inside
 - Battery: `ring_battery_get()`, `ring_battery_percent()`, `ring_battery_voltage()`, `ring_battery_is_charging()`, `ring_battery_pmic_type()`
 - Power: `ring_power_shutdown()` (holds GPIO47 ~3.5 s; normally doesn't return)
 - Audio: `ring_audio_codec()`, `ring_audio_read()`, `ring_audio_write()`, `ring_audio_set_mute()`
-- IMU: `ring_imu_accel()`, `ring_imu_tilt()`, `ring_imu_calib_start/poll/info()`
+- IMU: `ring_imu_accel()`, `ring_imu_tilt()`, `ring_imu_calib_start/poll/info()`,
+  `ring_imu_gyro()`, `ring_imu_temp()` (the last two come from the vendored BSP override)
 - SD: `ring_sd_list()`, `ring_sd_free_list()`, `ring_sd_is_mounted()`, `ring_sd_card()`, `ring_sd_deinit()`
 - UI: `ring_ui_screen()`, `ring_ui_add_label()`, `ring_ui_place_centered()`, `ring_ui_lock()`, `ring_ui_unlock()`
+- Wi-Fi: `ring_wifi_init()`, `ring_wifi_start()`, `ring_wifi_wait_connected()`, `ring_wifi_get_ip()`,
+  `ring_wifi_get_credentials()`, `ring_wifi_state()`
+- Net/voice (`ring_net.h`): `ring_net_init()`, `ring_net_start(model, key)`, `ring_net_sync_clock()`,
+  `ring_net_probe(url)`, `ring_net_set_listening()`, `ring_net_send_audio()`, `ring_net_read_audio()`,
+  `ring_net_state()`, `ring_net_send_event()`, `ring_net_ca_pem()`
 - RNG: `ring_rand_seed()`, `ring_rand_u32()`, `ring_rand_below()`, `ring_rand_bool()` — do **not**
   replace with `esp_random()`; determinism is the point (a plain LCG breaks `% n` / `& 1`).
 
@@ -289,13 +297,16 @@ grep -oE "(components|managed_components)/viewesmart__smartring_plus" \
 Minimum bar before you claim something works — do all of it, from clean dirs when
 you touched CMake, `sdkconfig.defaults`, or `ringkit` headers:
 
-1. **Both apps build** (a change that only builds the app you care about can still
-   break the other one, since both share `ringkit`):
+1. **The apps build** — at minimum the two that bracket the dependency graph
+   (`00_glyph_grid_reveal` has no extras, `09_hello_smoke_test` pulls the 48 px font):
    ```bash
    rm -rf build/00_glyph_grid_reveal build/09_hello_smoke_test
    idf.py -B build/00_glyph_grid_reveal -DRING_APP=00_glyph_grid_reveal build
    idf.py -B build/09_hello_smoke_test     -DRING_APP=09_hello_smoke_test       build
    ```
+   If you touched `ringkit`, `sdkconfig.defaults` or `main/idf_component.yml`, also build the
+   apps that exercise the changed surface — `01_gbuddy_face` (LVGL assets/IMU),
+   `05_wifi_https_demo` (TLS), and `06`/`07` (the only `ring_net`/Opus consumers).
 2. **Both vendored overrides still win** — `espressif__esp_codec_dev` and
    `viewesmart__smartring_plus` (see "Critical fixes").
 3. **Flash and read the boot log** — expect the `ringkit:` summary line with all
@@ -304,6 +315,9 @@ you touched CMake, `sdkconfig.defaults`, or `ringkit` headers:
 4. **Touch paths need a human.** There is no way to synthesise a tap from the
    host: animations and gestures must be checked on the device. Do not report a
    UI interaction as verified from the log alone — say it needs a visual check.
+5. **Voice paths need a network.** `06`/`07` cannot complete a call where outbound UDP is
+   dropped (DTLS times out — see `06_qianwenai_push_to_talk/README.md` §8). TCP/443 working
+   is not sufficient evidence that a voice turn works.
 
 ## Repo hygiene
 
@@ -330,10 +344,16 @@ that must stay committed are the override *copies* in `components/`
 - **Panel revision:** the BSP uses the vendor "B" init table (`BOARD_LCD_VERSION_A`); a mismatch gives vertical stripes.
 - **SD "no card" vs "mount failure"** can't be distinguished in software.
 - **Reserved GPIOs:** 0 (BOOT), 19/20 (USB), 43/44 (UART0), 33–37 (PSRAM). Never reconfigure.
-- **`09_hello_smoke_test` is bigger than `00_glyph_grid_reveal`** (~800 KB vs ~729 KB). Not a regression: it is
-  the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables. App
-  partition is 1 MB, so both fit with room to spare — but think before adding another
-  large font.
+- **`09_hello_smoke_test` is bigger than `00_glyph_grid_reveal`** (~804 KB vs ~733 KB). Not a regression: it is
+  the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables — but
+  think before adding another large font.
+- **Image sizes are large and the partition is 3000K.** Measured: `06` 2718 KB, `07` 2640 KB,
+  `05` 1558 KB, `01` 1127 KB, `08` 1056 KB. `06` has only ~282 KB of headroom, so check
+  `idf.py -B build/<app> size` before adding a dependency that every app links (WebRTC,
+  Opus, a TLS stack).
+- **A `ringkit` change reaches every app.** `ringkit`'s `REQUIRES` pulls `esp_peer`,
+  `esp_audio_codec`, `esp_http_client` and `esp-tls` into all 10 apps; adding to it grows
+  every image.
 - **Stale `build/` after the rename.** The project used to be `smartring_hello`; an old
   `build/` may still hold that artifact. If CMake behaves strangely, `rm -rf build build/*`
   and reconfigure.
