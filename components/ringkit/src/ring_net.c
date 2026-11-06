@@ -358,10 +358,10 @@ esp_err_t ring_net_sync_clock(void)
     return sync_clock();
 }
 
-bool ring_net_probe(const char *url)
+int ring_net_probe(const char *url)
 {
     if (url == NULL || url[0] == '\0') {
-        return false;
+        return -1;
     }
     esp_http_client_config_t http = {
         .url = url,
@@ -369,13 +369,13 @@ bool ring_net_probe(const char *url)
         /* Generic public host: use the Mozilla bundle, not the Qianwen CA. */
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = HTTP_TIMEOUT_MS,
-        .buffer_size = 512,
+        .buffer_size = 2048,
         .buffer_size_tx = 512,
     };
     esp_http_client_handle_t c = esp_http_client_init(&http);
     if (c == NULL) {
         ESP_LOGW(TAG, "probe %s: init failed", url);
-        return false;
+        return -1;
     }
     esp_err_t err = esp_http_client_perform(c);
     int status = (err == ESP_OK) ? esp_http_client_get_status_code(c) : -1;
@@ -383,10 +383,10 @@ bool ring_net_probe(const char *url)
     if (err != ESP_OK || status < 200 || status >= 300) {
         ESP_LOGW(TAG, "probe %s failed: %s (HTTP %d)", url,
                  esp_err_to_name(err), status);
-        return false;
+        return -1;
     }
     ESP_LOGI(TAG, "probe %s -> HTTP %d", url, status);
-    return true;
+    return status;
 }
 
 /* ------------------------------------------------------------- SDP exchange */

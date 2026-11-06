@@ -5,4 +5,4 @@
 
 set(RING_EXAMPLE_SRCS         "qianwenai_push_to_talk.c")
 set(RING_EXAMPLE_INCLUDE_DIRS "include")
-set(RING_EXAMPLE_REQUIRES     "heap")
+set(RING_EXAMPLE_REQUIRES     "")

@@ -18,10 +18,6 @@
 
 #include "ringkit/ringkit.h"
 #include "esp_log.h"
-#include "esp_http_client.h"
-#include "esp_crt_bundle.h"
-#include "esp_netif_sntp.h"
-#include "esp_sntp.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -31,14 +27,12 @@
 
 #include <stdarg.h>
 #include <stdio.h>
-#include <time.h>
 
 #define TAG "05_wifi_https_demo"
 
 #define UI_PERIOD_MS 200    /* 5 Hz status refresh */
 #define WIFI_TIMEOUT_MS 20000
-#define HTTPS_TIMEOUT_MS 10000
-#define SNTP_TIMEOUT_MS 15000
+#define PROBE_URL "https://baidu.com"
 #define PROBE_TASK_STACK 6144
 #define PROBE_RETRY_MS 5000  /* delay after a failed GET */
 
@@ -103,7 +97,12 @@ static void refresh_cb(lv_timer_t *timer)
     }
 }
 
-/* ------------------------------------------------------------- HTTPS probe */
+/* ------------------------------------------------------------- HTTPS probe
+ *
+ * The clock sync and the GET itself are ringkit's (`ring_net_sync_clock()` /
+ * `ring_net_probe()`); this file only owns the retry loop and the UI. The DNS
+ * lookup is kept because it separates "cannot resolve" from "cannot connect".
+ * ------------------------------------------------------------------------- */
 
 /* Format outside the lock, copy + redraw inside it. */
 static void set_https_result(const char *fmt, ...)
@@ -118,39 +117,6 @@ static void set_https_result(const char *fmt, ...)
         snprintf(s_https_result, sizeof(s_https_result), "%s", buf);
         lv_label_set_text(s_https_label, s_https_result);
     }
-}
-
-/* The public-CA certificate check compares against the wall clock, and the
- * ring has no battery-backed RTC, so sync before the TLS handshake. */
-static void sync_clock(void)
-{
-    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
-        2, ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "pool.ntp.org"));
-    config.start = true;
-    config.wait_for_sync = true;
-
-    esp_err_t err = esp_netif_sntp_init(&config);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "sntp init: %s", esp_err_to_name(err));
-        return;
-    }
-    esp_netif_sntp_start();
-
-    if (esp_sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
-        err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_TIMEOUT_MS));
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "sntp sync wait: %s", esp_err_to_name(err));
-            return;
-        }
-    }
-
-    time_t now = 0;
-    struct tm ti = { 0 };
-    time(&now);
-    localtime_r(&now, &ti);
-    ESP_LOGI(TAG, "clock synced: %04d-%02d-%02d %02d:%02d:%02d",
-             ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
-             ti.tm_hour, ti.tm_min, ti.tm_sec);
 }
 
 /* Log the resolved address so a connect failure can be told apart from a
@@ -175,51 +141,6 @@ static void log_dns(const char *host)
     freeaddrinfo(res);
 }
 
-/* One HTTPS GET. Returns true on a completed HTTP exchange (any status). */
-static bool https_get_once(void)
-{
-    esp_http_client_config_t http = {
-        .url = "https://baidu.com",
-        .method = HTTP_METHOD_GET,
-        .timeout_ms = HTTPS_TIMEOUT_MS,
-        .buffer_size = 2048,
-        .buffer_size_tx = 512,
-        /* Attach the bundled public root CAs (built because
-         * CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y). Without this esp-tls has no
-         * trust anchor and refuses to start the handshake. */
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-
-    esp_http_client_handle_t c = esp_http_client_init(&http);
-    if (c == NULL) {
-        ESP_LOGE(TAG, "https client init failed");
-        set_https_result("init failed");
-        return false;
-    }
-
-    bool ok = false;
-    esp_err_t err = esp_http_client_perform(c);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "https GET failed: %s (status %d)",
-                 esp_err_to_name(err), esp_http_client_get_status_code(c));
-        set_https_result("retry: %s", esp_err_to_name(err));
-    } else {
-        int status = esp_http_client_get_status_code(c);
-        int length = esp_http_client_get_content_length(c);
-        ESP_LOGI(TAG, "https://baidu.com -> HTTP %d, %d bytes", status, length);
-        if (length >= 0) {
-            set_https_result("HTTP %d, %d B", status, length);
-        } else {
-            /* Chunked response: no Content-Length. */
-            set_https_result("HTTP %d", status);
-        }
-        ok = true;
-    }
-
-    esp_http_client_cleanup(c);
-    return ok;
-}
-
 /*
  * Follow the link for the life of the app: wait for the station (ring_wifi
  * reconnects on its own after a reboot or an AP dropout), probe, and on a
@@ -237,16 +158,25 @@ static void https_probe_task(void *arg)
             continue;
         }
 
-        sync_clock();
+        /* The public-CA certificate check compares against the wall clock and
+         * the ring has no battery-backed RTC, so sync before the handshake. */
+        if (ring_net_sync_clock() != ESP_OK) {
+            set_https_result("clock sync failed");
+            vTaskDelay(pdMS_TO_TICKS(PROBE_RETRY_MS));
+            continue;
+        }
         log_dns("baidu.com");
 
-        if (https_get_once()) {
+        int status = ring_net_probe(PROBE_URL);
+        if (status >= 200 && status < 300) {
+            set_https_result("HTTP %d", status);
             /* Success: idle until the link drops, then probe again. */
             while (ring_wifi_is_connected()) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
             set_https_result("link down, retrying");
         } else {
+            set_https_result("probe failed");
             vTaskDelay(pdMS_TO_TICKS(PROBE_RETRY_MS));
         }
     }

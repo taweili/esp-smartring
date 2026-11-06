@@ -33,9 +33,7 @@
 
 #include "ringkit/ringkit.h"
 
-#include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "nvs.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
@@ -59,8 +57,6 @@
 #endif
 
 #define QIANWEN_MODEL          "qwen-audio-3.1-realtime-flash"
-#define QIANWEN_NVS_NAMESPACE  "qianwen"
-#define QIANWEN_NVS_KEY_KEY    "api_key"
 
 /* Well-known public host: exercises DNS + routing + TLS + HTTP. */
 #define NET_PROBE_URL          "https://baidu.com"
@@ -116,27 +112,11 @@ static bool s_ui_ready;
 static volatile bool s_stop;
 static volatile bool s_worker_busy;
 
-/* ------------------------------------------------------------- helpers */
-
-/* 48 kHz stereo interleaved -> mono. */
-static void stereo_to_mono(const uint8_t *in, int16_t *out, size_t samples)
-{
-    const int16_t *src = (const int16_t *)in;
-    for (size_t i = 0; i < samples; i++) {
-        out[i] = (int16_t)(((int32_t)src[2 * i] + (int32_t)src[2 * i + 1]) / 2);
-    }
-}
-
-/* mono -> 48 kHz stereo interleaved. Returns bytes written. */
-static size_t mono_to_stereo(const int16_t *in, size_t samples, uint8_t *out)
-{
-    int16_t *dst = (int16_t *)out;
-    for (size_t i = 0; i < samples; i++) {
-        dst[i * 2] = in[i];
-        dst[i * 2 + 1] = in[i];
-    }
-    return samples * 4;
-}
+/* ------------------------------------------------------------- audio helpers
+ *
+ * The stereo<->mono fold lives in ringkit (`ring_audio_stereo_to_mono` /
+ * `ring_audio_mono_to_stereo`); only the level meter is app-specific.
+ * ------------------------------------------------------------------------- */
 
 /* ------------------------------------------------------------- UI helpers */
 
@@ -319,7 +299,8 @@ static void turn_task(void *arg)
             ESP_LOGW(TAG, "mic read failed");
             continue;
         }
-        stereo_to_mono(stereo, mono, FRAME_SAMPLES);
+        ring_audio_stereo_to_mono((const int16_t *)stereo, mono,
+                                   FRAME_SAMPLES);
         uint8_t level = mic_level_percent(mono, FRAME_SAMPLES);
         if ((frame_count++ % 10) == 0) {
             ESP_LOGI(TAG, "mic=%u%%, sent=%d frames", level, frame_count);
@@ -353,9 +334,9 @@ static void turn_task(void *arg)
     for (;;) {
         size_t got = 0;
         if (ring_net_read_audio(mono, FRAME_SAMPLES, &got, 100) == ESP_OK && got > 0) {
-            size_t bytes = mono_to_stereo(mono, got, stereo);
+            ring_audio_mono_to_stereo(mono, (int16_t *)stereo, got);
             ring_audio_set_mute(false);
-            ring_audio_write(stereo, bytes);
+            ring_audio_write(stereo, got * 4);
             ring_audio_set_mute(true);
             played += got;
             last = xTaskGetTickCount();
@@ -429,7 +410,8 @@ static void connect_task(void *arg)
     /* 2. Networking gate: a valid clock (TLS) and a real HTTPS round trip. */
     ui_status("network check…", lv_color_hex(0x9E9E9E));
     for (;;) {
-        if (ring_net_sync_clock() == ESP_OK && ring_net_probe(NET_PROBE_URL)) {
+        int probe = ring_net_probe(NET_PROBE_URL);
+        if (ring_net_sync_clock() == ESP_OK && probe >= 200 && probe < 300) {
             break;
         }
         ESP_LOGW(TAG, "network not ready — retry in %d s", RETRY_MS / 1000);
@@ -465,31 +447,10 @@ static void connect_task(void *arg)
 
 static void load_api_key(void)
 {
-    s_api_key[0] = '\0';
-
-    nvs_handle_t h;
-    if (nvs_open(QIANWEN_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-        size_t len = sizeof(s_api_key);
-        if (nvs_get_str(h, QIANWEN_NVS_KEY_KEY, s_api_key, &len) == ESP_OK) {
-            ESP_LOGI(TAG, "API key loaded from NVS");
-        }
-        nvs_close(h);
-    }
-
-    if (s_api_key[0] == '\0' && QIANWEN_API_KEY[0] != '\0') {
-        snprintf(s_api_key, sizeof(s_api_key), "%s", QIANWEN_API_KEY);
-        ESP_LOGW(TAG, "using build-time API key (persisting to NVS)");
-        if (nvs_open(QIANWEN_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-            if (nvs_set_str(h, QIANWEN_NVS_KEY_KEY, s_api_key) == ESP_OK) {
-                nvs_commit(h);
-            }
-            nvs_close(h);
-        }
-    }
-
-    if (s_api_key[0] == '\0') {
+    if (ring_secret_get("qianwen", "api_key", QIANWEN_API_KEY,
+                        s_api_key, sizeof(s_api_key)) != ESP_OK) {
         ESP_LOGE(TAG, "no API key: build with -DQIANWEN_API_KEY=... or set "
-                      "NVS '%s'/'%s'", QIANWEN_NVS_NAMESPACE, QIANWEN_NVS_KEY_KEY);
+                      "NVS 'qianwen'/'api_key'");
     }
 }
 

@@ -31,3 +31,21 @@ esp_err_t ring_audio_set_mute(bool mute)
 {
     return bsp_audio_set_mute(mute);
 }
+
+void ring_audio_stereo_to_mono(const int16_t *stereo, int16_t *mono,
+                               size_t frames)
+{
+    for (size_t i = 0; i < frames; i++) {
+        mono[i] = (int16_t)(((int32_t)stereo[2 * i] +
+                             (int32_t)stereo[2 * i + 1]) / 2);
+    }
+}
+
+void ring_audio_mono_to_stereo(const int16_t *mono, int16_t *stereo,
+                               size_t frames)
+{
+    for (size_t i = 0; i < frames; i++) {
+        stereo[2 * i] = mono[i];
+        stereo[2 * i + 1] = mono[i];
+    }
+}

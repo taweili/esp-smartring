@@ -40,6 +40,22 @@ esp_err_t ring_audio_write(const void *buf, size_t len);
 /** Output mute switch (see the playback sequence above). */
 esp_err_t ring_audio_set_mute(bool mute);
 
+/*
+ * The codec is fixed at 48 kHz / 16-bit / **stereo interleaved**, but the
+ * interesting audio work on this board (loopback, uplink to a cloud model,
+ * level meters) is mono. Both conversions are exact (average L/R, duplicate
+ * L→R) and live here so no app re-implements them — `ring_net` and the voice
+ * examples previously carried near-identical copies.
+ */
+
+/** Fold 48 kHz / 16-bit stereo interleaved -> mono (average L/R). */
+void ring_audio_stereo_to_mono(const int16_t *stereo, int16_t *mono,
+                               size_t frames);
+
+/** Expand mono -> 48 kHz / 16-bit stereo interleaved. */
+void ring_audio_mono_to_stereo(const int16_t *mono, int16_t *stereo,
+                               size_t frames);
+
 /* Sane defaults measured on this board (see notes/esp-smartring.md). */
 #define RING_AUDIO_REC_GAIN_DB 42  /**< driver rounds down to a 6 dB step (ES8311 max) */
 #define RING_AUDIO_OUT_VOL     75  /**< 0..100                             */

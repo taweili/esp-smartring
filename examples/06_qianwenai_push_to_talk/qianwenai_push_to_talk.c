@@ -26,7 +26,6 @@
 #include "ringkit/ringkit.h"
 
 #include "esp_log.h"
-#include "nvs.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -50,8 +49,6 @@
 #endif
 
 #define QIANWEN_MODEL          "qwen-audio-3.1-realtime-flash"
-#define QIANWEN_NVS_NAMESPACE  "qianwen"
-#define QIANWEN_NVS_KEY_KEY    "api_key"
 
 /* ------------------------------------------------------------- audio */
 
@@ -227,27 +224,11 @@ static void net_text_cb(const char *text, size_t len, bool is_user, void *user)
     ui_hint(line);
 }
 
-/* ------------------------------------------------------------- conversion */
-
-/* 48 kHz stereo interleaved -> mono (average L/R). */
-static void stereo_to_mono(const uint8_t *in, int16_t *out, size_t samples)
-{
-    const int16_t *src = (const int16_t *)in;
-    for (size_t i = 0; i < samples; i++) {
-        out[i] = (int16_t)(((int32_t)src[i * 2] + (int32_t)src[i * 2 + 1]) / 2);
-    }
-}
-
-/* mono -> 48 kHz stereo interleaved. Returns bytes written. */
-static size_t mono_to_stereo(const int16_t *in, size_t samples, uint8_t *out)
-{
-    int16_t *dst = (int16_t *)out;
-    for (size_t i = 0; i < samples; i++) {
-        dst[i * 2] = in[i];
-        dst[i * 2 + 1] = in[i];
-    }
-    return samples * 4;
-}
+/* ------------------------------------------------------------- audio helpers
+ *
+ * The stereo<->mono fold lives in ringkit (`ring_audio_stereo_to_mono` /
+ * `ring_audio_mono_to_stereo`); only the level meter is app-specific.
+ * ------------------------------------------------------------------------- */
 
 static uint8_t level_of(const int16_t *pcm, size_t samples)
 {
@@ -283,7 +264,8 @@ static void talk_worker(void *arg)
             ESP_LOGW(TAG, "mic read failed");
             break;
         }
-        stereo_to_mono(s_stereo, s_mono, FRAME_SAMPLES);
+        ring_audio_stereo_to_mono((const int16_t *)s_stereo, s_mono,
+                                   FRAME_SAMPLES);
         esp_err_t serr = ring_net_send_audio(s_mono, FRAME_SAMPLES);
         if (serr != ESP_OK) {
             ESP_LOGW(TAG, "send audio failed: %s", esp_err_to_name(serr));
@@ -314,7 +296,8 @@ static void talk_worker(void *arg)
         size_t got = 0;
         if (ring_net_read_audio(s_reply, FRAME_SAMPLES, &got, 200) == ESP_OK &&
             got > 0) {
-            size_t bytes = mono_to_stereo(s_reply, got, s_play);
+            ring_audio_mono_to_stereo(s_reply, (int16_t *)s_play, got);
+            size_t bytes = got * 4;
             last = xTaskGetTickCount();
             ring_audio_set_mute(false);
             if (ring_audio_write(s_play, bytes) != ESP_OK) {
@@ -382,32 +365,10 @@ static void btn_cb(lv_event_t *e)
 
 static void load_api_key(void)
 {
-    s_api_key[0] = '\0';
-
-    nvs_handle_t h;
-    if (nvs_open(QIANWEN_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-        size_t len = sizeof(s_api_key);
-        if (nvs_get_str(h, QIANWEN_NVS_KEY_KEY, s_api_key, &len) == ESP_OK) {
-            ESP_LOGI(TAG, "API key loaded from NVS");
-        }
-        nvs_close(h);
-    }
-
-    if (s_api_key[0] == '\0' && QIANWEN_API_KEY[0] != '\0') {
-        snprintf(s_api_key, sizeof(s_api_key), "%s", QIANWEN_API_KEY);
-        ESP_LOGW(TAG, "using build-time API key (persisting to NVS)");
-        /* Persist so later builds don't need the key on the command line. */
-        if (nvs_open(QIANWEN_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-            if (nvs_set_str(h, QIANWEN_NVS_KEY_KEY, s_api_key) == ESP_OK) {
-                nvs_commit(h);
-            }
-            nvs_close(h);
-        }
-    }
-
-    if (s_api_key[0] == '\0') {
+    if (ring_secret_get("qianwen", "api_key", QIANWEN_API_KEY,
+                        s_api_key, sizeof(s_api_key)) != ESP_OK) {
         ESP_LOGE(TAG, "no API key: build with -DQIANWEN_API_KEY=... or set "
-                      "NVS '%s'/'%s'", QIANWEN_NVS_NAMESPACE, QIANWEN_NVS_KEY_KEY);
+                      "NVS 'qianwen'/'api_key'");
     }
 }
 

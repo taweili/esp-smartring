@@ -27,6 +27,7 @@
 
 #include "ringkit/ring_ui.h"
 #include "ringkit/ring_rand.h"
+#include "ringkit/ring_secret.h"
 
 /** Skeleton version, for logging. */
 #define RINGKIT_VERSION "1.0.0"

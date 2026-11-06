@@ -88,10 +88,12 @@ esp_err_t ring_net_sync_clock(void);
 /**
  * @brief Verify outbound networking with an HTTPS GET.
  *
- * Exercises DNS, routing, TLS (Mozilla root bundle) and HTTP. Returns true on
- * a 2xx response. Use a well-known public host, e.g. "https://baidu.com".
+ * Exercises DNS, routing, TLS (Mozilla root bundle) and HTTP. Use a
+ * well-known public host, e.g. "https://baidu.com".
+ *
+ * @return HTTP status code (2xx = success), or -1 if the exchange failed.
  */
-bool ring_net_probe(const char *url);
+int ring_net_probe(const char *url);
 
 /** Tear down the session. */
 esp_err_t ring_net_stop(void);
