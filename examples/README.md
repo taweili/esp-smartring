@@ -16,6 +16,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `07_qianwen_realtime_harness` | Hands-free voice loop: Wi-Fi → SNTP → HTTPS probe → WebRTC session, then mic → Opus → `qwen-audio-3.1-realtime-flash` → Opus → speaker, with server-VAD turn-taking. See `07_qianwen_realtime_harness/README.md`. |
 | `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing`, exposes a vendor service (0xFFE0) with a readable name/battery (READ/NOTIFY) and a writable command pipe (WRITE/NOTIFY). Pairable/bondable; scan + connect with a phone (nRF Connect / LightBlue). See `08_ble_peripheral/README.md`. |
 | `09_hello_smoke_test` | Bring-up smoke test: white screen, one large "Hello" glyph. |
+| `10_qianwen_ws_voice_chat` | **(planned — design only, see `notes/ws-voice-chat.md`)** WebSocket voice chat with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, `smart_turn_v2` / push-to-talk turn-taking, barge-in, function calling. The only realtime transport that works where UDP is blocked. |
 
 ## Building an app
 
