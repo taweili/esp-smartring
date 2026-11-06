@@ -1,8 +1,10 @@
 # Networking, HTTPS & WebRTC on the Smart Ring Plus
 
-**Status:** research note — no production networking code yet. `ring_wifi` (STA)
-and `ring_bt` (NimBLE) already exist; everything below is what ESP-IDF v6.1
-offers, what fits this board, and what adding it would take.
+**Status:** reference note — the **transport layer is now implemented**
+(`ring_net`, `examples/06_qianwenai_push_to_talk`, `examples/07_qianwen_realtime_harness`,
+`examples/05_wifi_https_demo`); the OpenAI REST (§5.1) and WebRTC (§5.3) paths remain
+unimplemented research. What ESP-IDF v6.1 offers, what fits this board, and what adding
+anything further would take.
 
 **Scope:** the ring is an **ESP32-S3-N16R8** (8 MB octal PSRAM, 16 MB flash),
 Wi-Fi 2.4 GHz + BLE 5, **ES8311 audio codec + dual mic + speaker**, round
@@ -16,8 +18,10 @@ Wi-Fi 2.4 GHz + BLE 5, **ES8311 audio codec + dual mic + speaker**, round
 |---|---|
 | Wi-Fi STA | `components/ringkit/src/ring_wifi.c` — NVS credentials, auto-reconnect, `ring_wifi_*` API |
 | BLE | `components/ringkit/src/ring_bt.c` — NimBLE GATT server (`ring_bt_*`) |
-| IP apps | **none** — no HTTP/TLS/WebSocket/WebRTC dependency in `main/idf_component.yml` |
-| Config | `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` and `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` are already set for Wi-Fi headroom |
+| HTTPS probe | `ring_net_probe()` — `examples/05_wifi_https_demo` |
+| WebRTC voice | `components/ringkit/src/ring_net.c` — `esp_peer` + Opus + Qianwen SDP exchange |
+| IP apps | `05_wifi_https_demo`, `06_qianwenai_push_to_talk`, `07_qianwen_realtime_harness` |
+| Config | `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` and a 3000K app partition (`partitions.csv`) are already set for Wi-Fi + WebRTC headroom |
 
 Per the repo rule, apps talk to hardware **only** through `ringkit`. Any new
 network stack should get a `ring_net_*` wrapper (or extend `ringkit`), not be
@@ -382,9 +386,14 @@ P2P media or the WebRTC transport.
 
 ---
 
-## 6. What adding this would take
+## 6. What adding this took (and what is still open)
 
-**`main/idf_component.yml`** (the only manifest):
+**Shipped** in `main/idf_component.yml`: `espressif/esp_peer` (WebRTC) and
+`espressif/esp_audio_codec` (Opus), plus `esp-tls`/`esp_http_client`/`mbedtls` via
+`ringkit`'s `REQUIRES` and the shared `sdkconfig.defaults` block below. Still
+**unimplemented** and therefore still optional here: `espressif/openai` (REST),
+`espressif/mqtt`, `espressif/mdns`, and `esp_websocket_client` (needed only by the
+planned `examples/10_qianwen_ws_voice_chat` — see `notes/ws-voice-chat.md`).
 
 ```yaml
 dependencies:
@@ -392,7 +401,7 @@ dependencies:
   viewesmart/smartring_plus: "^1.1.2"
   # HTTPS / REST / voice
   espressif/openai: "*"              # optional, REST
-  espressif/esp_websocket_client: "*"# ws/wss
+  espressif/esp_websocket_client: "*"# ws/wss (planned 10_qianwen_ws_voice_chat)
   # espressif/mqtt: "*"              # optional
   # espressif/mdns: "*"              # optional
   # WebRTC
@@ -453,19 +462,20 @@ same pattern.
 * **No camera.** Video WebRTC is out of scope.
 * **API keys are secrets.** NVS, not source; the existing `ring_wifi.h`
   default credentials are a bad example to copy.
-* **Image size.** App partition is 1500K; measure after adding WebRTC/audio.
+* **Image size.** App partition is **3000K** (`partitions.csv`); 06 is 2718 KB,
+  07 is 2640 KB. Measure after adding any WebRTC/audio dependency.
 
 ---
 
-## 8. Verification plan (when code lands)
+## 8. Verification plan
 
-1. **Both apps build** from clean dirs (`build/00_glyph_grid_reveal`, `build/09_hello_smoke_test`) —
-   they share `ringkit`, so a change that breaks one breaks both.
-2. **HTTPS**: fetch a known endpoint with `crt_bundle_attach`, log the
-   handshake time and status, confirm no `panic`/`assert`.
-3. **WebSocket**: connect to a `wss://` echo server, round-trip a message.
-4. **WebRTC**: run a `peer_demo`-style loopback (two peers or a browser) with
-   G.711 audio; confirm `esp_peer` version and the DTLS config; check heap.
-5. **OpenAI**: one REST chat completion; one Realtime WebSocket PCM16 loopback.
+1. **Apps build** from clean dirs (`00_glyph_grid_reveal`, `09_hello_smoke_test`, plus the
+   networking apps `05`/`06`/`07`) — they share `ringkit`, so a change that breaks one can
+   break the others.
+2. **HTTPS** (shipped): `ring_net_probe()` in `examples/05_wifi_https_demo`.
+3. **WebSocket** — still unexercised: connect to a `wss://` echo server, round-trip a message.
+4. **WebRTC** (shipped through the SDP + ICE stages): `examples/06`/`07` reach `ICE complete`,
+   but DTLS cannot complete on a network that drops outbound UDP (see 06 §8).
+5. **OpenAI**: one REST chat completion; one Realtime WebSocket PCM16 loopback — not started.
 6. **On-device**: mic/speaker echo, latency and UI behaviour need a human —
    there is no host-side way to synthesise a tap or a voice conversation.

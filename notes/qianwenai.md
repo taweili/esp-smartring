@@ -1,6 +1,7 @@
 # 千问 AI 平台 (qianwenai.com) — models & API reference
 
-**Researched:** 2026-11-04. Sources: `www.qianwenai.com`, `platform.qianwenai.com/docs`
+**Researched:** 2026-11-04, updated 2026-11-06 (Realtime API deep-dive + QUIC/AOQ
+internals). Sources: `www.qianwenai.com`, `platform.qianwenai.com/docs`
 (the official docs, incl. the full index at `platform.qianwenai.com/llms.txt`), and the
 model-market pages.
 
@@ -288,6 +289,163 @@ model events over a DataChannel, with built-in AEC/noise suppression and
 `server_vad`/`semantic_vad` turn detection. See
 `developer-guides/tutorials/realtime/webrtc-omni-realtime`.
 
+### 3.3 WebSocket endpoints & protocol styles
+
+From `platform.qianwenai.com/docs/api-reference/realtime-api/websocket-overview`.
+
+**Endpoints** (`wss://maas.qianwenaiapi.com`):
+
+| Model family | API path | Model name passed in |
+|---|---|---|
+| Qwen-Omni-Realtime | `/api-ws/v1/realtime` | URL query param `model` |
+| Qwen3-TTS-Realtime | `/api-ws/v1/realtime` | URL query param `model` |
+| Qwen-ASR-Realtime | `/api-ws/v1/realtime` | URL query param `model` |
+| Qwen-Audio-Realtime | `/api-ws/v1/realtime` | URL query param `model` |
+| Qwen-LiveTranslate-Realtime | `/api-ws/v1/realtime` | URL query param `model` |
+| Qwen-Audio-TTS / CosyVoice | `/api-ws/v1/inference` | `run-task` → `payload.model` |
+| Qwen-Audio-ASR / Fun-ASR / Paraformer | `/api-ws/v1/inference` | `run-task` → `payload.model` |
+
+**Realtime (session) protocol** — `/api-ws/v1/realtime`:
+
+1. Connect with model in URL + `Authorization` header; server sends `session.created`.
+2. Send `session.update` (audio format, output modalities, voice, VAD); wait for `session.updated`.
+3. Send input: Base64 audio via `input_audio_buffer.append`; text via `input_text_buffer.append`; images via `input_image_buffer.append`.
+4. Trigger: VAD mode auto-triggers; manual mode = `input_audio_buffer.commit` then `response.create`.
+5. End: models with finish events use `session.finish` → `session.finished`; otherwise close the socket. `response.done` ends one response, not the connection.
+
+Example session config for `qwen3.8-omni-flash-realtime`:
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "modalities": ["text", "audio"],
+    "voice": "Tina",
+    "turn_detection": { "type": "server_vad" }
+  }
+}
+```
+
+**Inference (task) protocol** — `/api-ws/v1/inference`:
+
+1. Connect; send `run-task` with `payload.model`; wait for `task-started`.
+2. ASR: stream binary audio frames → results via `result-generated`. TTS: send text via `continue-task` → receive binary audio frames.
+3. Send `finish-task`; wait for `task-finished`. All three messages must share `header.task_id`.
+
+**Model-specific differences:**
+
+| Model | Trigger | End | Main output events |
+|---|---|---|---|
+| Qwen3.8/3.5-Omni | VAD auto; or commit + `response.create` | close after results | `response.text.delta`, `response.audio_transcript.delta`, `response.audio.delta`, `response.done` |
+| Qwen3-TTS-Realtime | `server_commit` auto; or `input_text_buffer.commit` (no `response.create`) | `session.finish` | `response.audio.delta`, `response.done` |
+| Qwen-ASR-Realtime | VAD auto; or commit | `session.finish` | `conversation.item.input_audio_transcription.text` / `.completed` |
+| Qwen-Audio-Realtime | auto turn; or commit + `response.create` | close after results | `response.audio_transcript.delta`, `response.audio.delta`, `response.done` |
+| Qwen3.8-LiveTranslate | `output_modalities` + `audio.input.turn_detection` | `session.finish` | `response.text.delta`, `response.audio_transcript.delta`, `response.audio.delta`, `response.done` |
+| Qwen3.5-LiveTranslate | `modalities` + `turn_detection`; manual = commit (no `response.create`) | `session.finish` | `response.text.text`, `response.audio_transcript.text`, `response.audio.delta`, `response.done` |
+
+**Errors:** handshake failure → check HTTP status (401/403 = auth), endpoint, region, workspace, model permissions. Realtime errors arrive as `error` events; inference errors as `task-failed` with `header.error_code` / `header.error_message`.
+
+### 3.4 Realtime token authentication
+
+From `platform.qianwenai.com/docs/api-reference/realtime-api/token-auth`.
+All three protocols authenticate at **connect time only**, via
+`Authorization: Bearer $DASHSCOPE_API_KEY`:
+
+| Protocol | When | How |
+|---|---|---|
+| AOQ | AppServer → gateway | API key stays server-side; client gets a temporary token |
+| WebRTC | SDP exchange HTTP request | header on the POST |
+| WebSocket | connection handshake | header on the WS upgrade |
+
+**AOQ flow (server-side proxy):**
+
+```bash
+curl -X POST \
+  "https://maas.qianwenaiapi.com/api/v1/webrtc/realtime?model=qwen3.8-omni-flash-realtime" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DASHSCOPE_API_KEY" \
+  -H "x-dashscope-rtc-transport: moq" \
+  -d "{\"clientIp\": \"${CLIENT_REAL_IP}\"}"
+```
+
+Response: `sid`, `aoqTokenForClient`, `clientRelayEndpoints[]` (endpoint + port + route_index), `clientRelayCertFingerprint`, `sidExpiresInSecs`. The client SDK connects with token + sid + relay endpoints; publish/subscribe tracks are audio + data. `x-dashscope-rtc-transport: moq` selects AOQ.
+
+### 3.5 QUIC & why AOQ is built on it
+
+QUIC (RFC 9000, IETF 2021) is a transport protocol over UDP — the basis of HTTP/3. It exists to fix TCP's limits:
+
+| TCP problem | QUIC fix |
+|---|---|
+| Head-of-line blocking (one lost packet stalls everything) | Independent **streams**; loss on one doesn't block others |
+| TCP+TLS = 2–3 RTT handshake | Integrated TLS 1.3 → **1-RTT**, **0-RTT** resumption for returning clients |
+| Connection bound to IP+port (4-tuple); network change kills it | **Connection IDs** → seamless **connection migration** (Wi-Fi ↔ cellular) |
+| Ossified (kernel + middleboxes) | User-space over UDP, encrypted, evolvable |
+| Coarse loss detection (RTO-based) | ACK-frame based detection (RFC 9002), pluggable congestion control (CUBIC/BBR) |
+
+Mechanics in brief: everything is encrypted (incl. ACKs); reliability via never-reused packet numbers, ACK ranges, retransmission, credit-based flow control; `DATAGRAM` frames (RFC 9221) add unreliable unordered delivery for realtime media; migration is validated with `PATH_CHALLENGE`/`PATH_RESPONSE`.
+
+**Why AOQ uses QUIC** (per Alibaba's AOQ docs / `developer.aliyun.com/article/1750325`):
+
+- 0-RTT/1-RTT → fast call setup
+- Streams + DATAGRAM → audio/video/text/events on separate tracks with different reliability needs ("实时 + 非实时" dual-mode adaptive)
+- Stream-level fault tolerance → one track's loss doesn't stall the others
+- Connection migration → network switch mid-call is transparent
+- Better congestion control → advertised 60% packet-loss resilience
+- Built-in TLS
+
+AOQ SDK is declarative: set desired state, SDK handles transitions; auto-recovers from recoverable errors, reports only physical limits (network/device) or invalid tokens.
+
+### 3.6 AOQ (QUIC) supported models
+
+From the official protocol-support matrix (`realtime-api/overview` → 模型与协议支持):
+
+| Category | Models | AOQ |
+|---|---|---|
+| Realtime Omni | `qwen3.8-omni-flash-realtime`, `qwen3.5-omni-plus-realtime`, `qwen3.5-omni-flash-realtime` | ✓ |
+| Realtime TTS | `qwen-audio-3.1-tts-plus`, `qwen-audio-3.1-tts-flash`, `qwen-audio-3.0-tts-flash`, `qwen-audio-3.0-tts-plus` | ✓ |
+| CosyVoice | CosyVoice series (docs example: `cosyvoice-v3-plus`) | ✓ |
+| Realtime ASR | `qwen-audio-3.1-asr-flash-message`, `qwen-audio-3.1-asr-flash-streaming`, `qwen-audio-3.0-asr-flash-streaming`, Fun-ASR-Realtime series | ✓ |
+| Realtime S2S | `qwen-audio-3.1-realtime-plus`, `qwen-audio-3.1-realtime-flash`, `qwen-audio-3.0-realtime-plus`, `qwen-audio-3.0-realtime-flash` | ✓ |
+| Realtime translation | `qwen3.8-livetranslate-flash-realtime`, `qwen3.5-livetranslate-flash-realtime`, `qwen3.5-livetranslate-flash-realtime-2026-05-19` | ✓ |
+| Multimodal dev kit | `multimodal-dialog` | ✓ |
+
+**WebSocket-only (no AOQ):** `qwen3-tts-flash-realtime` (Qwen3-TTS-Realtime),
+`qwen-asr-realtime`, Paraformer, Sambert.
+
+**Two AOQ connection paths:**
+
+| Model family | Endpoint |
+|---|---|
+| Realtime (Omni, S2S, LiveTranslate) | `POST /api/v1/webrtc/realtime?model=<model>` |
+| Inference (TTS, ASR) | `POST /api/v1/webrtc/inference?model=<model>` |
+
+Both use `x-dashscope-rtc-transport: moq` and return `sid` + `aoqTokenForClient`
++ relay endpoints. TTS/ASR use the inference (task) protocol on the Data track;
+Omni/S2S/LiveTranslate use the session protocol.
+
+### 3.7 WebRTC vs WebSocket: technical differences
+
+| Dimension | WebSocket | WebRTC |
+|---|---|---|
+| Transport | TCP (reliable, ordered) | UDP (SRTP media, SCTP data) |
+| Head-of-line blocking | Yes — one lost packet stalls the stream | No — late media packets are dropped |
+| Media path | None — audio sent as Base64 over the socket | Dedicated RTP pipeline: jitter buffer, PLC, AEC |
+| Echo cancellation / noise reduction | **Not built in** — client must handle | **Built in** |
+| Data types | Text / audio / image | Audio / video + text |
+| NAT traversal | Not needed (client→server TCP 443) | Built in (ICE / STUN / TURN) |
+| Connection setup | HTTP upgrade + TCP + TLS | SDP exchange + ICE + DTLS-SRTP |
+| Encryption | TLS (`wss://`) | DTLS-SRTP (mandatory) |
+| Browser support | Native | Native |
+| Weak-network resilience | Poor | Good |
+| Integration effort | Very low | Medium |
+
+**Qianwen connection details:**
+
+- **WebSocket:** `wss://maas.qianwenaiapi.com/api-ws/v1/realtime?model=<model>`, auth in the handshake header; plain JSON events, audio as Base64 in `input_audio_buffer.append`; no media stack — client manages encoding, timing, echo cancellation.
+- **WebRTC:** `POST https://maas.qianwenaiapi.com/api/v1/webrtc/realtime?model=<model>` with `Content-Type: application/sdp` (Offer SDP → Answer SDP); media over RTP, model events over a DataChannel; built-in AEC/noise suppression and `server_vad`/`semantic_vad`.
+
+**When to choose:** WebSocket for server-side integration, quick prototypes, constrained devices (ESP32-S3) — lowest effort but no AEC. WebRTC for browser apps / low-latency voice where you want the built-in media pipeline. AOQ for mobile native apps wanting the best weak-network resilience (proprietary SDK).
+
 ---
 
 ## 4. Pricing (examples; check the model pages for current numbers)
@@ -316,11 +474,14 @@ than realtime.
   Qianwen API key. `OpenAIChangeBaseURL()` exists for exactly this.
 - **Voice / realtime.** The platform's WebSocket realtime path
   (`wss://maas.qianwenaiapi.com/api-ws/v1/realtime?model=qwen3.8-omni-flash-realtime`)
-  maps onto `esp_websocket_client`; WebRTC maps onto `esp_peer`. Note the
-  WebSocket path has **no built-in AEC** — the ring's speaker/mic echo problem
-  (§5.2 of `notes/networking.md`) still needs a client-side AEC. AOQ/WebRTC
-  have AEC built in, but AOQ needs a proprietary SDK (Android/iOS/HarmonyOS),
-  so on ESP32-S3 the practical choices are WebSocket + own AEC, or WebRTC.
+  maps onto `esp_websocket_client`; WebRTC maps onto `esp_peer`. The session
+  protocol (`session.update` → `input_audio_buffer.append` → `response.*` events)
+  is plain JSON over the socket, so it fits `esp_websocket_client` cleanly; the
+  inference protocol (`run-task`) is the ASR/TTS path. Note the WebSocket path
+  has **no built-in AEC** — the ring's speaker/mic echo problem (§5.2 of
+  `notes/networking.md`) still needs a client-side AEC. AOQ/WebRTC have AEC
+  built in, but AOQ needs a proprietary SDK (Android/iOS/HarmonyOS), so on
+  ESP32-S3 the practical choices are WebSocket + own AEC, or WebRTC.
 - **ASR / TTS.** `qwen-audio-3.1-asr-flash-streaming` (WebSocket) and
   `qwen-audio-3.1-tts-flash` (WebSocket / HTTP) are a strong Whisper/TTS
   alternative; the ring's ES8311 codec gives PCM in/out via `ring_audio_*`.
@@ -347,5 +508,7 @@ than realtime.
 - Realtime WebSocket: `https://platform.qianwenai.com/docs/api-reference/realtime-api/websocket-overview`
 - Realtime WebRTC: `https://platform.qianwenai.com/docs/api-reference/realtime-api/webrtc-access`
 - Realtime AOQ: `https://platform.qianwenai.com/docs/api-reference/realtime-api/aoq-access`
+- AOQ SDK intro: `https://platform.qianwenai.com/docs/api-reference/realtime-api/aoq-sdk-intro`
+- Qwen-Omni-Realtime WebSocket access: `https://platform.qianwenai.com/docs/api-reference/real-time-multimodal/websocket-access`
 - Token/auth: `https://platform.qianwenai.com/docs/api-reference/realtime-api/token-auth`
 - API key: `https://platform.qianwenai.com/docs/api-reference/preparation/api-key`
