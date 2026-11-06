@@ -39,7 +39,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# --- WebRTC / HTTPS (examples/qianwenai-button, ring_net)
+# --- WebRTC / HTTPS (examples/06_qianwenai_push_to_talk, ring_net)
 #     DTLS-SRTP is required by esp_peer; it also disables
 #     CONFIG_MBEDTLS_DYNAMIC_BUFFER, so keep the TLS buffers in PSRAM.
 CONFIG_MBEDTLS_SSL_PROTO_DTLS=y

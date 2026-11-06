@@ -6,8 +6,8 @@ cmake_minimum_required(VERSION 3.16)
 # sdkconfig is loaded, so CONFIG_* keys (and therefore a Kconfig `choice`) are
 # not available here.
 #
-#   idf.py -DRING_APP=hello -B build/hello build
-set(RING_APP "glyph-anime" CACHE STRING "Example app under examples/ to build")
+#   idf.py -DRING_APP=09_hello_smoke_test -B build/09_hello_smoke_test build
+set(RING_APP "00_glyph_grid_reveal" CACHE STRING "Example app under examples/ to build")
 
 set(_ring_app_dir "${CMAKE_CURRENT_LIST_DIR}/examples/${RING_APP}")
 if(NOT EXISTS "${_ring_app_dir}/CMakeLists.txt")

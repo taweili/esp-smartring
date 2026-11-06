@@ -2,31 +2,31 @@
 
 Each directory here is a self-contained application for the VIEWE Smart Ring
 Plus. Exactly **one** is compiled into a firmware image, selected by the
-`RING_APP` CMake cache variable (default `glyph-anime`).
+`RING_APP` CMake cache variable (default `00_glyph_grid_reveal`).
 
 | App | Description |
 |-----|-------------|
-| `glyph-anime` | Full-screen glyph grid with a layered center-out reveal and hue-cycling accents. Touch to open/close. |
-| `gbuddy` | The GEODIS buddy face: four expressions cut out of `medias/gbuddy-00N.png` as alpha sprites — blinks, IMU gaze, twist look, sleep on hold, battery mood. See `gbuddy/README.md`. |
-| `imu-dash` | Live IMU dashboard: bubble level (tilt) + accel (m/s²) + gyro (°/s) + temperature + level calibration. Tap to calibrate. |
-| `gesture-test` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. |
-| `voice-note` | Mic + speaker loop-back: one round button — hold to record (ES8311 mic), release to play the captured PCM back through the speaker. Captures up to 8 s into PSRAM. |
-| `wifi-demo` | Wi-Fi station bring-up: connects to the NVS-stored SSID, shows state/SSID/IP on the round screen, then probes `https://baidu.com` over HTTPS. Credentials are seeded from `secrets.local` on first boot, then persisted to NVS. |
-| `qianwenai-button` | Push-to-talk voice assistant: one green round button, hold to talk to `qwen-audio-3.1-realtime-flash` over WebRTC (Opus 48 kHz). See `qianwenai-button/README.md`. |
-| `qianwen-realtime` | Hands-free WebRTC test harness: connects to `qwen-audio-3.1-realtime-flash`, then loops talk turns using an embedded espeak clip ("the capital of China") and logs the transcript. Used with `scripts/test_qianwen_realtime.py`. |
-| `bt-demo` | Bluetooth LE peripheral: advertises as `SmartRing`, exposes a vendor service (0xFFE0) with a readable name/battery (READ/NOTIFY) and a writable command pipe (WRITE/NOTIFY). Pairable/bondable; scan + connect with a phone (nRF Connect / LightBlue). See `bt-demo/README.md`. |
-| `hello` | Bring-up smoke test: white screen, one large "Hello" glyph. |
+| `00_glyph_grid_reveal` | Full-screen glyph grid with a layered center-out reveal and hue-cycling accents. Touch to open/close. |
+| `01_gbuddy_face` | The GEODIS buddy face: four expressions cut out of `medias/gbuddy-00N.png` as alpha sprites — blinks, IMU gaze, twist look, sleep on hold, battery mood. See `01_gbuddy_face/README.md`. |
+| `02_imu_dashboard` | Live IMU dashboard: bubble level (tilt) + accel (m/s²) + gyro (°/s) + temperature + level calibration. Tap to calibrate. |
+| `03_gesture_probe` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. |
+| `04_voice_loopback` | Mic + speaker loop-back: one round button — hold to record (ES8311 mic), release to play the captured PCM back through the speaker. Captures up to 8 s into PSRAM. |
+| `05_wifi_https_demo` | Wi-Fi station bring-up: connects to the NVS-stored SSID, shows state/SSID/IP on the round screen, then probes `https://baidu.com` over HTTPS. Credentials are seeded from `secrets.local` on first boot, then persisted to NVS. |
+| `06_qianwenai_push_to_talk` | Push-to-talk voice assistant: one green round button, hold to talk to `qwen-audio-3.1-realtime-flash` over WebRTC (Opus 48 kHz). See `06_qianwenai_push_to_talk/README.md`. |
+| `07_qianwen_realtime_harness` | Hands-free WebRTC test harness: connects to `qwen-audio-3.1-realtime-flash`, then loops talk turns using an embedded espeak clip ("the capital of China") and logs the transcript. Used with `scripts/test_qianwen_realtime.py`. |
+| `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing`, exposes a vendor service (0xFFE0) with a readable name/battery (READ/NOTIFY) and a writable command pipe (WRITE/NOTIFY). Pairable/bondable; scan + connect with a phone (nRF Connect / LightBlue). See `08_ble_peripheral/README.md`. |
+| `09_hello_smoke_test` | Bring-up smoke test: white screen, one large "Hello" glyph. |
 
 ## Building an app
 
 ```bash
-# default app (glyph-anime)
+# default app (00_glyph_grid_reveal)
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 
 # a specific app — ALWAYS use its own build directory
-idf.py -DRING_APP=hello -B build/hello build
-idf.py -DRING_APP=hello -B build/hello -p /dev/ttyACM0 flash monitor
+idf.py -DRING_APP=09_hello_smoke_test -B build/09_hello_smoke_test build
+idf.py -DRING_APP=09_hello_smoke_test -B build/09_hello_smoke_test -p /dev/ttyACM0 flash monitor
 ```
 
 > **Use a per-app build directory (`-B build/<app>`).** Switching `RING_APP`
@@ -42,7 +42,7 @@ three files, and exports exactly two symbols via its own `include/ring_example.h
 
 ```c
 esp_err_t   ring_example_start(void);  /* build the UI; takes the LVGL lock */
-const char *ring_example_name(void);   /* e.g. "hello"                      */
+const char *ring_example_name(void);   /* e.g. "09_hello_smoke_test" */
 ```
 
 `main/main.c` is application-agnostic: it calls `ring_board_init()` and then
@@ -59,13 +59,13 @@ so every example can use the same `ring_example.h` name.
 ## Adding an example
 
 ```
-examples/my-app/
+examples/10_my_app/
 ├── CMakeLists.txt          # sets RING_EXAMPLE_SRCS / _INCLUDE_DIRS / _REQUIRES
 ├── include/ring_example.h  # copy from an existing example (identical)
 └── my_app.c                # ring_example_start() + ring_example_name()
 ```
 
-`examples/my-app/CMakeLists.txt` is three lines:
+`examples/10_my_app/CMakeLists.txt` is three lines:
 
 ```cmake
 set(RING_EXAMPLE_SRCS         "my_app.c")
@@ -73,16 +73,18 @@ set(RING_EXAMPLE_INCLUDE_DIRS "include")
 set(RING_EXAMPLE_REQUIRES     "")   # extra component deps, e.g. "esp_driver_ledc"
 ```
 
-Then `idf.py -DRING_APP=my-app -B build/my-app build`.
+Then `idf.py -DRING_APP=10_my_app -B build/10_my_app build`.
 
 Rules:
 
-- Use the directory name for the app; keep it `[a-z0-9-]+`.
+- Use the directory name for the app: `NN_short_description` (e.g.
+  `10_my_app`), `[a-z0-9_]+`. The two-digit prefix fixes the order in this
+  README and in `ls`; pick the next free number.
 - **Do not** add an `idf_component.yml` per example. Managed dependencies live
   in `main/idf_component.yml`.
 - An app may carry its own `README.md` for a design/spec (see
-  `glyph-anime/README.md`) — it is inert to the build, so it never touches the
-  CMake fragment.
+  `00_glyph_grid_reveal/README.md`) — it is inert to the build, so it never
+  touches the CMake fragment.
 - **Do not** include `bsp/smartring_plus.h` and **do not** call `bsp_*`
   directly — everything goes through `ringkit/ringkit.h`.
 - All LVGL work happens under `RING_UI_LOCKED(-1) { ... }`.

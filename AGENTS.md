@@ -8,7 +8,7 @@ This is an **ESP-IDF** project for the **VIEWE "Smart Ring Plus"** — a round, 
 
 Today it is structured as a **generic skeleton plus interchangeable applications**: `components/ringkit/` wraps the whole BSP, and each app under `examples/<name>/` is selected at build time with `RING_APP`.
 
-Default firmware (`glyph-anime`): a full-screen 13×13 glyph grid with a layered center-out reveal and hue-cycling accents.
+Default firmware (`00_glyph_grid_reveal`): a full-screen 13×13 glyph grid with a layered center-out reveal and hue-cycling accents.
 
 ## Environment
 
@@ -25,15 +25,15 @@ Default firmware (`glyph-anime`): a full-screen 13×13 glyph grid with a layered
 idf.py set-target esp32s3          # first time / after deleting build dir
 idf.py reconfigure                 # after changing idf_component.yml or sdkconfig.defaults
 
-# default app (glyph-anime), default build dir
+# default app (00_glyph_grid_reveal), default build dir
 idf.py build
 idf.py -p /dev/ttyACM0 flash       # flash + reset the ring
 idf.py -p /dev/ttyACM0 monitor     # follow serial log (Ctrl-] to exit)
 
 # any other app — ALWAYS its own build dir (see examples/README.md)
-idf.py -DRING_APP=hello -B build/hello build
-idf.py -DRING_APP=hello -B build/hello -p /dev/ttyACM0 flash
-idf.py -B build/hello -p /dev/ttyACM0 monitor
+idf.py -DRING_APP=09_hello_smoke_test -B build/09_hello_smoke_test build
+idf.py -DRING_APP=09_hello_smoke_test -B build/09_hello_smoke_test -p /dev/ttyACM0 flash
+idf.py -B build/09_hello_smoke_test -p /dev/ttyACM0 monitor
 ```
 
 > **Use a per-app build directory (`-B build/<app>`).** Switching `RING_APP` inside one
@@ -43,12 +43,12 @@ idf.py -B build/hello -p /dev/ttyACM0 monitor
 
 > **Which app is on the device?** Read the boot log — it prints `app: <name>`:
 > ```
-> I (963) smartring: Smart Ring Plus starting (ringkit 1.0.0, app: hello)
-> I (1929) smartring: app 'hello' is on screen
+> I (963) smartring: Smart Ring Plus starting (ringkit 1.0.0, app: 09_hello_smoke_test)
+> I (1929) smartring: app '09_hello_smoke_test' is on screen
 > ```
 
 > **An invalid `RING_APP` fails fast** at configure time and lists the choices:
-> `RING_APP='nope' is not an example: no examples/nope/CMakeLists.txt.` → `Available: glyph-anime, hello`
+> `RING_APP='nope' is not an example: no examples/nope/CMakeLists.txt.` → `Available: 00_glyph_grid_reveal, 09_hello_smoke_test`
 
 > **`sdkconfig` and `sdkconfig.defaults` are shared by every build dir** — they live at the
 > project root, not per app. So a config change affects all apps; there is no per-app config.
@@ -103,22 +103,25 @@ EOF
 ├── components/
 │   ├── ringkit/                 # GENERIC SKELETON — wraps the whole BSP
 │   ├── espressif__esp_codec_dev/ # VENDORED OVERRIDE (see "Critical fixes")
-│   └── viewesmart__smartring_plus/ # VENDORED OVERRIDE (gyro+temp, imu-dash)
+│   └── viewesmart__smartring_plus/ # VENDORED OVERRIDE (gyro+temp, 02_imu_dashboard)
 ├── examples/
 │   ├── README.md
-│   ├── glyph-anime/             # default app: layered glyph-grid reveal (README: design spec)
-│   ├── gbuddy/                  # animated buddy face (sprite assets in assets/)
-│   ├── imu-dash/                # live IMU dashboard (accel/gyro/temp/tilt)
-│   ├── gesture-test/            # single-finger gesture probe (tap/hold/swipe)
-│   ├── voice-note/              # mic+speaker loop-back (hold to record)
-│   ├── qianwenai-button/        # hold-to-talk WebRTC voice (Qianwen, Opus)
-│   └── hello/                   # bring-up smoke test (white screen + label)
+│   ├── 00_glyph_grid_reveal/        # default app: layered glyph-grid reveal (README: design spec)
+│   ├── 01_gbuddy_face/              # animated buddy face (sprite assets in assets/)
+│   ├── 02_imu_dashboard/            # live IMU dashboard (accel/gyro/temp/tilt)
+│   ├── 03_gesture_probe/            # single-finger gesture probe (tap/hold/swipe)
+│   ├── 04_voice_loopback/           # mic+speaker loop-back (hold to record)
+│   ├── 05_wifi_https_demo/          # Wi-Fi STA + HTTPS probe
+│   ├── 06_qianwenai_push_to_talk/   # hold-to-talk WebRTC voice (Qianwen, Opus)
+│   ├── 07_qianwen_realtime_harness/ # hands-free WebRTC test harness
+│   ├── 08_ble_peripheral/           # Bluetooth LE peripheral
+│   └── 09_hello_smoke_test/         # bring-up smoke test (white screen + label)
 ├── tools/
 │   └── lvgl_img_pack.py         # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
 └── notes/
     ├── esp-smartring.md         # hardware + BSP reference (product, BSP API, pin map)
     ├── architecture.md         # architecture rationale (§6 = the two IDF traps)
-    ├── gbuddy.md               # design note for examples/gbuddy (sprites, budget, §12 as-built)
+    ├── gbuddy.md               # design note for examples/01_gbuddy_face (sprites, budget, §12 as-built)
     ├── meta-muse.md             # research: Meta Muse gadget path (no code yet)
     └── xiaozhi.md               # research: open-source Xiaozhi assistant (no code yet)
 ```
@@ -231,7 +234,7 @@ CONFIG_FREERTOS_HZ=1000
 The stock BSP's IMU sample task reads **only the accelerometer** registers
 (`qmi8658_read_accel`, 6 bytes at `0x35..0x3A`); the gyroscope
 (`0x3B..0x40`) and temperature (`0x33..0x34`) are enabled in hardware but never
-read or exposed. The `imu-dash` example needs all of them, so the repo carries
+read or exposed. The `02_imu_dashboard` example needs all of them, so the repo carries
 an **override copy** at `components/viewesmart__smartring_plus/` (project
 `components/` outrank `managed_components/`). One patch to `bsp_imu.c`:
 
@@ -286,9 +289,9 @@ you touched CMake, `sdkconfig.defaults`, or `ringkit` headers:
 1. **Both apps build** (a change that only builds the app you care about can still
    break the other one, since both share `ringkit`):
    ```bash
-   rm -rf build/glyph-anime build/hello
-   idf.py -B build/glyph-anime -DRING_APP=glyph-anime build
-   idf.py -B build/hello     -DRING_APP=hello       build
+   rm -rf build/00_glyph_grid_reveal build/09_hello_smoke_test
+   idf.py -B build/00_glyph_grid_reveal -DRING_APP=00_glyph_grid_reveal build
+   idf.py -B build/09_hello_smoke_test     -DRING_APP=09_hello_smoke_test       build
    ```
 2. **Both vendored overrides still win** — `espressif__esp_codec_dev` and
    `viewesmart__smartring_plus` (see "Critical fixes").
@@ -324,7 +327,7 @@ that must stay committed are the override *copies* in `components/`
 - **Panel revision:** the BSP uses the vendor "B" init table (`BOARD_LCD_VERSION_A`); a mismatch gives vertical stripes.
 - **SD "no card" vs "mount failure"** can't be distinguished in software.
 - **Reserved GPIOs:** 0 (BOOT), 19/20 (USB), 43/44 (UART0), 33–37 (PSRAM). Never reconfigure.
-- **`hello` is bigger than `glyph-anime`** (~800 KB vs ~729 KB). Not a regression: it is
+- **`09_hello_smoke_test` is bigger than `00_glyph_grid_reveal`** (~800 KB vs ~729 KB). Not a regression: it is
   the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables. App
   partition is 1 MB, so both fit with room to spare — but think before adding another
   large font.
@@ -342,7 +345,7 @@ that must stay committed are the override *copies* in `components/`
 
 - `README.md` — project entry point: overview, quick start, applications, docs map.
 - `notes/esp-smartring.md` — hardware + BSP reference: product overview, BSP API, pin map, pitfalls.
-- `examples/glyph-anime/README.md` — glyph-anime design & build spec: layered reveal maths, layer timeline, risks.
+- `examples/00_glyph_grid_reveal/README.md` — 00_glyph_grid_reveal design & build spec: layered reveal maths, layer timeline, risks.
 - `notes/architecture.md` — architecture rationale: why the layout is `ringkit` + fragments; §6 has the two
   ESP-IDF traps (EXTRA_COMPONENT_DIRS ordering, double CMake evaluation).
 - `notes/networking.md` — networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/
@@ -350,13 +353,13 @@ that must stay committed are the override *copies* in `components/`
   over WebSocket, Realtime over WebRTC).
 - `notes/qianwenai.md` — 千问 AI 平台 (qianwenai.com) reference: model catalog by category and the API surface
   (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async/batch).
-- `examples/qianwenai-button/README.md` — hold-to-talk WebRTC voice button (`qwen-audio-3.1-realtime-flash`):
+- `examples/06_qianwenai_push_to_talk/README.md` — hold-to-talk WebRTC voice button (`qwen-audio-3.1-realtime-flash`):
   SDP exchange, Opus/48 kHz pipeline, `ring_net` module, stack/heap lessons.
 - `notes/meta-muse.md`, `notes/xiaozhi.md` — assistant feasibility research; no code yet.
 - `notes/gbuddy.md` — GBuddy face-animation design note: measured still geometry, flash/asset
   budget, LVGL image-format limits, offline asset pipeline, animation plan; §12 = what shipped
   and the on-device findings (flat background, feather, snapshot debugging).
 - `examples/README.md` — app contract and how to add one.
-- `examples/gbuddy/README.md` — the sprite-asset app: moods, blink, gaze, sleep; assets are
+- `examples/01_gbuddy_face/README.md` — the sprite-asset app: moods, blink, gaze, sleep; assets are
   generated by `assets/rebuild.sh` (never hand-edited).
 - BSP upstream: `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus` on the ESP Component Registry).

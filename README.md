@@ -34,7 +34,7 @@ The device console is the USB-Serial/JTAG port — **`/dev/ttyACM0`**.
 
 ```bash
 idf.py set-target esp32s3      # first time / after deleting a build dir
-idf.py build                   # default app (glyph-anime)
+idf.py build                   # default app (00_glyph_grid_reveal)
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
@@ -42,8 +42,8 @@ Any other app — always its **own build dir**, and pass the same `-B` to build,
 flash and monitor (otherwise `flash` picks up a different image):
 
 ```bash
-idf.py -DRING_APP=voice-note -B build/voice-note build
-idf.py -DRING_APP=voice-note -B build/voice-note -p /dev/ttyACM0 flash monitor
+idf.py -DRING_APP=04_voice_loopback -B build/04_voice_loopback build
+idf.py -DRING_APP=04_voice_loopback -B build/04_voice_loopback -p /dev/ttyACM0 flash monitor
 ```
 
 An invalid `RING_APP` fails fast at configure time and lists the valid choices.
@@ -57,13 +57,16 @@ An invalid `RING_APP` fails fast at configure time and lists the valid choices.
 
 | App | Description |
 |-----|-------------|
-| `glyph-anime` | **Default.** 13×13 glyph grid, layered center-out reveal, hue-cycling accents. Touch to open/close. |
-| `gbuddy` | The buddy face: 4 expressions from `medias/gbuddy-00N.png` as alpha sprites, with blink, IMU gaze, twist look and sleep. |
-| `imu-dash` | Live IMU dashboard: bubble level (tilt) + accel + gyro + temperature + level calibration. |
-| `gesture-test` | Reports every single-finger gesture (tap / hold / swipe / press / release) the moment it happens. |
-| `voice-note` | Mic + speaker loop-back: hold to record, release to play the capture back. |
-| `wifi-demo` | Wi-Fi station: connects to the NVS-stored SSID, shows state/SSID/IP, then GETs `https://baidu.com` to prove outbound TLS. |
-| `hello` | Bring-up smoke test: white screen + one large label. |
+| `00_glyph_grid_reveal` | **Default.** 13×13 glyph grid, layered center-out reveal, hue-cycling accents. Touch to open/close. |
+| `01_gbuddy_face` | The buddy face: 4 expressions from `medias/gbuddy-00N.png` as alpha sprites, with blink, IMU gaze, twist look and sleep. |
+| `02_imu_dashboard` | Live IMU dashboard: bubble level (tilt) + accel + gyro + temperature + level calibration. |
+| `03_gesture_probe` | Reports every single-finger gesture (tap / hold / swipe / press / release) the moment it happens. |
+| `04_voice_loopback` | Mic + speaker loop-back: hold to record, release to play the capture back. |
+| `05_wifi_https_demo` | Wi-Fi station: connects to the NVS-stored SSID, shows state/SSID/IP, then GETs `https://baidu.com` to prove outbound TLS. |
+| `06_qianwenai_push_to_talk` | Push-to-talk WebRTC voice assistant (Qianwen, Opus 48 kHz). |
+| `07_qianwen_realtime_harness` | Hands-free WebRTC test harness driven by an embedded clip. |
+| `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing` and exposes a GATT server. |
+| `09_hello_smoke_test` | Bring-up smoke test: white screen + one large label. |
 
 ## Architecture
 
@@ -91,14 +94,14 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `AGENTS.md` | Developer guidance: build/flash commands, verification bar, critical fixes, gotchas. **Start here before changing code.** |
 | `examples/README.md` | App contract, how apps are selected and added. |
 | `notes/esp-smartring.md` | Hardware + BSP research reference: product overview, full `bsp_*` API, pin map, gotchas. |
-| `examples/bt-demo/README.md` | Bluetooth/BLE on the ring: what the silicon supports, NimBLE vs Bluedroid, exact `sdkconfig`, GATT-server bring-up, Wi-Fi coexistence, the `ring_bt` wrapper spec. |
-| `examples/glyph-anime/README.md` | glyph-anime design & build spec (layered reveal maths, risks). |
+| `examples/08_ble_peripheral/README.md` | Bluetooth/BLE on the ring: what the silicon supports, NimBLE vs Bluedroid, exact `sdkconfig`, GATT-server bring-up, Wi-Fi coexistence, the `ring_bt` wrapper spec. |
+| `examples/00_glyph_grid_reveal/README.md` | 00_glyph_grid_reveal design & build spec (layered reveal maths, risks). |
 | `notes/architecture.md` | Architecture rationale: why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
 | `notes/networking.md` | Networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and the three OpenAI API paths (REST, Realtime-over-WebSocket, Realtime-over-WebRTC). |
 | `notes/qianwenai.md` | 千问 AI 平台 (qianwenai.com) reference: model catalog by category (LLM, vision, image/video/3D generation, speech, omni, embeddings) and the API surface (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async task/batch APIs). |
-| `examples/qianwenai-button/README.md` | The hold-to-talk WebRTC voice button: Qianwen SDP exchange, Opus/48 kHz pipeline, task & memory layout, pinned TLS chain, partition sizing, and the UDP-limited on-device result. |
+| `examples/06_qianwenai_push_to_talk/README.md` | The hold-to-talk WebRTC voice button: Qianwen SDP exchange, Opus/48 kHz pipeline, task & memory layout, pinned TLS chain, partition sizing, and the UDP-limited on-device result. |
 | `notes/gbuddy.md` | GBuddy face animation design note: measured still geometry, asset/flash budget, LVGL image-format limits, offline asset pipeline, animation plan; §12 records what shipped. |
-| `examples/gbuddy/README.md` | GBuddy app summary: moods, blink/gaze/sleep behaviour, how to regenerate the sprite assets. |
+| `examples/01_gbuddy_face/README.md` | GBuddy app summary: moods, blink/gaze/sleep behaviour, how to regenerate the sprite assets. |
 | `notes/meta-muse.md`, `notes/xiaozhi.md` | Assistant feasibility research (no code yet). |
 | BSP upstream | `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus`). |
 

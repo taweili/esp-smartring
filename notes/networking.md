@@ -459,7 +459,7 @@ same pattern.
 
 ## 8. Verification plan (when code lands)
 
-1. **Both apps build** from clean dirs (`build/glyph-anime`, `build/hello`) —
+1. **Both apps build** from clean dirs (`build/00_glyph_grid_reveal`, `build/09_hello_smoke_test`) —
    they share `ringkit`, so a change that breaks one breaks both.
 2. **HTTPS**: fetch a known endpoint with `crt_bundle_attach`, log the
    handshake time and status, confirm no `panic`/`assert`.

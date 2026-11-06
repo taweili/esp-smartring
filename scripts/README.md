@@ -3,7 +3,7 @@
 ## test_qianwen_realtime.py
 
 Tests the Qianwen realtime WebRTC API from the host, using the same flow as
-`examples/qianwenai-button` (SDP POST → ICE/DTLS/SRTP → session.update →
+`examples/06_qianwenai_push_to_talk` (SDP POST → ICE/DTLS/SRTP → session.update →
 Opus uplink → data-channel events → spoken reply), with verbose logging.
 
 By default it uses the **real microphone and speaker**: speak to the model and
@@ -33,7 +33,7 @@ scripts/.venv/bin/python scripts/test_qianwen_realtime.py
 # use the espeak clip instead of the microphone (raw PCM or any av-decodable
 # audio file — a WAV works directly, no ffmpeg step needed)
 scripts/.venv/bin/python scripts/test_qianwen_realtime.py \
-    --clip examples/qianwen-realtime/assets/test_clip.pcm
+    --clip examples/07_qianwen_realtime_harness/assets/test_clip.pcm
 scripts/.venv/bin/python scripts/test_qianwen_realtime.py --clip /tmp/clip.wav
 
 # save the reply somewhere else, without playing it
@@ -84,11 +84,11 @@ The script prints every step (SDP exchange, ICE/DTLS state, `session.update`,
 `dc:` data-channel events, transcript) and writes the spoken reply to
 `scripts/reply.wav` (or `--out`).
 
-The clip streamed by `examples/qianwen-realtime` is
-`examples/qianwen-realtime/assets/test_clip.pcm`, generated with:
+The clip streamed by `examples/07_qianwen_realtime_harness` is
+`examples/07_qianwen_realtime_harness/assets/test_clip.pcm`, generated with:
 
 ```bash
 espeak -v en -s 150 -w /tmp/capital.wav "the capital of China"
 ffmpeg -y -i /tmp/capital.wav -ar 48000 -ac 1 -f s16le -acodec pcm_s16le \
-       examples/qianwen-realtime/assets/test_clip.pcm
+       examples/07_qianwen_realtime_harness/assets/test_clip.pcm
 ```

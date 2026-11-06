@@ -2,7 +2,7 @@
 """
 test_qianwen_realtime.py — host-side test of the Qianwen realtime WebRTC API.
 
-This is the same interaction the ring's qianwenai-button performs, but from a
+This is the same interaction the ring's 06_qianwenai_push_to_talk performs, but from a
 PC, with verbose logging. By default it uses the real microphone and speaker:
 speak to the model and hear its spoken reply. A known clip can be streamed
 instead for a deterministic test.
@@ -24,7 +24,7 @@ Usage:
 
 The API key is read from --api-key, $QIANWEN_API_KEY, or ./secrets.local.
 Without --clip the default input device is used. A known clip (e.g.
-examples/qianwen-realtime/assets/test_clip.pcm, 48 kHz / 16-bit / mono s16le,
+examples/07_qianwen_realtime_harness/assets/test_clip.pcm, 48 kHz / 16-bit / mono s16le,
 or any WAV/MP3 that PyAV can decode) can be streamed with --clip for a
 deterministic test.
 

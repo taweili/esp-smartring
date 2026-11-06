@@ -2,7 +2,7 @@
 #
 # The default SINGLE_APP_LARGE table gives a 1500K app partition, which is not
 # enough once esp_peer (WebRTC + DTLS + SRTP) is linked in: the
-# qianwenai-button image is ~1.8 MB. The module has 16 MB of flash, so the app
+# 06_qianwenai_push_to_talk image is ~1.8 MB. The module has 16 MB of flash, so the app
 # partition is raised to 3000K. No OTA partitions (same as the stock table).
 #
 # Offsets are left empty so the build system packs them from

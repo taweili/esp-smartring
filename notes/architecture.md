@@ -40,12 +40,17 @@ never touches `main/` or `components/`.
 │   ├── espressif__esp_codec_dev/   # vendored override (ESP-IDF v6 compat)
 │   └── viewesmart__smartring_plus/ # vendored override (gyro+temp exposure)
 ├── examples/
-│   ├── README.md                   # app contract + how to add one
-│   ├── glyph-anime/                # default: 13×13 glyph grid, layered reveal (README: design spec)
-│   ├── imu-dash/                   # live IMU dashboard (accel/gyro/temp/tilt)
-│   ├── gesture-test/               # single-finger gesture probe
-│   ├── voice-note/                 # mic+speaker loop-back (hold to record)
-│   └── hello/                      # bring-up smoke test
+│   ├── README.md                    # app contract + how to add one
+│   ├── 00_glyph_grid_reveal/        # default: 13×13 glyph grid, layered reveal (README: design spec)
+│   ├── 01_gbuddy_face/              # animated buddy face (sprite assets in assets/)
+│   ├── 02_imu_dashboard/            # live IMU dashboard (accel/gyro/temp/tilt)
+│   ├── 03_gesture_probe/            # single-finger gesture probe
+│   ├── 04_voice_loopback/           # mic+speaker loop-back (hold to record)
+│   ├── 05_wifi_https_demo/          # Wi-Fi STA + HTTPS probe
+│   ├── 06_qianwenai_push_to_talk/   # hold-to-talk WebRTC voice (Qianwen, Opus)
+│   ├── 07_qianwen_realtime_harness/ # hands-free WebRTC test harness
+│   ├── 08_ble_peripheral/           # Bluetooth LE peripheral
+│   └── 09_hello_smoke_test/         # bring-up smoke test
 └── notes/
     ├── esp-smartring.md            # hardware + BSP reference
     └── architecture.md          # this file
@@ -94,7 +99,7 @@ path, including `return` and `break` — which a hand-written
 
 ## 4. Applications (`examples/`)
 
-Selected at build time by the `RING_APP` cache variable (default `glyph-anime`).
+Selected at build time by the `RING_APP` cache variable (default `00_glyph_grid_reveal`).
 Each app is three files and exports two symbols:
 
 ```c
@@ -104,13 +109,18 @@ const char *ring_example_name(void);
 
 | App | Purpose |
 |-----|---------|
-| `glyph-anime` | **Default.** 13×13 glyph grid, layered center-out reveal, hue-cycling accents. Tap to open/close. Design: in-app `README.md`. |
-| `imu-dash` | Live IMU dashboard: bubble level + accel + gyro + temperature + level calibration. |
-| `gesture-test` | Single-finger gesture probe: tap / hold / swipe / press / release. |
-| `voice-note` | Mic + speaker loop-back: hold to record, release to play back. |
-| `hello` | Bring-up smoke test: white screen + one `Montserrat 48` label. |
+| `00_glyph_grid_reveal` | **Default.** 13×13 glyph grid, layered center-out reveal, hue-cycling accents. Tap to open/close. Design: in-app `README.md`. |
+| `01_gbuddy_face` | The buddy face: four expressions from `medias/gbuddy-00N.png` as alpha sprites, with blink, IMU gaze, twist look and sleep. |
+| `02_imu_dashboard` | Live IMU dashboard: bubble level + accel + gyro + temperature + level calibration. |
+| `03_gesture_probe` | Single-finger gesture probe: tap / hold / swipe / press / release. |
+| `04_voice_loopback` | Mic + speaker loop-back: hold to record, release to play back. |
+| `05_wifi_https_demo` | Wi-Fi station bring-up + HTTPS connectivity probe. |
+| `06_qianwenai_push_to_talk` | Push-to-talk WebRTC voice assistant (Qianwen, Opus 48 kHz). |
+| `07_qianwen_realtime_harness` | Hands-free WebRTC test harness driven by an embedded clip. |
+| `08_ble_peripheral` | Bluetooth LE peripheral (advertise + GATT server). |
+| `09_hello_smoke_test` | Bring-up smoke test: white screen + one `Montserrat 48` label. |
 
-`hello` is deliberately kept: it is the cheapest way to rule out
+`09_hello_smoke_test` is deliberately kept: it is the cheapest way to rule out
 panel/adapter problems before blaming an app. It is also the only app using
 `lv_font_montserrat_48`, so its binary is larger (~800 KB vs ~729 KB) — not a
 regression.
@@ -132,8 +142,8 @@ idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 
 # a specific app — ALWAYS its own build dir, same -B for build/flash/monitor
-idf.py -DRING_APP=imu-dash -B build/imu-dash build
-idf.py -DRING_APP=imu-dash -B build/imu-dash -p /dev/ttyACM0 flash monitor
+idf.py -DRING_APP=02_imu_dashboard -B build/02_imu_dashboard build
+idf.py -DRING_APP=02_imu_dashboard -B build/02_imu_dashboard -p /dev/ttyACM0 flash monitor
 ```
 
 > Switching `RING_APP` inside one build tree leaves stale objects and produces
@@ -169,7 +179,7 @@ against this IDF (v6.1):
 
 1. Component registration order puts `main` **before** `EXTRA_COMPONENT_DIRS`
    components. Observed tail of `__BUILD_COMPONENT_TARGETS`:
-   `… ___idf_ringkit;___idf_main;___idf_glyph-anime`.
+   `… ___idf_ringkit;___idf_main;___idf_00_glyph_grid_reveal`.
 2. `__component_set_dependencies()` only links a requirement if the required
    component's target is *already* registered:
 
@@ -182,7 +192,7 @@ against this IDF (v6.1):
 So a `REQUIRES` entry pointing at an example is dropped **silently** — the
 build then fails on `#include "ring_example.h"` with no hint about the cause
 (the IDF hint module even suggests adding the component to `REQUIRES`, which is
-what it already is). Not dash-specific: `hello` failed identically.
+what it already is). Not dash-specific: `09_hello_smoke_test` failed identically.
 
 **Implemented instead:** `main/CMakeLists.txt` `include()`s the selected
 example's `CMakeLists.txt`, which only sets three variables
@@ -199,7 +209,7 @@ that `include()`s every component's `CMakeLists.txt` in a *separate CMake
 process*. In that pass cache variables are **not** set (`RING_APP` is empty)
 and `CMAKE_SOURCE_DIR` is the **build directory**, not the project. Hence
 `main/CMakeLists.txt` resolves the root via `${CMAKE_CURRENT_LIST_DIR}/..` and
-falls back to `glyph-anime` when `RING_APP` is empty. Getting this wrong
+falls back to `00_glyph_grid_reveal` when `RING_APP` is empty. Getting this wrong
 produced `include could not find requested file: …/build/…/examples//CMakeLists.txt`.
 
 ---
@@ -211,5 +221,5 @@ produced `include could not find requested file: …/build/…/examples//CMakeLi
   could become an app switcher. Not implemented: one app per firmware, and it
   can be added later without another restructure.
 - **`clock` / `dashboard` examples** — planned first-pass apps, not built. The
-  examples that exist instead (`imu-dash`, `gesture-test`, `voice-note`)
+  examples that exist instead (`02_imu_dashboard`, `03_gesture_probe`, `04_voice_loopback`)
   exercise the same peripheral surface.

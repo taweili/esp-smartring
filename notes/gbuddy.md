@@ -1,7 +1,7 @@
 # GBuddy — animating `medias/gbuddy-001.png` on the Smart Ring Plus
 
 **Date:** 2026-11-04
-**Status:** implemented as `examples/gbuddy/` (§12 records what shipped and how it differs
+**Status:** implemented as `examples/01_gbuddy_face/` (§12 records what shipped and how it differs
 from the plan below).
 **Goal:** turn the round-companion still in `medias/gbuddy-001.png` (plus its three
 siblings) into a **live face** on the 360×360 round panel: blinking, looking around,
@@ -22,7 +22,7 @@ the panel is marked **(device)**.
   interior* is usable. Measured crop: `550x340+750+320`, rescaled to **360×222**, which
   fills the panel nicely (eyes 110×142 px on-target).
 - A **full-frame RGB565 still is 159,840 B** and the app partition is **1500 KiB**;
-  four stills (640 KB) technically fit next to `hello`'s 823 KB but leave only ~70 KB of
+  four stills (640 KB) technically fit next to `09_hello_smoke_test`'s 823 KB but leave only ~70 KB of
   headroom. Don't build on that.
 - LVGL's SW renderer here draws **RGB565 / RGB565A8 / RGB888 / ARGB8888 / A8 / L8 / AL88 /
   I1** — **not I8/I4** palette images (§3.1). So "palette-compress the stills" is not an
@@ -156,7 +156,7 @@ Bake the fade into the *background* layer only; sprites must not carry it.
 | **T2 — marionette** (recommended) | gradient background + eye/mouth sprites: blink, saccade, mood swap, gaze from IMU | 0 B bg + 4 eye (2 variants × 2) + 4 mouth ≈ **291 KB** (§3.3) | comfortable | 2–3 days | "a creature" — the still is the art, LVGL moves it |
 | **T3 — procedural** | eyes/mouth drawn with `lv_obj` circles, arcs, gradients + shadows | **0 B** | free | 3–4 days + tuning | "vector robot face" — expressive but not the render |
 
-**Recommendation:** ship **T1 first** as `examples/gbuddy` (it is a real, verifiable
+**Recommendation:** ship **T1 first** as `examples/01_gbuddy_face` (it is a real, verifiable
 deliverable and derisks the panel look), then refactor the same file into **T2**. Keep
 T3 as the fallback if the layered art never looks right at 360 px — the stills then serve
 purely as the colour/geometry reference (they already give exact numbers, §1.3/§1.4).
@@ -238,13 +238,13 @@ pay a decoder + a decoded-frame RAM buffer.
 
 | Build | `smartring.bin` | headroom |
 |---|---|---|
-| `hello` | 823,088 B | **712,912 B** |
-| `glyph-anime` | 750,576 B | 785,424 B |
-| `bt-demo` | 1,080,096 B | 455,904 B |
-| `wifi-demo` | 1,376,944 B | 159,056 B |
+| `09_hello_smoke_test` | 823,088 B | **712,912 B** |
+| `00_glyph_grid_reveal` | 750,576 B | 785,424 B |
+| `08_ble_peripheral` | 1,080,096 B | 455,904 B |
+| `05_wifi_https_demo` | 1,376,944 B | 159,056 B |
 
 (`CONFIG_BT_ENABLED=y` is in `sdkconfig.defaults`, so *every* app already links NimBLE —
-that is why even `hello` is 823 KB. Don't add Wi-Fi to gbuddy.)
+that is why even `09_hello_smoke_test` is 823 KB. Don't add Wi-Fi to 01_gbuddy_face.)
 
 Budget consequences:
 
@@ -315,7 +315,7 @@ Usage:
 magick medias/gbuddy-001.png -crop 550x340+750+320 +repage -resize 360x222! \
        -depth 8 rgb:/tmp/face.rgb
 python3 tools/lvgl_img_pack.py /tmp/face.rgb 360 222 \
-        examples/gbuddy/assets/face_001.c face_001
+        examples/01_gbuddy_face/assets/face_001.c face_001
 ```
 
 A 160 KB asset becomes an ~850 KB `.c` file. That is fine for the compiler (~1–2 s,
@@ -387,12 +387,12 @@ Notes:
   `eye_open` pushed down + `lv_image_set_scale_y(eye, 200)`; add an `eye_sad` cut from 003
   (+106 KB both eyes) only if that reads wrong.
 
-`examples/gbuddy/CMakeLists.txt` lists every generated asset — the fragment supports a
+`examples/01_gbuddy_face/CMakeLists.txt` lists every generated asset — the fragment supports a
 list:
 
 ```cmake
 set(RING_EXAMPLE_SRCS
-    "gbuddy.c"
+    "gbuddy_face.c"
     "assets/eye_open.c"    "assets/eye_joy.c"
     "assets/mouth_smile.c" "assets/mouth_o.c"
     "assets/mouth_frown.c" "assets/mouth_grin.c")
@@ -400,7 +400,7 @@ set(RING_EXAMPLE_INCLUDE_DIRS "include")
 set(RING_EXAMPLE_REQUIRES     "")
 ```
 
-Regenerate assets with a small `examples/gbuddy/assets/rebuild.sh` that runs the
+Regenerate assets with a small `examples/01_gbuddy_face/assets/rebuild.sh` that runs the
 ImageMagick steps + the packer, so the checked-in `.c` files can be reproduced.
 
 ### 4.3 Alternatives (when art outgrows a C array)
@@ -457,7 +457,7 @@ static const mood_def_t s_mood[MOOD_COUNT] = { /* ... one row per mood, §1.2 ..
 | any press while asleep | wake, happy, restore backlight |
 | idle 60 s | auto-sleep (optional, off by default during bring-up) |
 | IMU tilt (`ring_imu_tilt`) | both eyes shift up to ±6 px, low-pass filtered |
-| gyro twist (`ring_imu_gyro` z) | fast look left/right; sign verified on device (cf. `TURN_SIGN` in glyph-anime) |
+| gyro twist (`ring_imu_gyro` z) | fast look left/right; sign verified on device (cf. `TURN_SIGN` in 00_glyph_grid_reveal) |
 | battery ≤ 15 % | forced sad mood every ~10 s |
 | charging | glow pulse amplitude ×2 (heartbeat) |
 
@@ -487,7 +487,7 @@ reads badly on the panel.
 #include "ringkit/ringkit.h"
 #include "esp_log.h"
 
-#define TAG "gbuddy"
+#define TAG "01_gbuddy_face"
 
 #define FACE_Y 69
 #define EYE_W 118
@@ -598,14 +598,14 @@ esp_err_t ring_example_start(void)
     return ESP_OK;
 }
 
-const char *ring_example_name(void) { return "gbuddy"; }
+const char *ring_example_name(void) { return "01_gbuddy_face"; }
 ```
 
 Rules that this sketch obeys and new code must too:
 
 - LVGL from the adapter task only, under `RING_UI_LOCKED(-1)`; `lv_timer` callbacks run
   inside `lv_timer_handler()` on that task and the mutex is **recursive**, so nesting is
-  safe (same pattern as `imu-dash`).
+  safe (same pattern as `02_imu_dashboard`).
 - `ring_imu_*` / `ring_battery_*` are thread-safe and cheap; never block in a timer.
 - `LV_DEF_REFR_PERIOD=33` caps the UI at ~30 Hz — no point animating faster.
 
@@ -700,27 +700,27 @@ live in flash).
 ## 9. Build & verify checklist (when the app is written)
 
 ```bash
-# both apps must still build — gbuddy shares ringkit with everything else
-idf.py -B build/glyph-anime -DRING_APP=glyph-anime build
-idf.py -B build/gbuddy     -DRING_APP=gbuddy      build
-idf.py -B build/gbuddy size                       # must fit 1500 KiB
+# both apps must still build — 01_gbuddy_face shares ringkit with everything else
+idf.py -B build/00_glyph_grid_reveal -DRING_APP=00_glyph_grid_reveal build
+idf.py -B build/01_gbuddy_face     -DRING_APP=01_gbuddy_face      build
+idf.py -B build/01_gbuddy_face size                       # must fit 1500 KiB
 
 # vendored overrides must still win (see AGENTS.md)
 grep -oE "(components|managed_components)/(espressif__esp_codec_dev|viewesmart__smartring_plus)" \
-     build/gbuddy/compile_commands.json | sort | uniq -c
+     build/01_gbuddy_face/compile_commands.json | sort | uniq -c
 
-idf.py -B build/gbuddy -p /dev/ttyACM0 flash monitor
+idf.py -B build/01_gbuddy_face -p /dev/ttyACM0 flash monitor
 ```
 
-Expected boot log: `app: gbuddy`, then `ringkit:` with all peripherals `ok`, then
-`gbuddy: ready: ...`, and no `panic` / `assert` / `Guru Meditation`.
+Expected boot log: `app: 01_gbuddy_face`, then `ringkit:` with all peripherals `ok`, then
+`01_gbuddy_face: ready: ...`, and no `panic` / `assert` / `Guru Meditation`.
 
 **Needs a human (cannot be verified from the log):** the face composition, the edge fade,
 blink speed, gaze feel, mood transitions, and sleep/wake. Touch cannot be synthesised from
-the host. Say so explicitly when reporting status — same rule as `glyph-anime`.
+the host. Say so explicitly when reporting status — same rule as `00_glyph_grid_reveal`.
 
 Also worth capturing once: a photo of the panel for the README, and a short capture of
-`gbuddy: mood -> n` lines proving the state machine advanced on tap.
+`01_gbuddy_face: mood -> n` lines proving the state machine advanced on tap.
 
 ---
 
@@ -734,7 +734,7 @@ Also worth capturing once: a photo of the panel for the README, and a short capt
 4. **How many moods at first?** 001 only + blink (2 eyes + smile mouth) = **~127 KB**; all
    four moods = **~291 KB** (T2). Both fit easily; the first ships sooner.
 5. **Naming:** is "GBuddy" the intended product name (the art says GEODIS)? The example
-   directory is `examples/gbuddy`; rename before the app ships if this is a brand asset.
+   directory is `examples/01_gbuddy_face`; rename before the app ships if this is a brand asset.
 6. **License of the stills.** They are AI-generated product renders in the repo's `medias/`.
    If they came from an external generator, confirm redistribution terms before baking them
    into firmware (the project is GPL-3.0-or-later, `LICENSE`).
@@ -745,7 +745,7 @@ Also worth capturing once: a photo of the panel for the README, and a short capt
 
 **In this repo**
 
-- `examples/glyph-anime/README.md` — the model for this kind of design note, and the
+- `examples/00_glyph_grid_reveal/README.md` — the model for this kind of design note, and the
   source of the "approximate the still with primitives" approach.
 - `components/ringkit/include/ringkit/ring_theme.h` — panel geometry (360/180).
 - `components/viewesmart__smartring_plus/smartring_bsp.c` — `buffer_height = 40`,
@@ -779,14 +779,14 @@ Also worth capturing once: a photo of the panel for the README, and a short capt
 
 ---
 
-## 12. As built (`examples/gbuddy`, 2026-11-04)
+## 12. As built (`examples/01_gbuddy_face`, 2026-11-04)
 
 ### 12.1 What shipped
 
 ```
-examples/gbuddy/
-├── CMakeLists.txt          # gbuddy.c + 10 generated asset .c files
-├── gbuddy.c                # ~450 lines: layout, moods, blink, gaze, sleep, battery
+examples/01_gbuddy_face/
+├── CMakeLists.txt          # gbuddy_face.c + 10 generated asset .c files
+├── gbuddy_face.c           # ~450 lines: layout, moods, blink, gaze, sleep, battery
 ├── include/ring_example.h  # the standard contract header
 ├── README.md               # app-level summary
 └── assets/
@@ -840,13 +840,13 @@ tap, long-press sleep with a 20 % backlight, and the battery → sad rule.
 
 ### 12.4 Verified
 
-- Boot (device): `app: gbuddy`, `ringkit: display=ok battery=ok power=ok audio=ok sd=ok
-  imu=ok`, `gbuddy: mood happy`, `ready: 4 moods, 6 eye + 4 mouth sprites`, no
+- Boot (device): `app: 01_gbuddy_face`, `ringkit: display=ok battery=ok power=ok audio=ok sd=ok
+  imu=ok`, `01_gbuddy_face: mood happy`, `ready: 4 moods, 6 eye + 4 mouth sprites`, no
   panic/assert; stable over 60 s.
 - All four moods rendered correctly (verified from device snapshots).
-- Both other apps still build (`glyph-anime` 750,576 B, `hello` 823,088 B).
+- Both other apps still build (`00_glyph_grid_reveal` 750,576 B, `09_hello_smoke_test` 823,088 B).
 - The AXP2101 `ESP_ERR_TIMEOUT` warning in the log is **pre-existing** (it appears on
-  `glyph-anime` too) and is rate-limited by the BSP.
+  `00_glyph_grid_reveal` too) and is rate-limited by the BSP.
 
 ### 12.5 Still needs a human
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build / flash an example using the local secrets file.
 #
-#   tools/dev.sh build                    # default app (glyph-anime)
-#   tools/dev.sh build qianwenai-button
-#   tools/dev.sh flash qianwenai-button   # build + flash to /dev/ttyACM0
+#   tools/dev.sh build                    # default app (00_glyph_grid_reveal)
+#   tools/dev.sh build 06_qianwenai_push_to_talk
+#   tools/dev.sh flash 06_qianwenai_push_to_talk   # build + flash to /dev/ttyACM0
 #   tools/dev.sh monitor                  # follow the serial log
 #
 # Credentials come from ./secrets.local (git-ignored), never from the command
@@ -14,7 +14,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 action="${1:-build}"
-app="${2:-glyph-anime}"
+app="${2:-00_glyph_grid_reveal}"
 port="${PORT:-/dev/ttyACM0}"
 
 # --- ESP-IDF environment -------------------------------------------------
