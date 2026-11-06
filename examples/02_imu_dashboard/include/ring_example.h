@@ -1,11 +1,10 @@
 /*
  * Example application contract.
  *
- * Every directory under examples/ provides this same header and compiles to a
- * component named after its directory. Only one example is on the component
- * search path at a time (see RING_APP in the top-level CMakeLists.txt), so
- * main/ can always include "ring_example.h" and call these two functions
- * regardless of which application is selected.
+ * Every directory under examples/ provides this same header. The selected
+ * example's sources are compiled into the `main` component (see RING_APP in
+ * main/CMakeLists.txt), so main/ can always include "ring_example.h" and call
+ * these two functions regardless of which application is selected.
  */
 #pragma once
 

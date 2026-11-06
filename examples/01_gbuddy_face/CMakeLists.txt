@@ -4,7 +4,7 @@
 # component, with "${_app_dir}" as the base for every path below.
 #
 # The assets/*.c files are generated from medias/gbuddy-00N.png by
-# assets/rebuild.sh — see notes/gbuddy.md §4.
+# assets/rebuild.sh — see ../README.md §1.
 
 set(RING_EXAMPLE_SRCS
     "gbuddy_face.c"

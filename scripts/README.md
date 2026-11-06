@@ -61,7 +61,7 @@ scripts/.venv/bin/python scripts/test_qianwen_realtime.py
 # use the espeak clip instead of the microphone (raw PCM or any av-decodable
 # audio file — a WAV works directly, no ffmpeg step needed)
 scripts/.venv/bin/python scripts/test_qianwen_realtime.py \
-    --clip examples/07_qianwen_realtime_harness/assets/test_clip.pcm
+    --clip scripts/assets/test_clip.pcm
 scripts/.venv/bin/python scripts/test_qianwen_realtime.py --clip /tmp/clip.wav
 
 # save the reply somewhere else, without playing it
@@ -156,11 +156,11 @@ else is decoded and resampled with PyAV, so a 44.1 kHz stereo WAV or an MP3
 works as-is — no `ffmpeg` step needed. A raw PCM file in any other format
 (44.1 kHz, stereo, 8-bit) is sent as-is and will sound wrong; convert it first.
 
-The clip streamed by `examples/07_qianwen_realtime_harness` is
-`examples/07_qianwen_realtime_harness/assets/test_clip.pcm`, generated with:
+The clip used by the `--clip` examples below is `scripts/assets/test_clip.pcm`
+(generated with:
 
 ```bash
 espeak -v en -s 150 -w /tmp/capital.wav "the capital of China"
 ffmpeg -y -i /tmp/capital.wav -ar 48000 -ac 1 -f s16le -acodec pcm_s16le \
-       examples/07_qianwen_realtime_harness/assets/test_clip.pcm
+       scripts/assets/test_clip.pcm
 ```
