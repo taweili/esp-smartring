@@ -70,7 +70,9 @@
 #define WORKER_STACK    8192
 /* The Opus encoder's SILK path peaks at ~20 KB of stack (silk_encode_frame_FIX
  * alone has a ~9.5 KB frame); 8 KB overflowed on the first encoded frame. */
-#define TALK_TASK_STACK 24576
+/* Mono SILK peaked at ~20 KB; the stereo frames the SDP negotiates (see
+ * RING_NET_OPUS_CHANNELS in ring_net.c) need more, and 24 KB overflowed. */
+#define TALK_TASK_STACK 65536
 #define WORKER_PRIO     5       /* below LVGL (6): button events win */
 
 /* ------------------------------------------------------------- UI */
@@ -211,9 +213,10 @@ static void net_state_cb(ring_net_state_t st, void *user)
     }
 }
 
-static void net_text_cb(const char *text, size_t len, void *user)
+static void net_text_cb(const char *text, size_t len, bool is_user, void *user)
 {
     (void)user;
+    (void)is_user;           /* the hint line shows the model's reply */
     if (!s_ui_ready) {
         return;
     }

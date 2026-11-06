@@ -80,7 +80,11 @@ size_t ring_net_ca_pem_len(void)
 /* The endpoint only accepts Opus on m=audio, so this is fixed at 48 kHz.
  * RING_NET_FRAME_SAMPLES (960 = 20 ms) comes from the public header. */
 #define RING_NET_SAMPLE_RATE    48000
-#define RING_NET_CHANNELS       1
+#define RING_NET_CHANNELS       1   /* PCM on the public API is mono */
+/* esp_peer offers `opus/48000/2` for Opus no matter what audio_info.channel
+ * says, so the encoder must produce stereo to match the negotiated SDP;
+ * ring_net_send_audio() up-mixes the mono API to stereo. */
+#define RING_NET_OPUS_CHANNELS  2
 #define RING_NET_FRAME_BYTES    (RING_NET_FRAME_SAMPLES * 2)   /* 16-bit */
 #define RING_NET_BITRATE        32000
 
@@ -137,6 +141,7 @@ typedef struct {
     int                      enc_in_size;
     int                      enc_out_size;
     uint8_t                 *enc_out;
+    uint8_t                 *enc_in;      /* mono -> stereo up-mix buffer */
 
     esp_audio_dec_handle_t   dec;
     SemaphoreHandle_t        dec_mutex;
@@ -154,6 +159,9 @@ typedef struct {
 
     QueueHandle_t            event_queue;
     volatile bool            speaking;
+
+    /* RTP presentation timestamp for the current session (sample count). */
+    uint32_t                 pts;
 } ring_net_ctx_t;
 
 static ring_net_ctx_t s;
@@ -247,7 +255,7 @@ static esp_err_t opus_open(void)
 
     esp_opus_enc_config_t cfg = ESP_OPUS_ENC_CONFIG_DEFAULT();
     cfg.sample_rate = RING_NET_SAMPLE_RATE;
-    cfg.channel = RING_NET_CHANNELS;
+    cfg.channel = RING_NET_OPUS_CHANNELS;
     cfg.bits_per_sample = 16;
     cfg.bitrate = RING_NET_BITRATE;
     cfg.frame_duration = ESP_OPUS_ENC_FRAME_DURATION_20_MS;
@@ -268,7 +276,8 @@ static esp_err_t opus_open(void)
     }
     esp_audio_enc_get_frame_size(s.enc, &s.enc_in_size, &s.enc_out_size);
     s.enc_out = malloc(s.enc_out_size > 0 ? s.enc_out_size : 1024);
-    if (s.enc_out == NULL) {
+    s.enc_in = malloc(RING_NET_FRAME_SAMPLES * RING_NET_OPUS_CHANNELS * 2);
+    if (s.enc_out == NULL || s.enc_in == NULL) {
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "opus encoder: in %d B out %d B", s.enc_in_size, s.enc_out_size);
@@ -494,8 +503,10 @@ static int on_msg(esp_peer_msg_t *msg, void *ctx)
     s.local_sdp[msg->size] = '\0';
     xSemaphoreGive(s.sdp_mutex);
 
-    ESP_LOGI(TAG, "local SDP ready");
-    ESP_LOGI(TAG, "LOCAL SDP:\n%s", s.local_sdp);
+    ESP_LOGI(TAG, "local SDP ready (%u bytes)", (unsigned)strlen(s.local_sdp));
+    /* Full dumps only at DEBUG: the console is USB-Serial-JTAG and its writes
+     * block when the host is not reading, so keep the hot path small. */
+    ESP_LOGD(TAG, "LOCAL SDP:\n%s", s.local_sdp);
     if (s.signal_task) {
         xTaskNotifyGive(s.signal_task);
     }
@@ -568,6 +579,163 @@ static int on_channel_open(esp_peer_data_channel_info_t *ch, void *ctx)
     return 0;
 }
 
+/* ------------------------------------------------------------ JSON helpers
+ *
+ * DataChannel events are JSON, but picking a field out with strstr is
+ * brittle: `"type":"error"` misses `{"type": "error"}`, a delta that
+ * happens to contain the text "session.created" would trigger a
+ * session.update, and a hand-rolled string reader drops leading spaces and
+ * breaks on the first escaped quote. These two helpers are small enough to
+ * run on the peer thread.
+ */
+
+/* Copy the string value of `key` into `out` (always NUL-terminated).
+ * Handles the standard escapes and encodes \uXXXX as UTF-8, including
+ * surrogate pairs. Returns false when the key is absent or is not a string. */
+static bool json_get_str(const char *json, const char *key,
+                         char *out, size_t cap, size_t *out_len)
+{
+    if (json == NULL || key == NULL || out == NULL || cap == 0) {
+        return false;
+    }
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (p == NULL) {
+        return false;
+    }
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+        p++;
+    }
+    if (*p != ':') {
+        return false;
+    }
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+        p++;
+    }
+    if (*p != '"') {
+        return false;
+    }
+    p++;
+
+    size_t n = 0;
+    while (*p != '\0' && *p != '"') {
+        char c = *p;
+        if (c != '\\') {
+            if (n + 1 < cap) {
+                out[n++] = c;
+            }
+            p++;
+            continue;
+        }
+        p++;
+        switch (*p) {
+        case '"':  c = '"';  break;
+        case '\\': c = '\\'; break;
+        case '/':  c = '/';  break;
+        case 'b':  c = '\b'; break;
+        case 'f':  c = '\f'; break;
+        case 'n':  c = '\n'; break;
+        case 'r':  c = '\r'; break;
+        case 't':  c = '\t'; break;
+        case 'u': {
+            unsigned cp = 0;
+            for (int i = 0; i < 4; i++) {
+                p++;
+                char h = *p;
+                cp <<= 4;
+                if (h >= '0' && h <= '9') {
+                    cp |= (unsigned)(h - '0');
+                } else if (h >= 'a' && h <= 'f') {
+                    cp |= (unsigned)(h - 'a' + 10);
+                } else if (h >= 'A' && h <= 'F') {
+                    cp |= (unsigned)(h - 'A' + 10);
+                } else {
+                    return false;
+                }
+            }
+            /* Combine a UTF-16 surrogate pair when one follows. */
+            if (cp >= 0xD800 && cp <= 0xDBFF &&
+                p[1] == '\\' && p[2] == 'u') {
+                unsigned lo = 0;
+                bool ok = true;
+                for (int i = 0; i < 4; i++) {
+                    char h = p[3 + i];
+                    lo <<= 4;
+                    if (h >= '0' && h <= '9') {
+                        lo |= (unsigned)(h - '0');
+                    } else if (h >= 'a' && h <= 'f') {
+                        lo |= (unsigned)(h - 'a' + 10);
+                    } else if (h >= 'A' && h <= 'F') {
+                        lo |= (unsigned)(h - 'A' + 10);
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (ok && lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    p += 6;
+                }
+            }
+            char enc[4];
+            int m;
+            if (cp < 0x80) {
+                enc[0] = (char)cp;
+                m = 1;
+            } else if (cp < 0x800) {
+                enc[0] = (char)(0xC0 | (cp >> 6));
+                enc[1] = (char)(0x80 | (cp & 0x3F));
+                m = 2;
+            } else if (cp < 0x10000) {
+                enc[0] = (char)(0xE0 | (cp >> 12));
+                enc[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                enc[2] = (char)(0x80 | (cp & 0x3F));
+                m = 3;
+            } else {
+                enc[0] = (char)(0xF0 | (cp >> 18));
+                enc[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+                enc[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                enc[3] = (char)(0x80 | (cp & 0x3F));
+                m = 4;
+            }
+            for (int i = 0; i < m; i++) {
+                if (n + 1 < cap) {
+                    out[n++] = enc[i];
+                }
+            }
+            p++;
+            continue;
+        }
+        default:
+            return false;
+        }
+        if (n + 1 < cap) {
+            out[n++] = c;
+        }
+        p++;
+    }
+    if (*p != '"') {            /* unterminated: the frame was truncated */
+        return false;
+    }
+    out[n] = '\0';
+    if (out_len != NULL) {
+        *out_len = n;
+    }
+    return true;
+}
+
+/* True when the event's "type" field equals `type`. */
+static bool json_type_is(const char *json, const char *type)
+{
+    char buf[64];
+    size_t len = 0;
+    return json_get_str(json, "type", buf, sizeof(buf), &len) &&
+           len == strlen(type) && memcmp(buf, type, len) == 0;
+}
+
 /* DataChannel frames arrive as JSON strings. */
 static int on_data_frame(esp_peer_data_frame_t *frame, void *ctx)
 {
@@ -581,44 +749,48 @@ static int on_data_frame(esp_peer_data_frame_t *frame, void *ctx)
     }
 
     /* Bounded copy on the peer thread: no unbounded heap churn there. */
-    char json[512];
+    char json[1024];
     int n = frame->size < (int)sizeof(json) - 1 ? frame->size : (int)sizeof(json) - 1;
     memcpy(json, frame->data, (size_t)n);
     json[n] = '\0';
 
-    ESP_LOGW(TAG, "dc: %s", json);
+    /* Bounded at INFO: this fires on every transcript delta, and the console
+     * is USB-Serial-JTAG, whose writes block when the host stops reading. */
+    ESP_LOGI(TAG, "dc: %.200s", json);
 
-    if (strstr(json, "\"session.created\"")) {
+    if (json_type_is(json, "session.created")) {
         ESP_LOGI(TAG, "session created -> configuring");
         esp_err_t e = ring_net_send_event(
             "{\"type\":\"session.update\",\"session\":{\"modalities\":[\"text\",\"audio\"],"
             "\"voice\":\"longanqian_v3.1\",\"turn_detection\":{\"type\":\"server_vad\","
             "\"threshold\":0.5,\"silence_duration_ms\":800}}}");
         ESP_LOGI(TAG, "session.update sent: %s", esp_err_to_name(e));
-    } else if (strstr(json, "\"session.updated\"")) {
+    } else if (json_type_is(json, "session.updated")) {
         ESP_LOGI(TAG, "session configured");
         state_set(RING_NET_READY);
-    } else if (strstr(json, "\"response.done\"")) {
+    } else if (json_type_is(json, "response.done")) {
         s.speaking = false;
         if (s.state == RING_NET_SPEAKING) {
             state_set(RING_NET_READY);
         }
-    } else if (strstr(json, "\"type\":\"error\"")) {
-        ESP_LOGE(TAG, "model error: %s", json);
-    } else if (s.text_cb &&
-               (strstr(json, "response.text.delta") ||
-                strstr(json, "response.audio_transcript.delta"))) {
-        const char *p = strstr(json, "\"delta\"");
-        if (p) {
-            p = strchr(p, ':');
-            if (p) {
-                p++;
-                while (*p == ' ' || *p == '"') p++;
-                const char *end = strchr(p, '"');
-                if (end && end > p) {
-                    s.text_cb(p, (size_t)(end - p), s.user);
-                }
-            }
+    } else if (json_type_is(json, "error")) {
+        ESP_LOGE(TAG, "model error: %.200s", json);
+    } else if (json_type_is(json, "conversation.item.input_audio_transcription.completed")) {
+        /* The server transcribes the user's utterance by default; surfacing it
+         * is the clearest evidence that the uplink arrived intact. */
+        char text[256];
+        size_t len = 0;
+        if (s.text_cb != NULL &&
+            json_get_str(json, "transcript", text, sizeof(text), &len)) {
+            s.text_cb(text, len, true, s.user);
+        }
+    } else if (s.text_cb != NULL &&
+               (json_type_is(json, "response.text.delta") ||
+                json_type_is(json, "response.audio_transcript.delta"))) {
+        char text[128];
+        size_t len = 0;
+        if (json_get_str(json, "delta", text, sizeof(text), &len)) {
+            s.text_cb(text, len, false, s.user);
         }
     }
     return 0;
@@ -687,8 +859,9 @@ static void signal_task(void *arg)
                 ESP_LOGE(TAG, "esp_peer_send_msg failed: %d", r);
                 state_set(RING_NET_ERROR);
             } else {
-                ESP_LOGI(TAG, "remote SDP installed");
-                ESP_LOGI(TAG, "ANSWER SDP:\n%s", answer);
+                ESP_LOGI(TAG, "remote SDP installed (%u bytes)",
+                         (unsigned)strlen(answer));
+                ESP_LOGD(TAG, "ANSWER SDP:\n%s", answer);
             }
         } else {
             state_set(RING_NET_ERROR);
@@ -728,7 +901,7 @@ static esp_err_t peer_open(void)
         .audio_info = {
             .codec = ESP_PEER_AUDIO_CODEC_OPUS,
             .sample_rate = RING_NET_SAMPLE_RATE,
-            .channel = RING_NET_CHANNELS,
+            .channel = RING_NET_OPUS_CHANNELS,
         },
         .video_dir = ESP_PEER_MEDIA_DIR_NONE,
         .enable_data_channel = true,
@@ -812,6 +985,8 @@ esp_err_t ring_net_start(const char *model, const char *api_key)
         esp_peer_close(s.peer);
         s.peer = NULL;
     }
+    s.speaking = false;
+    s.pts = 0;
     state_set(RING_NET_CONNECTING);
 
     /* 1. Wi-Fi */
@@ -906,30 +1081,43 @@ esp_err_t ring_net_send_audio(const int16_t *pcm, size_t samples)
     }
 
     /* Encode exactly one Opus frame per call (the caller feeds
-     * RING_NET_FRAME_SAMPLES at a time). */
+     * RING_NET_FRAME_SAMPLES at a time). The public API is mono while the
+     * encoder is stereo, so duplicate the samples across L/R. */
+    int16_t *stereo = (int16_t *)s.enc_in;
+    for (size_t i = 0; i < samples; i++) {
+        stereo[2 * i] = pcm[i];
+        stereo[2 * i + 1] = pcm[i];
+    }
     esp_audio_enc_in_frame_t in = {
-        .buffer = (uint8_t *)pcm,
-        .len = (uint32_t)(samples * 2),
+        .buffer = s.enc_in,
+        .len = (uint32_t)(samples * RING_NET_OPUS_CHANNELS * 2),
     };
     esp_audio_enc_out_frame_t out = {
         .buffer = s.enc_out,
         .len = (uint32_t)s.enc_out_size,
     };
     esp_audio_err_t e = esp_audio_enc_process(s.enc, &in, &out);
+    static int s_hwm;                    /* TEMP DIAG */
+    if (s_hwm < 3) {
+        ESP_LOGI(TAG, "enc: %d B in, %d B out, ret %d, stack hwm %u words",
+                 (int)in.len, (int)out.encoded_bytes, e,
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        s_hwm++;
+    }
     if (e != ESP_AUDIO_ERR_OK || out.encoded_bytes == 0) {
         return ESP_FAIL;
     }
 
     /* RTP presentation timestamp: the sample count, not the wall clock.
      * The peer library advances it by the frame size; a ms timestamp here
-     * makes the model reject the stream. */
-    static uint32_t s_pts = 0;
+     * makes the model reject the stream. Reset per session (see
+     * ring_net_start) so a reconnect starts from a known offset. */
     esp_peer_audio_frame_t frame = {
         .data = s.enc_out,
         .size = (int)out.encoded_bytes,
-        .pts = s_pts,
+        .pts = s.pts,
     };
-    s_pts += samples;
+    s.pts += samples;
     int r = esp_peer_send_audio(s.peer, &frame);
     if (r != ESP_PEER_ERR_NONE && r != ESP_PEER_ERR_WOULD_BLOCK) {
         return ESP_FAIL;

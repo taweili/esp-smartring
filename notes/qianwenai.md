@@ -210,6 +210,12 @@ End-to-end "speech in → speech out" (no separate ASR+LLM+TTS):
 | `qwen3.8-livetranslate-flash-realtime` / `qwen3.5-livetranslate-flash-realtime` | simultaneous interpretation (2.3 s latency) | Realtime API |
 | `qwen3-livetranslate-flash` | file dubbing / podcast translation | Chat Completions (HTTP) |
 
+**Qwen-Audio Realtime voices (flash models):** `longanqian_v3.1` (default),
+`longanhuan_v3.1`, `longanlingxin_v3.1`, `longanfengyue_v3.1`,
+`xunanchuan_v3.1` — Chinese-first; set `session.output_audio.language = "en"`
+for English output. There is **no `Jennifer`** on the Realtime models (that
+name belongs to the HTTP `qwen3-tts-flash` voice list).
+
 ### 2.11 Omni / full-modal
 
 `qwen3.8-omni-flash`, `qwen3.8-omni-flash-realtime`,
