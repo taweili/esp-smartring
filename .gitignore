@@ -17,3 +17,7 @@ secrets.local.*
 # Host-side test venv and generated reply audio
 scripts/.venv/
 scripts/reply.wav
+
+# Python bytecode
+__pycache__/
+*.pyc
