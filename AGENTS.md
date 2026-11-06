@@ -116,8 +116,8 @@ EOF
 │   ├── 07_qianwen_realtime_harness/ # hands-free WebRTC voice loop (README)
 │   ├── 08_ble_peripheral/       # Bluetooth LE peripheral (README)
 │   ├── 09_hello_smoke_test/     # bring-up smoke test (white screen + label, README)
-│   ├── 10_qianwen_ws_voice_chat/ # PLANNED (design only) — notes/ws-voice-chat.md
-│   └── 11_quic_voice_chat/      # PLANNED (design only) — notes/quic-voice-chat.md
+│   ├── 10_qianwen_ws_voice_chat/ # PLANNED (design only) — notes/design-ws-voice-chat.md
+│   └── 11_quic_voice_chat/      # PLANNED (design only) — notes/design-quic-voice-chat.md
 ├── scripts/
 │   ├── test_qianwen_realtime.py # host-side Qianwen WebRTC test client
 │   └── assets/test_clip.pcm     # clip for its --clip mode (no mic needed)
@@ -125,14 +125,14 @@ EOF
 │   ├── dev.sh                   # build/flash/monitor wrapper (secrets + IDF env)
 │   └── lvgl_img_pack.py         # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
 └── notes/
-    ├── esp-smartring.md          # hardware + BSP reference (product, BSP API, pin map)
-    ├── architecture.md           # architecture rationale (§6 = the two IDF traps)
-    ├── networking.md             # ESP-IDF v6.1 networking/HTTPS/WebRTC reference
-    ├── qianwenai.md              # 千问 AI platform model catalog + API surface
-    ├── ws-voice-chat.md          # design: examples/10_qianwen_ws_voice_chat (no code yet)
-    ├── quic-voice-chat.md        # design: examples/11_quic_voice_chat (no code yet)
-    ├── meta-muse.md              # research: Meta Muse gadget path (no code yet)
-    └── xiaozhi.md                # research: open-source Xiaozhi assistant (no code yet)
+    ├── hardware-bsp-reference.md     # hardware + BSP reference (product, BSP API, pin map)
+    ├── architecture-rationale.md     # architecture rationale (§6 = the two IDF traps)
+    ├── networking-https-webrtc.md    # ESP-IDF v6.1 networking/HTTPS/WebRTC reference
+    ├── qianwen-ai-platform.md        # 千问 AI platform model catalog + API surface
+    ├── design-ws-voice-chat.md       # design: examples/10_qianwen_ws_voice_chat (no code yet)
+    ├── design-quic-voice-chat.md     # design: examples/11_quic_voice_chat (no code yet)
+    ├── research-meta-muse.md         # research: Meta Muse gadget path (no code yet)
+    └── research-xiaozhi.md           # research: open-source Xiaozhi assistant (no code yet)
 ```
 
 ### Skeleton (`components/ringkit/`)
@@ -296,7 +296,7 @@ grep -oE "(components|managed_components)/viewesmart__smartring_plus" \
   `ring_board_init()` already encodes this split.
 - **Do not** add an `idf_component.yml` under `examples/`; the single manifest is
   `main/idf_component.yml`.
-- Keep `notes/esp-smartring.md` in sync when you change pin/API assumptions.
+- Keep `notes/hardware-bsp-reference.md` in sync when you change pin/API assumptions.
 - Adding an app: copy an existing `examples/<name>/` (three files) and build with
   `idf.py -DRING_APP=<name> -B build/<name> build`. See `examples/README.md`.
 
@@ -375,23 +375,23 @@ that must stay committed are the override *copies* in `components/`
 ## Deep-dive docs
 
 - `README.md` — project entry point: overview, quick start, applications, docs map.
-- `notes/esp-smartring.md` — hardware + BSP reference: product overview, BSP API, pin map, pitfalls.
+- `notes/hardware-bsp-reference.md` — hardware + BSP reference: product overview, BSP API, pin map, pitfalls.
 - `examples/00_glyph_grid_reveal/README.md` — 00_glyph_grid_reveal design & build spec: layered reveal maths, layer timeline, risks.
-- `notes/architecture.md` — architecture rationale: why the layout is `ringkit` + fragments; §6 has the two
+- `notes/architecture-rationale.md` — architecture rationale: why the layout is `ringkit` + fragments; §6 has the two
   ESP-IDF traps (EXTRA_COMPONENT_DIRS ordering, double CMake evaluation).
-- `notes/networking.md` — networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/
+- `notes/networking-https-webrtc.md` — networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/
   cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and OpenAI API paths (REST, Realtime
   over WebSocket, Realtime over WebRTC).
-- `notes/qianwenai.md` — 千问 AI 平台 (qianwenai.com) reference: model catalog by category and the API surface
+- `notes/qianwen-ai-platform.md` — 千问 AI 平台 (qianwenai.com) reference: model catalog by category and the API surface
   (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async/batch).
 - `examples/06_qianwenai_push_to_talk/README.md` — hold-to-talk WebRTC voice button (`qwen-audio-3.1-realtime-flash`):
   SDP exchange, Opus/48 kHz pipeline, `ring_net` module, stack/heap lessons.
-- `notes/ws-voice-chat.md` — WebSocket voice-chat design brainstorm for `examples/10_qianwen_ws_voice_chat`:
+- `notes/design-ws-voice-chat.md` — WebSocket voice-chat design brainstorm for `examples/10_qianwen_ws_voice_chat`:
   PCM 16 kHz in / 24 kHz out resampler, `ring_ws` module, manual PTT / `smart_turn_v2` turn-taking, barge-in,
   function calling, stack + jitter-ring budget. The only realtime path that works on UDP-blocked networks.
-- `notes/quic-voice-chat.md` — QUIC/AOQ research and the `ringgate` design for `examples/11_quic_voice_chat`;
+- `notes/design-quic-voice-chat.md` — QUIC/AOQ research and the `ringgate` design for `examples/11_quic_voice_chat`;
   no code yet.
-- `notes/meta-muse.md`, `notes/xiaozhi.md` — assistant feasibility research; no code yet.
+- `notes/research-meta-muse.md`, `notes/research-xiaozhi.md` — assistant feasibility research; no code yet.
 - `examples/01_gbuddy_face/README.md` — the sprite-asset app: moods, blink, gaze, sleep, the
   on-device findings (flat background, feather, LVGL snapshot debugging) and how to regenerate
   the assets.

@@ -1,8 +1,8 @@
 # QUIC voice chat — design brainstorm for `examples/11_quic_voice_chat`
 
 **Status:** research / design only (no code yet). Companion to
-`notes/qianwenai.md` (§1 protocols, §2.10 S2S models, §3 transports,
-§3.4 token auth, §3.5 QUIC/AOQ internals) and `notes/ws-voice-chat.md`
+`notes/qianwen-ai-platform.md` (§1 protocols, §2.10 S2S models, §3 transports,
+§3.4 token auth, §3.5 QUIC/AOQ internals) and `notes/design-ws-voice-chat.md`
 (the TCP/WebSocket baseline this example is the A/B counterpart to).
 
 **Goal.** A hands-free voice conversation with
@@ -14,7 +14,7 @@
 
 ## 1. The hard constraint that shapes everything
 
-`notes/qianwenai.md` §3 / §3.6: the platform's QUIC transport is **AOQ
+`notes/qianwen-ai-platform.md` §3 / §3.6: the platform's QUIC transport is **AOQ
 (AI over QUIC, `x-dashscope-rtc-transport: moq`)**, and its client SDKs exist
 only for **Android / iOS / HarmonyOS**. The wire protocol (ALPN, token
 exchange, track layout on top of MoQ) is not documented, and the API key must
@@ -144,7 +144,7 @@ WebTransport-over-HTTP/3 would add browser interop at the cost of nghttp3
 | 1 | **Opus PLC** | `esp_audio_codec`'s decoder wrapper may not expose `opus_decode(..., decode_fec, ...)`. Concealing a lost 20 ms frame by repeating the last one is audible. Spike this *first*: if the wrapper is opaque, link `espressif/opus` directly for decode (encode can stay in `esp_audio_codec`). |
 | 2 | **Session-ticket persistence** | 0-RTT only works across boots if the wolfSSL session is `wolfSSL_get_session`'d into NVS and restored with `wolfSSL_set_session`. Needs an NVS blob + versioning, plus a sane fallback to 1-RTT on any mismatch. |
 | 3 | **ngtcp2 timer model on FreeRTOS** | One `quic-net` task doing `select()` on the UDP socket with `ngtcp2_conn_get_expiry()` as the timeout; all ngtcp2 callbacks (incl. `recv_stream_data`) run on it. Same lesson as `esp_peer`: **no LVGL, no 4 KB stack arrays, `memcpy` only** in callbacks; marshal to the app through a queue (the `ring-net-event` pattern in `ring_net.c`). |
-| 4 | **No AEC on the ring** | Unchanged from 06/07: ES8311 has no AEC, speaker sits next to the mic. Start **half-duplex** (energy/VAD gate closes the mic while the speaker is live) even though QUIC could do full duplex. Full duplex is the stretch goal and needs ESP-SR AFE (`notes/networking.md` §5.2) — big, pulls `esp-sr`, do not put it on the critical path. |
+| 4 | **No AEC on the ring** | Unchanged from 06/07: ES8311 has no AEC, speaker sits next to the mic. Start **half-duplex** (energy/VAD gate closes the mic while the speaker is live) even though QUIC could do full duplex. Full duplex is the stretch goal and needs ESP-SR AFE (`notes/networking-https-webrtc.md` §5.2) — big, pulls `esp-sr`, do not put it on the critical path. |
 | 5 | **Flash** | 06 is 2.78 MB inside a 3000K partition (9 % free). wolfSSL + ngtcp2 do not fit in the slack → raise `partitions.csv` to **4000K** (it is shared by every app; that is fine, 16 MB part). |
 | 6 | **CPU** | Opus SILK encode already peaks ~20 KB stack and real time on the S3 while Wi-Fi runs. Add AES-GCM per QUIC packet (wolfSSL HW accel) — small, but profile the audio task before adding a second crypto stack's spin. |
 | 7 | **This network blocks UDP** | Already proven in 06 §8. `ringgate` on the LAN is the answer; document "phone hotspot or LAN gateway" as a prerequisite, and keep the 06-style explicit network gate (Wi-Fi → SNTP → probe → handshake) on screen. |
@@ -243,7 +243,7 @@ whole estimate is hostage to M0.
 
 ## 9. Alternatives considered
 
-1. **WebSocket (TCP) + own AEC** (`notes/networking.md` §5.x) — simplest, no new
+1. **WebSocket (TCP) + own AEC** (`notes/networking-https-webrtc.md` §5.x) — simplest, no new
    stack, but the head-of-line stall under 2.4 GHz loss is exactly what we are
    trying to remove. Keep as the baseline in the A/B build.
 2. **WebRTC (`esp_peer`, example 06)** — has built-in AEC and is already wired
@@ -279,13 +279,13 @@ whole estimate is hostage to M0.
 
 ## 11. Doc debt this creates
 
-* `notes/qianwenai.md` §5 should gain a line: *AOQ is unreachable from
+* `notes/qianwen-ai-platform.md` §5 should gain a line: *AOQ is unreachable from
   device firmware (no C SDK, undocumented MoQ profile) → use a gateway; the
   QUIC win belongs on the device↔gateway leg.*
-* `notes/networking.md` needs a **§6 QUIC** section: wolfSSL-vs-mbedTLS,
+* `notes/networking-https-webrtc.md` needs a **§6 QUIC** section: wolfSSL-vs-mbedTLS,
   ngtcp2 timer model, the emqx ESP32 port as prior art, flash/RAM budget.
 * `partitions.csv` comment (1500K → 3000K → 4000K) gets a third reason.
-* `notes/architecture.md` §6 gains a trap: *"mbedTLS has no QUIC interface —
+* `notes/architecture-rationale.md` §6 gains a trap: *"mbedTLS has no QUIC interface —
   adding QUIC means adding wolfSSL, and two TLS stacks is a flash decision,
   not a library decision."*
 

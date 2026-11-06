@@ -37,7 +37,7 @@ state colour, not an outline:
 ## 1. Why this shape
 
 **WebRTC, not WebSocket.** The model is reachable over AOQ, WebRTC and
-WebSocket (`notes/qianwenai.md` §3). WebRTC is the transport the platform
+WebSocket (`notes/qianwen-ai-platform.md` §3). WebRTC is the transport the platform
 documents for non-browser clients, and it carries the model's echo
 cancellation / noise suppression — which matters because the ring's speaker
 sits centimetres from its microphone.
@@ -297,5 +297,5 @@ this endpoint.
 - WebRTC access: `platform.qianwenai.com/docs/api-reference/realtime-api/webrtc-access`
 - Client events: `.../api-reference/qwen-audio-realtime/client-events`
 - Model page (audio formats): `www.qianwenai.com/models/qwen-audio-3.1-realtime-flash`
-- In-repo: `notes/qianwenai.md` (models & APIs), `notes/networking.md`
+- In-repo: `notes/qianwen-ai-platform.md` (models & APIs), `notes/networking-https-webrtc.md`
   (HTTPS/WebRTC background), `examples/04_voice_loopback/` (worker-task pattern)

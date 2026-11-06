@@ -1,5 +1,5 @@
 # Smart Ring Plus (VIEWE) known-good sdkconfig defaults
-# See notes/esp-smartring.md section 6 for rationale.
+# See notes/hardware-bsp-reference.md section 6 for rationale.
 
 # --- Flash size. The module is an ESP32-S3-N16R8 (16 MB flash); the IDF
 #     default of 2 MB would reject the enlarged partition table.

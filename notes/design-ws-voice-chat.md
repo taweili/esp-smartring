@@ -1,8 +1,8 @@
 # WebSocket voice chat — design brainstorm for `examples/10_qianwen_ws_voice_chat`
 
 **Status:** research / design only (no code yet). Companion to
-`notes/qianwenai.md` (§1 protocols, §2.10 S2S models, §3 transports, §3.3
-WebSocket protocol) and `notes/networking.md` §5.2.
+`notes/qianwen-ai-platform.md` (§1 protocols, §2.10 S2S models, §3 transports, §3.3
+WebSocket protocol) and `notes/networking-https-webrtc.md` §5.2.
 
 **Goal.** A voice conversation with `qwen-audio-3.1-realtime-flash` over the
 **WebSocket** realtime protocol — the minimum-dependency path (no `esp_peer`,
@@ -22,7 +22,7 @@ Three reasons, in order of weight:
    voice conversation on the bench.
 2. **It is the smallest realtime path.** `esp_websocket_client` + `esp-tls` +
    base64; no `esp_peer`, no DTLS-SRTP, no ICE/STUN/TURN, no signaling server,
-   no codec. `notes/networking.md` §5.4 recommends exactly this as the first
+   no codec. `notes/networking-https-webrtc.md` §5.4 recommends exactly this as the first
    voice path ("Realtime voice assistant (first version) → Realtime over
    WebSocket").
 3. **It can do things WebRTC cannot.** Manual turn-taking (`turn_detection:
@@ -299,9 +299,9 @@ rolling transcript, and the transport stats on screen.
 
 ## 7. Numbering (decided: WS = 10, QUIC = 11)
 
-`notes/quic-voice-chat.md` originally reserved `examples/10_quic_voice_chat`.
+`notes/design-quic-voice-chat.md` originally reserved `examples/10_quic_voice_chat`.
 **This note takes `10_`; QUIC moves to `examples/11_quic_voice_chat`**, and
-that rename has been applied to `notes/quic-voice-chat.md` (title, §6 heading,
+that rename has been applied to `notes/design-quic-voice-chat.md` (title, §6 heading,
 §10 checklist), `AGENTS.md` and `examples/README.md`.
 
 Rationale: WS is the baseline transport the QUIC note itself says to keep for

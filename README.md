@@ -77,8 +77,8 @@ tools/dev.sh monitor
 | `07_qianwen_realtime_harness` | Hands-free WebRTC voice loop: Wi-Fi → SNTP → HTTPS probe → session, then live mic → Opus → Qianwen → Opus → speaker with server-VAD turn-taking. |
 | `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing` and exposes a GATT server. |
 | `09_hello_smoke_test` | Bring-up smoke test: white screen + one large label. |
-| `10_qianwen_ws_voice_chat` | *Planned (design only).* WebSocket voice chat with PCM 16 kHz/24 kHz — the only realtime transport that works where UDP is filtered. See `notes/ws-voice-chat.md`. |
-| `11_quic_voice_chat` | *Planned (design only).* QUIC/AOQ voice chat via a LAN `ringgate`. See `notes/quic-voice-chat.md`. |
+| `10_qianwen_ws_voice_chat` | *Planned (design only).* WebSocket voice chat with PCM 16 kHz/24 kHz — the only realtime transport that works where UDP is filtered. See `notes/design-ws-voice-chat.md`. |
+| `11_quic_voice_chat` | *Planned (design only).* QUIC/AOQ voice chat via a LAN `ringgate`. See `notes/design-quic-voice-chat.md`. |
 
 > `06`/`07` need a network that allows **outbound UDP** for DTLS; on a
 > UDP-filtered LAN they connect as far as ICE and then time out. See
@@ -112,8 +112,8 @@ see `AGENTS.md` § "Critical fixes already applied".
 |-----|------------|
 | `AGENTS.md` | Developer guidance: build/flash commands, verification bar, critical fixes, gotchas. **Start here before changing code.** |
 | `examples/README.md` | App contract, how apps are selected and added. |
-| `notes/esp-smartring.md` | Hardware + BSP reference: product overview, full `bsp_*` API, pin map, gotchas. |
-| `notes/architecture.md` | Architecture rationale: why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
+| `notes/hardware-bsp-reference.md` | Hardware + BSP reference: product overview, full `bsp_*` API, pin map, gotchas. |
+| `notes/architecture-rationale.md` | Architecture rationale: why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
 | `examples/00_glyph_grid_reveal/README.md` | Default app design & build spec (layered reveal maths, risks). |
 | `examples/01_gbuddy_face/README.md` | The sprite-asset app: moods, blink/gaze/sleep, sprite geometry and flash budget, on-device findings (flat background, feathered matte, LVGL snapshot debugging), asset regeneration. |
 | `examples/02_imu_dashboard/README.md` | The IMU dashboard: every QMI8658A channel, the bubble level, and the tap-to-calibrate flow. |
@@ -123,10 +123,10 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `examples/06_qianwenai_push_to_talk/README.md` | The hold-to-talk WebRTC voice button: Qianwen SDP exchange, Opus/48 kHz pipeline, task & memory layout, pinned TLS chain, partition sizing, and the UDP-limited on-device result. |
 | `examples/07_qianwen_realtime_harness/README.md` | The hands-free voice loop: explicit network gate, half-duplex turn-taking, task layout, and why the Opus task needs a PSRAM stack. |
 | `examples/08_ble_peripheral/README.md` | Bluetooth/BLE on the ring: what the silicon supports, NimBLE vs Bluedroid, exact `sdkconfig`, GATT-server bring-up, Wi-Fi coexistence, the `ring_bt` wrapper spec. |
-| `notes/networking.md` | Networking, HTTPS & WebRTC reference: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and the three OpenAI API paths (REST, Realtime-over-WebSocket, Realtime-over-WebRTC). |
-| `notes/qianwenai.md` | 千问 AI 平台 (qianwenai.com) reference: model catalog by category (LLM, vision, image/video/3D generation, speech, omni, embeddings) and the API surface (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async task/batch APIs). |
-| `notes/ws-voice-chat.md`, `notes/quic-voice-chat.md` | Voice-chat transport designs (no code yet): WebSocket (`examples/10_qianwen_ws_voice_chat`) and QUIC/AOQ (`examples/11_quic_voice_chat`). |
-| `notes/meta-muse.md`, `notes/xiaozhi.md` | Assistant feasibility research (no code yet). |
+| `notes/networking-https-webrtc.md` | Networking, HTTPS & WebRTC reference: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and the three OpenAI API paths (REST, Realtime-over-WebSocket, Realtime-over-WebRTC). |
+| `notes/qianwen-ai-platform.md` | 千问 AI 平台 (qianwenai.com) reference: model catalog by category (LLM, vision, image/video/3D generation, speech, omni, embeddings) and the API surface (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async task/batch APIs). |
+| `notes/design-ws-voice-chat.md`, `notes/design-quic-voice-chat.md` | Voice-chat transport designs (no code yet): WebSocket (`examples/10_qianwen_ws_voice_chat`) and QUIC/AOQ (`examples/11_quic_voice_chat`). |
+| `notes/research-meta-muse.md`, `notes/research-xiaozhi.md` | Assistant feasibility research (no code yet). |
 | `scripts/README.md` | Host-side Qianwen WebRTC test client (`test_qianwen_realtime.py`): same flow as `06`, logs every event, saves the reply as WAV. |
 | BSP upstream | `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus`). |
 

@@ -56,7 +56,7 @@ WebSocket-only. So:
 This is half-duplex: the uplink is closed while the model speaks. The ring has
 no acoustic echo cancellation (the ES8311 has no AEC and the speaker sits next
 to the mic), so full-duplex would need an AEC feed — see
-`notes/networking.md` §5.2 for the ESP-SR AFE recipe.
+`notes/networking-https-webrtc.md` §5.2 for the ESP-SR AFE recipe.
 
 ## Task layout
 

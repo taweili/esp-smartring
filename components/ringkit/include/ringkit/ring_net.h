@@ -9,7 +9,7 @@
  * directions. Opus encoding/decoding happens inside this module: the Qianwen
  * endpoint accepts only Opus on m=audio.
  *
- * Realtime API notes (see notes/qianwenai.md):
+ * Realtime API notes (see notes/qianwen-ai-platform.md):
  *  - WebRTC supports only server-side VAD ("server_vad"); manual turn-taking
  *    is WebSocket-only. So the button gates the uplink and the model detects
  *    the end of speech.

@@ -469,7 +469,7 @@ than realtime.
 ## 5. Relevance to the Smart Ring Plus (ESP32-S3)
 
 - **OpenAI-compatible endpoint is the easy win.** `espressif/openai` (see
-  `notes/networking.md` §5.1) or a hand-rolled `esp_http_client` call can use
+  `notes/networking-https-webrtc.md` §5.1) or a hand-rolled `esp_http_client` call can use
   `https://maas.qianwenaiapi.com/compatible-mode/v1` as the base URL and a
   Qianwen API key. `OpenAIChangeBaseURL()` exists for exactly this.
 - **Voice / realtime.** The platform's WebSocket realtime path
@@ -479,7 +479,7 @@ than realtime.
   is plain JSON over the socket, so it fits `esp_websocket_client` cleanly; the
   inference protocol (`run-task`) is the ASR/TTS path. Note the WebSocket path
   has **no built-in AEC** — the ring's speaker/mic echo problem (§5.2 of
-  `notes/networking.md`) still needs a client-side AEC. AOQ/WebRTC have AEC
+  `notes/networking-https-webrtc.md`) still needs a client-side AEC. AOQ/WebRTC have AEC
   built in, but AOQ needs a proprietary SDK (Android/iOS/HarmonyOS), so on
   ESP32-S3 the practical choices are WebSocket + own AEC, or WebRTC.
 - **ASR / TTS.** `qwen-audio-3.1-asr-flash-streaming` (WebSocket) and
@@ -488,7 +488,7 @@ than realtime.
 - **Region / latency.** `maas.qianwenaiapi.com` is the China gateway; for
   devices outside China, check the international DashScope endpoints
   (`dashscope-intl.aliyuncs.com`) and the Qianwen platform's own region
-  support. TLS + cert bundle is required (see `notes/networking.md` §3).
+  support. TLS + cert bundle is required (see `notes/networking-https-webrtc.md` §3).
 - **No camera** on the ring, so the video/3D/image-generation models are not
   usable for capture, only for cloud-side generation from other inputs.
 

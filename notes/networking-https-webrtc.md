@@ -393,7 +393,7 @@ P2P media or the WebRTC transport.
 `ringkit`'s `REQUIRES` and the shared `sdkconfig.defaults` block below. Still
 **unimplemented** and therefore still optional here: `espressif/openai` (REST),
 `espressif/mqtt`, `espressif/mdns`, and `esp_websocket_client` (needed only by the
-planned `examples/10_qianwen_ws_voice_chat` — see `notes/ws-voice-chat.md`).
+planned `examples/10_qianwen_ws_voice_chat` — see `notes/design-ws-voice-chat.md`).
 
 ```yaml
 dependencies:

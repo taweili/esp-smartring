@@ -18,7 +18,7 @@
  * handler. A small green dot follows the finger while it is down. Every event
  * is also logged to the serial console so it can be captured from a script.
  *
- * See examples/README.md and notes/esp-smartring.md for the event details.
+ * See examples/README.md and notes/hardware-bsp-reference.md for the event details.
  */
 #include "ring_example.h"
 

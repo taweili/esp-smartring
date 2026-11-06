@@ -192,8 +192,8 @@ cut-out). Touch cannot be synthesised from the host.
 - `components/ringkit/include/ringkit/ring_theme.h` — panel geometry (360/180).
 - `components/viewesmart__smartring_plus/smartring_bsp.c` — `buffer_height = 40`, RGB565 +
   flush byte swap.
-- `notes/esp-smartring.md` §6 — display pitfalls (full-screen flush, QSPI + PSRAM).
-- `notes/architecture.md` §6 — why examples are CMake fragments, hence a generated `.c` in
+- `notes/hardware-bsp-reference.md` §6 — display pitfalls (full-screen flush, QSPI + PSRAM).
+- `notes/architecture-rationale.md` §6 — why examples are CMake fragments, hence a generated `.c` in
   `RING_EXAMPLE_SRCS` rather than `EMBED_FILES`.
 - Vendored LVGL 9.4: `src/draw/lv_draw_buf.c` (RGB565A8 layout),
   `src/draw/sw/blend/lv_draw_sw_blend_to_rgb565.c` (I8/I4 not drawable),

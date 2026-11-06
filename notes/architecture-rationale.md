@@ -52,8 +52,8 @@ never touches `main/` or `components/`.
 │   ├── 08_ble_peripheral/           # Bluetooth LE peripheral
 │   └── 09_hello_smoke_test/         # bring-up smoke test
 └── notes/
-    ├── esp-smartring.md            # hardware + BSP reference
-    └── architecture.md          # this file
+    ├── hardware-bsp-reference.md     # hardware + BSP reference
+    └── architecture-rationale.md     # this file
 ```
 
 ---

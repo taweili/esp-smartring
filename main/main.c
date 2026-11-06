@@ -12,7 +12,7 @@
  * NOTE: when the console is the USB-Serial-JTAG port, log writes BLOCK if the
  * host is not draining it. Always run `idf.py monitor` (or otherwise read
  * /dev/ttyACM0 continuously) — otherwise the whole system appears to freeze
- * mid-boot. See notes/esp-smartring.md.
+ * mid-boot. See notes/hardware-bsp-reference.md.
  */
 #include "ring_example.h"
 #include "ringkit/ringkit.h"

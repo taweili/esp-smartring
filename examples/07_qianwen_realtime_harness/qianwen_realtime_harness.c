@@ -16,7 +16,7 @@
  * reply frame flips ring_net to RING_NET_SPEAKING, which closes the uplink so
  * the model never hears itself. The ring has no acoustic echo cancellation
  * (the ES8311 has no AEC and the speaker sits next to the mic), so a
- * full-duplex version would need an AEC feed — see notes/networking.md §5.2.
+ * full-duplex version would need an AEC feed — see notes/networking-https-webrtc.md §5.2.
  *
  * Audio: ring_audio is 48 kHz / 16-bit / stereo interleaved; ring_net is
  * 48 kHz / 16-bit / mono. This file only folds/expands at the boundary.
