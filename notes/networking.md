@@ -303,13 +303,48 @@ Authorization: Bearer <OPENAI_API_KEY>
 * Transport is `esp_websocket_client` + `esp-tls` — **no `esp_peer`, no DTLS,
   no ICE/SRTP, no signaling server.** This is the least-dependency realtime
   path and a natural first voice feature on the ring.
-* Reference: `openai/openai-realtime-embedded` (esp32 branch) and the community
-  ElatoAI project (ESP32-S3 + secure WebSockets).
+
+**Reference implementations** (all read for this note):
+
+| Project | Path | Notes |
+|---|---|---|
+| [RASPIAUDIO/OpenDino](https://github.com/RASPIAUDIO/OpenDino) | raw TLS WebSocket, **direct** | ESP32-WROVER, Arduino, 650-line `opendino.ino`. PCM16 24 kHz, PTT, JSON-Schema `move()` function call, captive portal → NVS. ~400 ms PTT latency. |
+| [zouchanglin/embedded-projects](https://github.com/zouchanglin/embedded-projects) | raw TLS WebSocket, direct | ESP32-S3, ESP-IDF C. Qwen Omni / Doubao Realtime (same protocol shape). Best write-up of AEC, fragmentation, jitter buffer, barge-in. |
+| [akdeb/ElatoAI](https://github.com/akdeb/ElatoAI) | secure WebSocket **via Deno/Supabase edge** | ESP32-S3, Arduino/PlatformIO. Multi-model (OpenAI, Gemini, xAI, ElevenLabs). Not direct. |
+| [DAME (Notre Dame)](http://seniordesign.ee.nd.edu/2025/DesignTeams/tars/documents/DAME_Final_Report.pdf) | WebSocket **via Node.js/Hono relay** | ESP32-S3 senior design; LangChain tools. Relay pattern. |
+| [openai/openai-realtime-embedded](https://github.com/openai/openai-realtime-embedded) (`esp32` branch) | WebRTC (libpeer) | C++, Opus 8 kHz. Superseded by Espressif `openai_demo` (§5.3). |
+| [t-cool/stackchan-idf](https://github.com/t-cool/stackchan-idf) | WebSocket, direct | M5Stack CoreS3; half-duplex, barge-in, expression tools. |
+
+**Protocol shape** (from OpenDino, verified in source):
+
+```
+wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-mini-preview
+Authorization: Bearer <key>
+OpenAI-Beta: realtime=v1
+```
+
+1. `session.created` → send `session.update` (`input_audio_format`/`output_audio_format` = `pcm16`, `modalities: [text, audio]`, `turn_detection: null`, `tools`).
+2. Mic PCM16 → `input_audio_buffer.append` (base64). On end-of-turn → `input_audio_buffer.commit` → wait `input_audio_buffer.committed` → `response.create`.
+3. Downlink: `response.audio.delta` (base64 PCM16) → decode → playback ring buffer; `response.audio.done` stops.
+4. Function calls: on `response.done`, run the tool, then `conversation.item.create` with a `function_call_output`, then `response.create`.
+
+**Hard-won lessons** (zouchanglin write-up, ESP32-S3 + ESP-IDF):
+
+* **WebSocket fragmentation.** `esp_websocket_client` splits large text events across callbacks. Reassemble with `payload_offset`/`payload_len`; only parse JSON when `payload_offset + data_len >= payload_len`. A 20 KB `response.audio.delta` arrives in pieces.
+* **Audio clock is I2S, not the network.** Split mic / uplink / WS-callback / RX / playback into separate tasks; the uplink queue drops the oldest frame instead of growing.
+* **Playback jitter buffer.** 300–800 ms ring in PSRAM; log `audio delta gap` and `playback underflow`.
+* **Barge-in.** Stop local playback fast and send `response.cancel`.
+* **VAD.** Use the model's built-in `semantic_vad` rather than rolling your own.
 
 **Echo cancellation is the real work.** The ring has a speaker next to the
-mic; without AEC the assistant hears itself. Options: `esp_capture`'s AEC
-source (ESP-GMF), `esp-sr`, or a software AEC. The Espressif `openai_demo`
-uses the ESP32-S3-Korvo-2 board specifically for its AEC capability.
+mic; without AEC the assistant hears itself. OpenDino sidesteps it with PTT
+(half-duplex). For full-duplex, use ESP-SR AFE: `afe_aec_create("MR", 4,
+AFE_TYPE_FD, AFE_MODE_LOW_COST)` with **mic + playback reference** interleaved
+`M0,R0,M1,R1…`. The reference must be the **volume-scaled** PCM actually sent
+to the amp, resampled 24 kHz→16 kHz (3:2), with an ~80 ms acoustic-delay window.
+Options: `esp_capture`'s AEC source (ESP-GMF), `esp-sr`, or a software AEC. The
+Espressif `openai_demo` uses the ESP32-S3-Korvo-2 board specifically for its AEC
+capability.
 
 ### 5.3 Realtime API over WebRTC — `esp_webrtc` `openai_demo`
 
@@ -324,6 +359,14 @@ flow:
 Verified on the **ESP32-S3-Korvo-2**. This is the most capable path (and the
 one OpenAI recommends for browser/mobile), but it needs the full media stack
 (§4.4) and is considerably heavier than §5.2.
+
+> **Realtime beta WebRTC is dead.** OpenAI shut the beta interface down on
+> 2026-05-07. Examples that use the beta signaling shape — the
+> `openai-realtime-embedded` `esp32` branch and `brookesia_agent_openai` — now
+> fail with HTTP 400 `beta_api_shape_disabled` (see
+> [esp-brookesia#104](https://github.com/espressif/esp-brookesia/issues/104)).
+> This `openai_demo` uses the **GA** ephemeral-token flow and is the current
+> official WebRTC path; WebSocket (§5.2) is unaffected.
 
 ### 5.4 Recommendation
 
@@ -399,6 +442,9 @@ same pattern.
 * **TLS needs the correct time.** Call `esp_sntp` after Wi-Fi connects, before
   the first HTTPS request, or cert validation fails.
 * **`esp_http_client` `is_async` is HTTPS-only.**
+* **`esp_websocket_client` fragments large messages.** Reassemble by
+  `payload_offset`/`payload_len` before parsing JSON (§5.2).
+* **Realtime beta WebRTC is dead** (§5.3). Use the GA token flow or WebSocket.
 * **`esp_peer` is a closed-source prebuilt** — version must match IDF/mbedTLS
   (§4.5). Pin `esp_peer` ≥ v1.4 on IDF v6.1.
 * **DTLS disables `CONFIG_MBEDTLS_DYNAMIC_BUFFER`.** Plan TLS memory with
