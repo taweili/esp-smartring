@@ -34,6 +34,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
@@ -348,6 +349,44 @@ static esp_err_t sync_clock(void)
              ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
              ti.tm_hour, ti.tm_min, ti.tm_sec);
     return ESP_OK;
+}
+
+/* ------------------------------------------------------------- network gate */
+
+esp_err_t ring_net_sync_clock(void)
+{
+    return sync_clock();
+}
+
+bool ring_net_probe(const char *url)
+{
+    if (url == NULL || url[0] == '\0') {
+        return false;
+    }
+    esp_http_client_config_t http = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        /* Generic public host: use the Mozilla bundle, not the Qianwen CA. */
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = HTTP_TIMEOUT_MS,
+        .buffer_size = 512,
+        .buffer_size_tx = 512,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&http);
+    if (c == NULL) {
+        ESP_LOGW(TAG, "probe %s: init failed", url);
+        return false;
+    }
+    esp_err_t err = esp_http_client_perform(c);
+    int status = (err == ESP_OK) ? esp_http_client_get_status_code(c) : -1;
+    esp_http_client_cleanup(c);
+    if (err != ESP_OK || status < 200 || status >= 300) {
+        ESP_LOGW(TAG, "probe %s failed: %s (HTTP %d)", url,
+                 esp_err_to_name(err), status);
+        return false;
+    }
+    ESP_LOGI(TAG, "probe %s -> HTTP %d", url, status);
+    return true;
 }
 
 /* ------------------------------------------------------------- SDP exchange */
@@ -1030,7 +1069,11 @@ esp_err_t ring_net_start(const char *model, const char *api_key)
            (s.state == RING_NET_CONNECTING || s.state == RING_NET_OFF)) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    if (s.state != RING_NET_READY) {
+    /* READY is the state the wait loop looks for, but the app may have
+     * already opened the uplink (LISTENING) or the reply may have started
+     * (SPEAKING) by the time we re-check. Both imply the session is up. */
+    if (s.state != RING_NET_READY && s.state != RING_NET_LISTENING &&
+        s.state != RING_NET_SPEAKING) {
         ESP_LOGW(TAG, "session not ready (%s)", ring_net_state_name(s.state));
         return ESP_ERR_TIMEOUT;
     }

@@ -41,7 +41,7 @@ esp_err_t ring_audio_write(const void *buf, size_t len);
 esp_err_t ring_audio_set_mute(bool mute);
 
 /* Sane defaults measured on this board (see notes/esp-smartring.md). */
-#define RING_AUDIO_REC_GAIN_DB 36  /**< driver rounds down to a 6 dB step */
+#define RING_AUDIO_REC_GAIN_DB 42  /**< driver rounds down to a 6 dB step (ES8311 max) */
 #define RING_AUDIO_OUT_VOL     75  /**< 0..100                             */
 
 #ifdef __cplusplus

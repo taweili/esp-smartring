@@ -6,6 +6,3 @@
 set(RING_EXAMPLE_SRCS          "qianwen_realtime_harness.c")
 set(RING_EXAMPLE_INCLUDE_DIRS  "include")
 set(RING_EXAMPLE_REQUIRES      "")
-# Known speech clip ("the capital of China", espeak -> 48 kHz / 16-bit mono)
-# used as a deterministic model-interaction test input.
-set(RING_EXAMPLE_EMBED_FILES   "assets/test_clip.pcm")

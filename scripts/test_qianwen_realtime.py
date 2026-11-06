@@ -39,9 +39,11 @@ Requirements: scripts/.venv (see scripts/README.md).
 """
 import argparse
 import asyncio
+import contextlib
 import ctypes
 import fractions
 import json
+import math
 import os
 import sys
 import threading
@@ -77,13 +79,47 @@ TURN_DETECTION = {
     "silence_duration_ms": 800,
 }
 
+# --verbose: print every raw data-channel event. Off by default so the lines a
+# human has to react to (`cue`) are not buried under 30 JSON dumps.
+VERBOSE = False
+_STARTED = time.monotonic()
+
 
 def log(msg):
-    print(f"[qianwen-rt] {msg}", flush=True)
+    print(f"[qianwen-rt +{time.monotonic() - _STARTED:4.1f}s] {msg}", flush=True)
+
+
+def cue(msg, attention=True):
+    """A line the user has to react to, not another log entry.
+
+    The interesting part of this script is a human talking to it, so the one
+    line that says *when* to talk must not scroll away among the handshake
+    chatter (a bell helps if the terminal is not being watched). Timing is
+    everything here: the uplink is gated until `session.updated`, so anything
+    spoken earlier is dropped and the run looks broken.
+    """
+    bell = "\a" if attention and sys.stdout.isatty() else ""
+    print(f"\n{bell}{'─' * 72}\n  {msg}\n{'─' * 72}\n", flush=True)
 
 
 def repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def device_arg(value):
+    """argparse type for --mic-device / --speaker-device.
+
+    sounddevice treats a *string* as a space-separated substring query over
+    device names, not as an index, so `--mic-device 0` matched every device
+    whose name contains a "0" ("Multiple input devices found for '0'") and
+    `--speaker-device 1` matched HDMI cards. A numeric value is an index;
+    anything else is passed through as a name substring.
+    """
+    text = value.strip()
+    try:
+        return int(text)
+    except ValueError:
+        return text
 
 
 def load_api_key(args):
@@ -116,6 +152,8 @@ class GatedAudioTrack(AudioStreamTrack):
     def __init__(self):
         super().__init__()
         self._enabled = asyncio.Event()
+        self.frames_sent = 0
+        self.peak = 0
 
     def enable(self):
         """Start producing frames (call after session.updated)."""
@@ -127,6 +165,24 @@ class GatedAudioTrack(AudioStreamTrack):
         await self._enabled.wait()
         if self.readyState != "live":
             raise MediaStreamError
+
+    def note_frame(self, pcm):
+        """Record what was actually put on the wire.
+
+        Without this, a run where the model never answers is indistinguishable
+        from a run where the microphone captured nothing: both show
+        "input enabled" and then silence. The peak level tells them apart.
+        """
+        self.frames_sent += 1
+        peak = max((abs(v) for v in array("h", pcm)), default=0)
+        if peak > self.peak:
+            self.peak = peak
+
+    def stats(self):
+        """(frames sent, seconds sent, peak sample) of the uplink so far."""
+        return (self.frames_sent,
+                self.frames_sent * self.frame_samples / self.sample_rate,
+                self.peak)
 
     def stop(self):
         # Unblock a recv() that is waiting for enable().
@@ -173,6 +229,7 @@ class ClipTrack(GatedAudioTrack):
         frame.sample_rate = self.sample_rate
         frame.time_base = fractions.Fraction(1, self.sample_rate)
         self._timestamp += self.frame_samples
+        self.note_frame(data)
         return frame
 
 
@@ -240,6 +297,7 @@ class MicTrack(GatedAudioTrack):
         frame.sample_rate = self.sample_rate
         frame.time_base = fractions.Fraction(1, self.sample_rate)
         self._timestamp += self.frame_samples
+        self.note_frame(data)
         return frame
 
     def stop(self):
@@ -414,16 +472,35 @@ def frame_to_pcm(frame):
     return out.tobytes()
 
 
+# Leading bytes of the containers PyAV can decode. A file without one of
+# these is treated as headerless s16le PCM — which is what the ring examples
+# stream. "Only RIFF is decoded" is not enough: an MP3 starts with an ID3 tag
+# (or a frame sync), and treating it as PCM streams 90 ms of tag bytes as
+# noise. Probing with av.open() alone is not an option either: headerless
+# 48 kHz PCM regularly probes as MP3.
+CONTAINER_MAGICS = (
+    b"RIFF", b"RIFX", b"RF64",          # WAV / RF64
+    b"ID3", b"\xff\xfb", b"\xff\xfa",   # MP3 (+ a bare frame sync)
+    b"\xff\xf3", b"\xff\xf2",
+    b"OggS", b"fLaC", b"FORM",        # Ogg, FLAC, AIFF
+)
+
+
+def looks_like_container(data):
+    return (data.startswith(CONTAINER_MAGICS) or data[4:8] == b"ftyp")  # m4a/mp4
+
+
 def load_clip(path):
     """Read a clip as 48 kHz / 16-bit mono s16le PCM.
 
-    A raw PCM file (no header) is read as-is; anything else (WAV, MP3, ...)
-    is decoded and resampled with PyAV — g-buddy's `iter_wav_chunks` does
-    the same, so the same clip can be handed to either client.
+    A raw PCM file (no header) is read as-is; anything else (WAV, MP3, Ogg,
+    FLAC, m4a, ...) is decoded and resampled with PyAV — g-buddy's
+    `iter_wav_chunks` does the same, so the same clip can be handed to either
+    client.
     """
     with open(path, "rb") as f:
         data = f.read()
-    if data[:4] != b"RIFF":
+    if not looks_like_container(data):
         return data
     container = av.open(path)
     resampler = AudioResampler(format="s16", layout="mono",
@@ -470,9 +547,11 @@ async def drain_reply(state, speaker, max_seconds, silence_seconds=2.0):
     """Wait for the reply to stop arriving and finish playing.
 
     The reply is done when no frame has arrived for `silence_seconds` and the
-    speaker has no queued audio left; `max_seconds` is a hard cap. In buffer
-    playback mode the reply has not started playing yet, so this only waits
-    for the audio to stop arriving — `finish()` releases it afterwards.
+    speaker has no queued audio left; `max_seconds` is a hard cap. Once the
+    arrival has stopped, `speaker.finish()` is called: no more input is coming,
+    so a buffered (`buffer` mode) or still below-cushion (`adaptive` mode)
+    reply must be released, otherwise `Speaker.empty()` stays False forever and
+    this waits out the whole `max_seconds`.
     """
     if state["count"] == 0:
         await asyncio.sleep(0.5)
@@ -480,6 +559,10 @@ async def drain_reply(state, speaker, max_seconds, silence_seconds=2.0):
     deadline = time.monotonic() + max_seconds
     while time.monotonic() < deadline:
         quiet = time.monotonic() - state["last"] >= silence_seconds
+        if quiet and speaker is not None:
+            # Idempotent: buffer mode starts playing, adaptive stops
+            # re-cushioning and plays its tail.
+            speaker.finish()
         playing = speaker is not None and not speaker.empty()
         if quiet and not playing:
             return
@@ -502,6 +585,50 @@ async def wait_first(events, timeout):
 def log_errors(errors):
     for message in errors:
         log(f"server error: {message}")
+
+
+async def uplink_watch(track, interval=5.0, stall_after=15.0):
+    """Narrate the uplink while the user is expected to be talking.
+
+    "The model never answers" has two very different causes: the audio never
+    reached it (muted or wrong microphone — the default device is often a
+    monitor, or a headset that is switched off) or the audio arrived and the
+    server VAD rejected it. The peak level separates them, so the messages are
+    phrased as things to *do* rather than as numbers to interpret.
+
+    Repeats only the silence warning (the user may still fix the device), then
+    speaks once when audio is first heard, and once more if the turn appears to
+    have been dropped — instead of a line every interval.
+    """
+    silence_polls = 0
+    heard = None
+    elapsed = 0.0
+    while True:
+        await asyncio.sleep(interval)
+        elapsed += interval
+        frames, seconds, peak = track.stats()
+        if peak == 0:
+            silence_polls += 1
+            # First warning immediately, then every 10 s — not every poll.
+            if silence_polls == 1 or silence_polls % 2 == 1:
+                log(f"uplink: {frames} frames ({seconds:.0f} s) sent, all digital "
+                    f"silence — the model cannot hear anything. Wrong or muted "
+                    f"capture device? (check --list-devices / --mic-device)")
+            continue
+        dbfs = 20 * math.log10(peak / 32768)
+        if heard is None:
+            heard = elapsed
+            if dbfs < -40:
+                log(f"uplink: peak {dbfs:.0f} dBFS — very quiet, the VAD will "
+                    f"probably miss it. Speak up, or move closer to the mic")
+            else:
+                log(f"uplink: peak {dbfs:.0f} dBFS — the model has audio; "
+                    f"waiting for your turn to end")
+        elif elapsed - heard >= stall_after:
+            heard = elapsed
+            log(f"uplink: {elapsed - heard:.0f} s with no reply after audio was "
+                f"sent (peak {dbfs:.0f} dBFS) — the turn may have been dropped; "
+                f"speak again")
 
 
 async def main(args):
@@ -536,25 +663,31 @@ async def main(args):
                 return 1
             pcm = load_clip(clip_path)
             log(f"input: clip {clip_path} "
-                f"({len(pcm)} bytes, {len(pcm) / 2 / SAMPLE_RATE:.2f} s)")
+                f"({len(pcm)} bytes, {len(pcm) / 2 / SAMPLE_RATE:.2f} s) — no need to speak")
             input_track = ClipTrack(pcm)
         else:
             mic_track = MicTrack(device=args.mic_device)
             input_track = mic_track
-            log("input: microphone — speak now")
+            # NOT "speak now": the track is gated until session.updated, so
+            # anything said before the cue below is silently dropped.
+            log("input: microphone — connecting; do not speak until the "
+                "SPEAK NOW cue")
 
         speaker = None if args.no_play else Speaker(
             device=args.speaker_device, mode=args.playback,
             cushion=args.cushion)
         log(f"output: {args.playback} playback" if speaker
             else "output: muted (--no-play)")
-    except Exception:
+    except Exception as e:
         # Don't leak the microphone if the speaker (or the clip) fails.
         if mic_track is not None:
             mic_track.stop()
         if speaker is not None:
             speaker.close()
-        raise
+        log(f"audio device error: {e}")
+        log("see --list-devices; a default device that is busy or absent "
+            "needs --mic-device/--speaker-device or --no-play")
+        return 1
 
     # State machine events.
     session_ready = asyncio.Event()
@@ -562,7 +695,6 @@ async def main(args):
     response_done = asyncio.Event()
     got_error = asyncio.Event()
     transcript_parts = []
-    user_transcript_parts = []
     error_messages = []
     audio_state = {"count": 0, "last": 0.0}
     collect_tasks = []
@@ -583,13 +715,17 @@ async def main(args):
         log(f"data channel (remote): {channel.label}")
         channel.on("message", lambda m: handle_message(
             m, channel, session_ready, session_updated, response_done,
-            got_error, transcript_parts, user_transcript_parts,
-            error_messages, args.voice))
+            got_error, transcript_parts, error_messages, args.voice))
 
-    # The local channel is not needed for this test: the server opens its own
-    # "txt" channel and it is bidirectional, so session.update is sent on it
-    # (the same thing ring_net does).
-    pc.createDataChannel("txt")
+    # The server opens its own "txt" channel and it is bidirectional, so
+    # session.update is sent on that one (the same thing ring_net does). The
+    # local channel is listened to as well, in case a server ever replies on
+    # the client's stream instead — without that the run would just sit at
+    # "waiting for session.created" until the timeout.
+    local_channel = pc.createDataChannel("txt")
+    local_channel.on("message", lambda m: handle_message(
+        m, local_channel, session_ready, session_updated, response_done,
+        got_error, transcript_parts, error_messages, args.voice))
 
     # Incoming audio from the model.
     received_frames = []
@@ -607,6 +743,13 @@ async def main(args):
     try:
         pc.addTrack(input_track)
 
+        # Gathering blocks until ICE has its candidates: with STUN that means
+        # waiting for the STUN transaction (seconds if the server is slow or
+        # filtered), without it it is immediate. Say so, otherwise the run
+        # looks stuck for those seconds before the POST.
+        log(f"gathering ICE candidates ({'no STUN' if args.no_stun else args.stun})"
+            + (" — this can take a few seconds; --no-stun skips it"
+               if not args.no_stun else ""))
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
         log("offer created")
@@ -672,12 +815,26 @@ async def main(args):
             log("session configuration failed")
             return 1
         input_track.enable()
-        log("input enabled")
+        # The one moment that matters: from here on, speaking is transmitted.
+        if mic_track is not None:
+            cue(f"SPEAK NOW — the microphone is live. Your turn ends after "
+                f"{TURN_DETECTION['silence_duration_ms']} ms of silence; the "
+                f"reply follows (one turn per run)")
+        else:
+            log("input enabled — streaming the clip")
 
         # The input track is already streaming into the RTP sender. Wait for
         # the model's turn to complete (or for the server to error).
         log("waiting for response.done...")
-        if await wait_first([response_done, got_error], timeout=args.timeout):
+        watch = asyncio.ensure_future(uplink_watch(input_track))
+        try:
+            timed_out = await wait_first([response_done, got_error],
+                                         timeout=args.timeout)
+        finally:
+            watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watch
+        if timed_out:
             log(f"timed out after {args.timeout} s (no response.done)")
         elif not response_done.is_set():
             log_errors(error_messages)
@@ -694,15 +851,15 @@ async def main(args):
             mic_track.stop()
         await drain_reply(audio_state, speaker, args.drain, args.silence)
         if speaker is not None:
-            # Buffer mode has not played anything yet: release the reply, then
-            # wait for the card to finish. Live/adaptive already played.
+            # drain_reply() calls finish() once the arrival has stopped; this
+            # is just the belt-and-braces path for the count == 0 early return.
             speaker.finish()
             await speaker.drain(args.drain)
 
         transcript = "".join(transcript_parts)
-        user_text = "".join(user_transcript_parts)
-        if user_text:
-            log(f"you: {user_text!r}")
+        frames, seconds, peak = input_track.stats()
+        log(f"uplink total: {frames} frames ({seconds:.1f} s), peak {peak}/32768"
+            + (" — the uplink was silent" if peak == 0 else ""))
         log(f"transcript: {transcript!r}")
         log(f"received {len(received_frames)} audio frames")
 
@@ -710,9 +867,24 @@ async def main(args):
         if received_frames:
             save_wav(received_frames, out_path)
             log(f"reply saved: {out_path}")
+            if mic_track is not None:
+                cue("DONE — one turn per run (the microphone is closed once the "
+                    "reply starts). Run it again for another turn")
+            else:
+                cue("DONE")
         else:
             log("no reply audio received")
+            if mic_track is not None:
+                cue("NO REPLY — nothing reached the model or the VAD missed the "
+                    "turn. Check the uplink lines above; speak after the SPEAK "
+                    "NOW cue and pause when you are done")
+            else:
+                cue("NO REPLY — see the lines above")
 
+        # The exit code is the test result: a timeout or a silent reply is a
+        # failure even though the transport worked.
+        if timed_out or not received_frames:
+            return 1
         return 0
     finally:
         await teardown(pc, mic_track, speaker, collect_tasks)
@@ -720,9 +892,11 @@ async def main(args):
 
 async def teardown(pc, mic_track, speaker, collect_tasks=()):
     """Stop the audio devices and close the peer connection."""
-    for task in collect_tasks:
+    # Snapshot: on_track() may still append while a task is awaited below.
+    tasks = list(collect_tasks)
+    for task in tasks:
         task.cancel()
-    for task in collect_tasks:
+    for task in tasks:
         try:
             await task
         except asyncio.CancelledError:
@@ -738,11 +912,12 @@ async def teardown(pc, mic_track, speaker, collect_tasks=()):
 
 
 def handle_message(message, channel, session_ready, session_updated,
-                    response_done, got_error, transcript_parts,
-                    user_transcript_parts, error_messages, voice):
+                    response_done, got_error, transcript_parts, error_messages,
+                    voice):
     if isinstance(message, bytes):
         message = message.decode("utf-8", "replace")
-    log(f"dc: {message[:300]}")
+    if VERBOSE:
+        log(f"dc: {message[:300]}")
     try:
         ev = json.loads(message)
     except json.JSONDecodeError:
@@ -779,9 +954,13 @@ def handle_message(message, channel, session_ready, session_updated,
     elif etype == "conversation.item.input_audio_transcription.completed":
         text = (ev.get("transcript") or "").strip()
         if text:
-            user_transcript_parts.append(text)
+            # Print it the moment it arrives: this is the user's only proof
+            # that the uplink worked, and it beats waiting for the summary.
+            log(f"you said: {text!r}")
     elif etype == "input_audio_buffer.speech_started":
         log("server VAD: speech started")
+    elif etype == "input_audio_buffer.speech_stopped":
+        log("server VAD: turn ended — waiting for the reply")
     elif etype in ("response.audio_transcript.delta", "response.text.delta"):
         transcript_parts.append(ev.get("delta", ""))
 
@@ -797,9 +976,19 @@ async def collect_audio(track, frames, speaker, mic_track, state):
             log(f"audio collect error: {e}")
             break
         if not logged:
+            logged = True
+            if speaker is None:
+                how = "not played (--no-play) — collected into the WAV"
+            elif speaker.mode == "buffer":
+                how = ("starts once the reply has fully arrived, then plays "
+                       "at the card's rate")
+            else:
+                how = f"{speaker.mode} playback"
+            if mic_track is not None:
+                how += "; microphone muted"
+            cue(f"REPLY — {how}. Nothing to do, just listen")
             log(f"audio frame: format={frame.format.name} "
                 f"layout={frame.layout.name} rate={frame.sample_rate}")
-            logged = True
             if mic_track is not None:
                 # The reply has started: stop the microphone so the model does
                 # not hear itself through the speaker.
@@ -831,10 +1020,10 @@ if __name__ == "__main__":
     parser.add_argument("--silence", type=float, default=2.0,
                         help="seconds of silence before the reply is "
                              "considered done (default 2)")
-    parser.add_argument("--mic-device",
+    parser.add_argument("--mic-device", type=device_arg,
                         help="input device index or name substring "
                              "(default: system default)")
-    parser.add_argument("--speaker-device",
+    parser.add_argument("--speaker-device", type=device_arg,
                         help="output device index or name substring "
                              "(default: system default)")
     parser.add_argument("--no-play", action="store_true",
@@ -854,5 +1043,9 @@ if __name__ == "__main__":
     parser.add_argument("--list-devices", action="store_true",
                         help="list audio devices and exit")
     parser.add_argument("--dump-sdp", help="write the local SDP offer to this file")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="print every data-channel event (the raw `dc:` "
+                             "JSON lines), not just the steps that matter")
     args = parser.parse_args()
+    VERBOSE = args.verbose
     sys.exit(asyncio.run(main(args)))

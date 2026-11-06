@@ -77,6 +77,22 @@ esp_err_t ring_net_init(ring_net_state_cb_t state_cb,
  */
 esp_err_t ring_net_start(const char *model, const char *api_key);
 
+/**
+ * @brief Sync the wall clock over SNTP (required for TLS certificate checks).
+ *
+ * Idempotent; safe to call before ring_net_start(). Returns ESP_OK once the
+ * clock is valid.
+ */
+esp_err_t ring_net_sync_clock(void);
+
+/**
+ * @brief Verify outbound networking with an HTTPS GET.
+ *
+ * Exercises DNS, routing, TLS (Mozilla root bundle) and HTTP. Returns true on
+ * a 2xx response. Use a well-known public host, e.g. "https://baidu.com".
+ */
+bool ring_net_probe(const char *url);
+
 /** Tear down the session. */
 esp_err_t ring_net_stop(void);
 

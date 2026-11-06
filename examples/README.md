@@ -13,7 +13,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `04_voice_loopback` | Mic + speaker loop-back: one round button — hold to record (ES8311 mic), release to play the captured PCM back through the speaker. Captures up to 8 s into PSRAM. |
 | `05_wifi_https_demo` | Wi-Fi station bring-up: connects to the NVS-stored SSID, shows state/SSID/IP on the round screen, then probes `https://baidu.com` over HTTPS. Credentials are seeded from `secrets.local` on first boot, then persisted to NVS. |
 | `06_qianwenai_push_to_talk` | Push-to-talk voice assistant: one green round button, hold to talk to `qwen-audio-3.1-realtime-flash` over WebRTC (Opus 48 kHz). See `06_qianwenai_push_to_talk/README.md`. |
-| `07_qianwen_realtime_harness` | Hands-free WebRTC test harness: connects to `qwen-audio-3.1-realtime-flash`, then loops talk turns using an embedded espeak clip ("the capital of China") and logs the transcript. Used with `scripts/test_qianwen_realtime.py`. |
+| `07_qianwen_realtime_harness` | Hands-free voice loop: Wi-Fi → SNTP → HTTPS probe → WebRTC session, then mic → Opus → `qwen-audio-3.1-realtime-flash` → Opus → speaker, with server-VAD turn-taking. See `07_qianwen_realtime_harness/README.md`. |
 | `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing`, exposes a vendor service (0xFFE0) with a readable name/battery (READ/NOTIFY) and a writable command pipe (WRITE/NOTIFY). Pairable/bondable; scan + connect with a phone (nRF Connect / LightBlue). See `08_ble_peripheral/README.md`. |
 | `09_hello_smoke_test` | Bring-up smoke test: white screen, one large "Hello" glyph. |
 
