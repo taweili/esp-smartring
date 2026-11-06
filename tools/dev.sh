@@ -18,11 +18,12 @@ app="${2:-00_glyph_grid_reveal}"
 port="${PORT:-/dev/ttyACM0}"
 
 # --- ESP-IDF environment -------------------------------------------------
+export IDF_TOOLS_PATH="${IDF_TOOLS_PATH:-$HOME/.espressif/tools}"
+
 if ! command -v idf.py >/dev/null 2>&1; then
     # Fall back to the EIM install layout (same values the activation script
     # exports). Sourcing activate_idf_v6.1.sh here is deliberately avoided: it
     # rewrites PATH/state and returns non-zero in non-interactive shells.
-    export IDF_TOOLS_PATH="${IDF_TOOLS_PATH:-$HOME/.espressif/tools}"
     export IDF_PATH="${IDF_PATH:-$HOME/.espressif/v6.1/esp-idf}"
     export IDF_PYTHON_ENV_PATH="${IDF_PYTHON_ENV_PATH:-$IDF_TOOLS_PATH/python/v6.1/venv}"
     export ESP_IDF_VERSION="${ESP_IDF_VERSION:-6.1}"
@@ -33,6 +34,26 @@ if ! command -v idf.py >/dev/null 2>&1; then
              "$IDF_TOOLS_PATH"/cmake/*/bin \
              "$IDF_TOOLS_PATH"/ninja/*; do
         [ -d "$d" ] && export PATH="$d:$PATH"
+    done
+fi
+
+# Debug-only paths the activation script also exports. Not needed to build,
+# but idf.py warns about ESP_ROM_ELF_DIR when generating the gdbinit, and
+# OpenOCD wants its scripts dir. Derived from the layout rather than pinned to
+# a specific tool version, so a new `eim install` does not break this.
+if [ -z "${ESP_ROM_ELF_DIR:-}" ]; then
+    for d in "$IDF_TOOLS_PATH"/esp-rom-elfs/*/; do
+        [ -d "$d" ] && export ESP_ROM_ELF_DIR="${d%/}" && break
+    done
+fi
+if [ -z "${OPENOCD_SCRIPTS:-}" ]; then
+    for d in "$IDF_TOOLS_PATH"/openocd-esp32/*/openocd-esp32/share/openocd/scripts/; do
+        [ -d "$d" ] && export OPENOCD_SCRIPTS="${d%/}" && break
+    done
+fi
+if [ -z "${ESP_CLANG_LIBS_PATH:-}" ]; then
+    for d in "$IDF_TOOLS_PATH"/esp-clang-libs/*/esp-clang/lib; do
+        [ -d "$d" ] && export ESP_CLANG_LIBS_PATH="$d" && break
     done
 fi
 command -v idf.py >/dev/null 2>&1 || { echo "idf.py not found (source ESP-IDF first)"; exit 1; }
