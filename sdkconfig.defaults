@@ -77,3 +77,8 @@ CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y   # launcher icon glyphs
 CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# --- WebSocket client (examples/10_qianwen_ws_voice_chat)
+#     Separate TX lock avoids contention: the WS task reads downlink while the
+#     app task sends uplink audio frames every 20 ms.
+CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y

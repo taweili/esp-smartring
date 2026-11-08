@@ -4,6 +4,12 @@
 `notes/qianwen-ai-platform.md` (§1 protocols, §2.10 S2S models, §3 transports, §3.3
 WebSocket protocol) and `notes/networking-https-webrtc.md` §5.2.
 
+> **Implementation plan:** `notes/plan-ws-voice-chat.md` (deep review + phased
+> plan). Read its §2 corrections before coding — in particular: `turn_detection`
+> and `voice` are IDLE-only (so there is no runtime turn-mode switch), the WS
+> event callback runs on the WebSocket client task, and
+> `CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK` is required.
+
 **Goal.** A voice conversation with `qwen-audio-3.1-realtime-flash` over the
 **WebSocket** realtime protocol — the minimum-dependency path (no `esp_peer`,
 no DTLS/ICE, no Opus), and the only realtime transport that works on this

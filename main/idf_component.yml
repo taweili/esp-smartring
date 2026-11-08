@@ -14,5 +14,9 @@ dependencies:
   # Opus codec: the Qianwen WebRTC endpoint accepts only Opus on m=audio, and
   # esp_peer carries encoded frames (it has no codec of its own).
   espressif/esp_audio_codec: "^2.6.2"
+  # WebSocket client for examples/10_qianwen_ws_voice_chat (PCM over WebSocket
+  # to qwen-audio-3.1-realtime-flash — the only realtime transport that works
+  # on a UDP-blocked network).
+  espressif/esp_websocket_client: "^1.8.0"
 
 license: "GPL-3.0-or-later"

@@ -27,6 +27,7 @@ set(_app_dir "${_ring_root}/examples/${_ring_app}")
 set(RING_EXAMPLE_SRCS "")
 set(RING_EXAMPLE_INCLUDE_DIRS "")
 set(RING_EXAMPLE_REQUIRES "")
+set(RING_EXAMPLE_DEFINES "")
 include("${_app_dir}/CMakeLists.txt")
 
 set(_srcs "main.c")
@@ -51,6 +52,11 @@ idf_component_register(
     REQUIRES ringkit ${RING_EXAMPLE_REQUIRES}
     EMBED_FILES ${_ring_embed_files}
 )
+
+# Optional per-example compile definitions (e.g. a bench self-test switch).
+if(RING_EXAMPLE_DEFINES)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE ${RING_EXAMPLE_DEFINES})
+endif()
 
 # ---------------------------------------------------------------------------
 # Local secrets (git-ignored): Wi-Fi credentials and the Qianwen API key.

@@ -116,7 +116,9 @@ EOF
 │   ├── 07_qianwen_realtime_harness/ # hands-free WebRTC voice loop (README)
 │   ├── 08_ble_peripheral/       # Bluetooth LE peripheral (README)
 │   ├── 09_hello_smoke_test/     # bring-up smoke test (white screen + label, README)
-│   ├── 10_qianwen_ws_voice_chat/ # PLANNED (design only) — notes/design-ws-voice-chat.md
+│   ├── 10_qianwen_ws_voice_chat/ # WebSocket voice chat: PCM 16≤16≤24k,
+│   │                            #   esp_websocket_client, PTT / smart_turn_v2,
+│   │                            #   barge-in (README)
 │   └── 11_quic_voice_chat/      # PLANNED (design only) — notes/design-quic-voice-chat.md
 ├── scripts/
 │   ├── test_qianwen_realtime.py # host-side Qianwen WebRTC test client
