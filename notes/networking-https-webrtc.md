@@ -17,9 +17,9 @@ Wi-Fi 2.4 GHz + BLE 5, **ES8311 audio codec + dual mic + speaker**, round
 | Piece | State |
 |---|---|
 | Wi-Fi STA | `components/ringkit/src/ring_wifi.c` — NVS credentials, auto-reconnect, `ring_wifi_*` API |
-| BLE | `components/ringkit/src/ring_bt.c` — NimBLE GATT server (`ring_bt_*`) |
+| BLE | `components/ringkit/src/ring_bt.c` + `ring_bt_gatt.c` + `ring_bt_gap.c` — NimBLE GATT server (`ring_bt_*`) |
 | HTTPS probe | `ring_net_probe()` — `examples/05_wifi_https_demo` |
-| WebRTC voice | `components/ringkit/src/ring_net.c` — `esp_peer` + Opus + Qianwen SDP exchange |
+| WebRTC voice | `components/ringkit/src/ring_net.c` + `ring_net_signaling.c` + `ring_net_codec.c` + `ring_net_protocol.c` — `esp_peer` + Opus + Qianwen SDP exchange |
 | IP apps | `05_wifi_https_demo`, `06_qianwenai_push_to_talk`, `07_qianwen_realtime_harness` |
 | Config | `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` and a 3000K app partition (`partitions.csv`) are already set for Wi-Fi + WebRTC headroom |
 

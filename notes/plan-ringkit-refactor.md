@@ -122,16 +122,16 @@ added to `components/ringkit/CMakeLists.txt` `SRCS`.
 
 ## 2. Phase 2 — split the oversized modules
 
-- [ ] `ring_net.c` → `ring_net.c` (API/state/tasks) + `ring_net_signaling.c`
+- [x] `ring_net.c` → `ring_net.c` (API/state/tasks) + `ring_net_signaling.c`
       (SDP/HTTPS) + `ring_net_codec.c` (Opus) + `ring_net_protocol.c`
       (DataChannel JSON).
-- [ ] `ring_ws.c` → `ring_ws.c` (API/state/tasks) + `ring_ws_transport.c`
+- [x] `ring_ws.c` → `ring_ws.c` (API/state/tasks) + `ring_ws_transport.c`
       (WS lifecycle + reassembly) + `ring_ws_protocol.c` (session/turn JSON).
-- [ ] `ring_chat.c` → `ring_chat.c` (cascade + history) + `ring_stt.c` +
+- [x] `ring_chat.c` → `ring_chat.c` (cascade + history) + `ring_stt.c` +
       `ring_llm.c` + `ring_tts.c`.
-- [ ] `ring_bt.c` → `ring_bt.c` (API/init/state) + `ring_bt_gatt.c` +
+- [x] `ring_bt.c` → `ring_bt.c` (API/init/state) + `ring_bt_gatt.c` +
       `ring_bt_gap.c`.
-- [ ] Target: every source file < ~400 lines.
+- [x] Target: every source file < ~400 lines.
 
 ## 3. Phase 3 — build hygiene
 
@@ -245,6 +245,46 @@ captured the boot log (continuous drain, no back-pressure hang). Both:
 
 Phase 1 is complete. The ring is currently running `09_hello_smoke_test`.
 
+### 2025-11-08 — phase 2 complete: oversized modules split
+
+**`ring_net`** → `ring_net.c` (public API, state, event task — 398 lines) +
+`ring_net_signaling.c` (SDP/HTTPS + peer bring-up — 283) +
+`ring_net_codec.c` (Opus open/decode — 153) +
+`ring_net_protocol.c` (DataChannel JSON + peer callbacks — 176).
+Shared state lives in `src/ring_net_priv.h`; the context global is
+`ring_net_s` (a plain `s` collided with the other modules at link time).
+
+**`ring_ws`** → `ring_ws.c` (public API, state, event task — 391) +
+`ring_ws_transport.c` (WS lifecycle/reassembly, base64, downlink ring,
+uplink `send_audio`, playback — 358) +
+`ring_ws_protocol.c` (session/turn JSON — 367).
+Shared state in `src/ring_ws_priv.h` (`ring_ws_s`).
+
+**`ring_chat`** → `ring_chat.c` (init/history/audio helpers — 147) +
+`ring_stt.c` (143) + `ring_llm.c` (175) + `ring_tts.c` (232).
+Shared state in `src/ring_chat_priv.h` (`ring_chat_s`). The STT WAV/base64
+PSRAM buffers moved into `ring_stt.c` and are allocated lazily.
+
+**`ring_bt`** → `ring_bt.c` (public API, init, state, host task — 245) +
+`ring_bt_gatt.c` (GATT database + access callbacks — 170) +
+`ring_bt_gap.c` (GAP events + advertising — 245).
+Shared state in `src/ring_bt_priv.h` (`s_ctx` / `s_mutex`, already unique).
+
+Every source file is now < 400 lines (largest: `ring_net.c`, 398).
+The private `*_priv.h` headers live in `components/ringkit/src/`, not
+`include/`, so they are not installed as public headers.
+
+**Verification:**
+- Clean `-B` builds of `00`, `06`, `07`, `08`, `09`, `10` — all pass, no
+  compiler warnings.
+- Vendored overrides still win in every build
+  (`components/espressif__esp_codec_dev`, `components/viewesmart__smartring_plus`).
+- `00` image 750,656 B — identical to phase 1; the split changed no code
+  generation.
+- Device boot log for `00` and `09`: `ringkit:` summary all `ok`, app ready
+  line, no `panic` / `assert` / `Guru Meditation` / stack-overflow hook.
+  The ring is running `09_hello_smoke_test`.
+
 ---
 
 ## 6. Files touched
@@ -255,6 +295,9 @@ Phase 1 is complete. The ring is currently running `09_hello_smoke_test`.
 | `components/ringkit/src/ring_{ca,time,nvs,json,byte_ring,resample,http}.c` | new |
 | `components/ringkit/src/ring_{net,ws,chat,wifi,secret,bt}.c` | refactor to shared modules |
 | `components/ringkit/src/ring_ws_resample.c` | tables moved to `ring_resample.c` |
+| `components/ringkit/src/ring_{net_signaling,net_codec,net_protocol,ws_transport,ws_protocol,stt,llm,tts,bt_gatt,bt_gap}.c` | new (phase 2 split) |
+| `components/ringkit/src/ring_{net,ws,chat,bt}_priv.h` | new (phase 2 private interfaces) |
+| `components/ringkit/src/ring_{net,ws,chat,bt}.c` | split (phase 2) |
 | `tools/gen_ws_resampler.py` | emit tables to the new location |
 | `components/ringkit/CMakeLists.txt` | add new SRCS |
 | `components/ringkit/include/ringkit/ringkit.h` | include new headers |

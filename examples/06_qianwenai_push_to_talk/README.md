@@ -82,7 +82,10 @@ Applications never include `esp_peer`, `esp_http_client` or the codec — the
 | File | Role |
 |---|---|
 | `examples/06_qianwenai_push_to_talk/qianwenai_push_to_talk.c` | UI, button state machine, stereo↔mono, talk turn |
-| `components/ringkit/src/ring_net.c` | Wi-Fi + SNTP + Opus + SDP exchange + esp_peer |
+| `components/ringkit/src/ring_net.c` | public API, state, event task |
+| `components/ringkit/src/ring_net_signaling.c` | Wi-Fi + SNTP + SDP exchange + esp_peer bring-up |
+| `components/ringkit/src/ring_net_codec.c` | Opus encoder/decoder |
+| `components/ringkit/src/ring_net_protocol.c` | DataChannel JSON + peer callbacks |
 | `components/ringkit/include/ringkit/ring_net.h` | `ring_net_*` API |
 | `components/ringkit/assets/qianwen_ca.pem` | pinned trust chain (see §5) |
 
