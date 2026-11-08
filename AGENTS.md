@@ -34,6 +34,9 @@ idf.py -p /dev/ttyACM0 monitor     # follow serial log (Ctrl-] to exit)
 idf.py -DRING_APP=09_hello_smoke_test -B build/09_hello_smoke_test build
 idf.py -DRING_APP=09_hello_smoke_test -B build/09_hello_smoke_test -p /dev/ttyACM0 flash
 idf.py -B build/09_hello_smoke_test -p /dev/ttyACM0 monitor
+
+# host-side unit tests (no hardware, no idf.py)
+cd tests && make check
 ```
 
 > **Use a per-app build directory (`-B build/<app>`).** Switching `RING_APP` inside one
@@ -101,7 +104,7 @@ EOF
 │   ├── idf_component.yml        # the ONLY dependency manifest
 │   └── main.c                   # app-agnostic: board init + ring_example_start()
 ├── components/
-│   ├── ringkit/                 # GENERIC SKELETON — wraps the whole BSP
+│   ├── ringkit/                 # GENERIC SKELETON — wraps the whole BSP (README.md, Kconfig)
 │   ├── espressif__esp_codec_dev/ # VENDORED OVERRIDE (see "Critical fixes")
 │   └── viewesmart__smartring_plus/ # VENDORED OVERRIDE (gyro+temp, 02_imu_dashboard)
 ├── examples/
@@ -119,10 +122,12 @@ EOF
 │   ├── 10_qianwen_ws_voice_chat/ # WebSocket voice chat: PCM 16≤16≤24k,
 │   │                            #   esp_websocket_client, PTT / smart_turn_v2,
 │   │                            #   barge-in (README)
-│   └── 11_quic_voice_chat/      # PLANNED (design only) — notes/design-quic-voice-chat.md
+│   ├── 11_quic_voice_chat/      # PLANNED (design only) — notes/design-quic-voice-chat.md
+│   └── 12_ringkit_selftest/     # subsystem diagnostic: probe + voice init/stop (README)
 ├── scripts/
 │   ├── test_qianwen_realtime.py # host-side Qianwen WebRTC test client
 │   └── assets/test_clip.pcm     # clip for its --clip mode (no mic needed)
+├── tests/                       # HOST UNIT TESTS — pure-logic ringkit modules (README)
 ├── tools/
 │   ├── dev.sh                   # build/flash/monitor wrapper (secrets + IDF env)
 │   └── lvgl_img_pack.py         # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
@@ -134,7 +139,8 @@ EOF
     ├── design-ws-voice-chat.md       # design: examples/10_qianwen_ws_voice_chat (no code yet)
     ├── design-quic-voice-chat.md     # design: examples/11_quic_voice_chat (no code yet)
     ├── research-meta-muse.md         # research: Meta Muse gadget path (no code yet)
-    └── research-xiaozhi.md           # research: open-source Xiaozhi assistant (no code yet)
+    ├── research-xiaozhi.md           # research: open-source Xiaozhi assistant (no code yet)
+    └── plan-ringkit-refactor.md      # ringkit refactor plan + progress log (phases 1–4)
 ```
 
 ### Skeleton (`components/ringkit/`)
@@ -145,10 +151,17 @@ Everything goes through `ringkit/ringkit.h`:
 - `ring_board_*` — bring-up in the required order + a `ring_board_t` summary
 - `ring_display_*`, `ring_touch_*`, `ring_battery_*`, `ring_power_*`,
   `ring_audio_*`, `ring_imu_*`, `ring_sd_*` — one-to-one BSP wrappers
+- `ring_wifi_*` — Wi-Fi STA with NVS-persisted credentials
+- `ring_bt_*` — NimBLE BLE peripheral (declarative GATT DB, GAP state, notify)
+- `ring_chat_*` / `ring_ws_*` / `ring_net_*` — the three voice transports
+  (HTTPS cascade / WebSocket / WebRTC+Opus); see `components/ringkit/README.md`
+- `ring_ca_*`, `ring_time_*`, `ring_nvs_*`, `ring_json_*`, `ring_byte_ring_*`,
+  `ring_resample_*`, `ring_http_*` — shared infrastructure used by the above
 - `ring_ui_*` — LVGL lock + `RING_UI_LOCKED(-1) { ... }` scoped lock, label
   creation, exact centring
 - `ring_theme.h` — colours, panel geometry, motion timings
 - `ring_rand_*` — deterministic xorshift32
+- `ring_secret_*` — NVS-backed secrets with a build-time fallback
 
 ### Example contract
 
@@ -207,9 +220,20 @@ All LVGL object creation/updates **must** happen inside
 - UI: `ring_ui_screen()`, `ring_ui_add_label()`, `ring_ui_place_centered()`, `ring_ui_lock()`, `ring_ui_unlock()`
 - Wi-Fi: `ring_wifi_init()`, `ring_wifi_start()`, `ring_wifi_wait_connected()`, `ring_wifi_get_ip()`,
   `ring_wifi_get_credentials()`, `ring_wifi_state()`
+- BT: `ring_bt_init()`, `ring_bt_start_advertising()`, `ring_bt_stop_advertising()`,
+  `ring_bt_notify()`, `ring_bt_state()`, `ring_bt_is_connected()`, `ring_bt_set_name()`
+- WS/voice (`ring_ws.h`): `ring_ws_init()`, `ring_ws_start(model, key, cfg)`, `ring_ws_stop()`,
+  `ring_ws_set_listening()`, `ring_ws_send_audio()`, `ring_ws_read_audio()`, `ring_ws_commit()`,
+  `ring_ws_state()`, `ring_ws_get_stats()`
+- Chat/voice (`ring_chat.h`): `ring_chat_init()`, `ring_chat_stt()`, `ring_chat_llm_complete()`,
+  `ring_chat_llm_stream()`, `ring_chat_tts()`, `ring_chat_add_user()`, `ring_chat_add_assistant()`
 - Net/voice (`ring_net.h`): `ring_net_init()`, `ring_net_start(model, key)`, `ring_net_sync_clock()`,
   `ring_net_probe(url)`, `ring_net_set_listening()`, `ring_net_send_audio()`, `ring_net_read_audio()`,
   `ring_net_state()`, `ring_net_send_event()`, `ring_net_ca_pem()`
+- Shared infra: `ring_ca_pem()`, `ring_time_sync()`, `ring_nvs_init()`, `ring_nvs_get_str()`,
+  `ring_nvs_set_str()`, `ring_json_get_str()`, `ring_json_append()`, `ring_json_append_string()`,
+  `ring_byte_ring_*()`, `ring_resample_*()`, `ring_http_init()`, `ring_http_read_body()`,
+  `ring_http_sse_line()`
 - RNG: `ring_rand_seed()`, `ring_rand_u32()`, `ring_rand_below()`, `ring_rand_bool()` — do **not**
   replace with `esp_random()`; determinism is the point (a plain LCG breaks `% n` / `& 1`).
 - Secrets: `ring_secret_get(ns, key, build_fallback, out, len)` — NVS wins, else the
@@ -298,6 +322,9 @@ grep -oE "(components|managed_components)/viewesmart__smartring_plus" \
   `ring_board_init()` already encodes this split.
 - **Do not** add an `idf_component.yml` under `examples/`; the single manifest is
   `main/idf_component.yml`.
+- Host-side unit tests for the pure-logic modules live in `tests/`; run `make check`
+  after changing `ring_json`, `ring_resample`, `ring_byte_ring` or the `ring_chat`
+  message builder.
 - Keep `notes/hardware-bsp-reference.md` in sync when you change pin/API assumptions.
 - Adding an app: copy an existing `examples/<name>/` (three files) and build with
   `idf.py -DRING_APP=<name> -B build/<name> build`. See `examples/README.md`.
@@ -317,6 +344,7 @@ you touched CMake, `sdkconfig.defaults`, or `ringkit` headers:
    If you touched `ringkit`, `sdkconfig.defaults` or `main/idf_component.yml`, also build the
    apps that exercise the changed surface — `01_gbuddy_face` (LVGL assets/IMU),
    `05_wifi_https_demo` (TLS), and `06`/`07` (the only `ring_net`/Opus consumers).
+   If you touched `ringkit`'s pure-logic modules, also run `cd tests && make check`.
 2. **Both vendored overrides still win** — `espressif__esp_codec_dev` and
    `viewesmart__smartring_plus` (see "Critical fixes").
 3. **Flash and read the boot log** — expect the `ringkit:` summary line with all
@@ -332,11 +360,12 @@ you touched CMake, `sdkconfig.defaults`, or `ringkit` headers:
 ## Repo hygiene
 
 Tracked: source, `CMakeLists.txt`, `sdkconfig.defaults`, `AGENTS.md`, `notes/`,
-`components/` (incl. the vendored `esp_codec_dev` and `smartring_plus` overrides).
+`components/` (incl. the vendored `esp_codec_dev` and `smartring_plus` overrides),
+`examples/`, `tests/`.
 
 Git-ignored on purpose: `build/`, `sdkconfig`, `sdkconfig.old`, `dependencies.lock`,
-`managed_components/`. Never commit a resolved `sdkconfig` — `sdkconfig.defaults`
-is the source of truth.
+`managed_components/`, `tests/test_ring_*` (host test binaries). Never commit a resolved
+`sdkconfig` — `sdkconfig.defaults` is the source of truth.
 
 `managed_components/` is regenerated by the component manager; the only things
 that must stay committed are the override *copies* in `components/`
@@ -357,13 +386,13 @@ that must stay committed are the override *copies* in `components/`
 - **`09_hello_smoke_test` is bigger than `00_glyph_grid_reveal`** (~804 KB vs ~733 KB). Not a regression: it is
   the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables — but
   think before adding another large font.
-- **Image sizes are large and the partition is 3000K.** Measured: `06` 2718 KB, `07` 2640 KB,
-  `05` 1558 KB, `01` 1127 KB, `08` 1056 KB. `06` has only ~282 KB of headroom, so check
-  `idf.py -B build/<app> size` before adding a dependency that every app links (WebRTC,
+- **Image sizes are large and the partition is 3000K.** Measured: `12` 2638 KB, `06` 2718 KB,
+  `07` 2640 KB, `05` 1558 KB, `01` 1127 KB, `08` 1056 KB. `06` has only ~282 KB of headroom, so
+  check `idf.py -B build/<app> size` before adding a dependency that every app links (WebRTC,
   Opus, a TLS stack).
-- **A `ringkit` change reaches every app.** `ringkit`'s `REQUIRES` pulls `esp_peer`,
-  `esp_audio_codec`, `esp_http_client` and `esp-tls` into all 10 apps; adding to it grows
-  every image.
+- **A `ringkit` change reaches every app.** `ringkit`'s `PRIV_REQUIRES` still links `esp_peer`,
+  `esp_audio_codec`, `esp_http_client` and `esp-tls` into every app (phase 3 moved them out of
+  `REQUIRES`, but they are still linked); adding to it grows every image.
 - **Stale `build/` after the rename.** The project used to be `smartring_hello`; an old
   `build/` may still hold that artifact. If CMake behaves strangely, `rm -rf build build/*`
   and reconfigure.
@@ -377,6 +406,11 @@ that must stay committed are the override *copies* in `components/`
 ## Deep-dive docs
 
 - `README.md` — project entry point: overview, quick start, applications, docs map.
+- `components/ringkit/README.md` — ringkit module map, task/thread model, state machines, API
+  contract and the voice-transport decision guide.
+- `tests/README.md` — host-side unit tests: what they cover and how to add one.
+- `examples/12_ringkit_selftest/README.md` — the subsystem diagnostic app.
+- `notes/plan-ringkit-refactor.md` — the ringkit refactor plan and progress log (phases 1–4).
 - `notes/hardware-bsp-reference.md` — hardware + BSP reference: product overview, BSP API, pin map, pitfalls.
 - `examples/00_glyph_grid_reveal/README.md` — 00_glyph_grid_reveal design & build spec: layered reveal maths, layer timeline, risks.
 - `notes/architecture-rationale.md` — architecture rationale: why the layout is `ringkit` + fragments; §6 has the two
