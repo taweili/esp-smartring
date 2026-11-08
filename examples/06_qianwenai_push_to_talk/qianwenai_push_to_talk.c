@@ -1,25 +1,21 @@
 /*
- * 06_qianwenai_push_to_talk — one green button, hold-to-talk over WebRTC.
+ * 06_qianwenai_push_to_talk — STT → LLM → TTS cascade (push-to-talk).
  *
- * The ring's screen is one round green button. Hold it to open the mic and
- * stream speech to qwen-audio-3.1-realtime-flash over WebRTC; release it and
- * the model's spoken reply comes out of the speaker.
+ * Press and hold the green button to record, release to transcribe (STT),
+ * think (LLM) and speak the reply (TTS). All three calls are HTTPS on
+ * TCP/443 to maas.qianwenaiapi.com — works even on UDP-blocked networks.
  *
- * Why this shape:
- *  - WebRTC is the transport qianwenai.com documents for non-browser clients
- *    and it carries the model's echo cancellation / noise suppression.
- *  - The endpoint accepts only Opus on m=audio and supports only server-side
- *    VAD, so the button gates the uplink and the model decides the turn end.
- *    As soon as audio starts coming back we stop the uplink, which keeps the
- *    model from hearing itself through the ring's own speaker.
+ * Three sequential stages:
+ *   1. ring_chat_stt()     — mic PCM → text
+ *   2. ring_chat_llm_complete() — text → reply
+ *   3. ring_chat_tts()     — reply → PCM → speaker (SSE stream)
  *
- * Audio: the ES8311 is fixed at 48 kHz / 16-bit / stereo, which happens to be
- * exactly the rate ring_net runs Opus at. So this file only does the
- * stereo <-> mono conversion and the talk-turn bookkeeping.
+ * Audio: ring_audio is 48 kHz / 16-bit / stereo interleaved; ring_chat
+ * operates on 48 kHz / 16-bit / mono. This file folds/expands at the boundary.
  *
- * Task structure follows examples/04_voice_loopback: LVGL events run on the LVGL task
- * and only flip flags / spawn a worker; all blocking audio I/O happens on the
- * worker, which takes the LVGL lock only for brief UI updates.
+ * Tasks:
+ *   qw-connect  8 KB internal — Wi-Fi + SNTP, retry loop
+ *   qw-talk     ~14 KB internal — capture + cascade (no codec, no 64 KB PSRAM)
  */
 #include "ring_example.h"
 
@@ -39,98 +35,127 @@
 
 /* ------------------------------------------------------------- config */
 
-/* Secrets are generated into ring_secrets.h by main/CMakeLists.txt from the
- * environment (tools/dev.sh sources secrets.local). Never committed. */
 #include "ring_secrets.h"
 
-/* Build-time fallback API key; NVS wins if present. */
 #ifndef QIANWEN_API_KEY
 #define QIANWEN_API_KEY ""
 #endif
 
-#define QIANWEN_MODEL          "qwen-audio-3.1-realtime-flash"
+#define STT_MODEL         "qwen3-asr-flash"
+#define LLM_MODEL         "qwen3.8-flash"
+#define TTS_MODEL         "qwen-audio-3.1-tts-flash"
+#define TTS_VOICE         "longanhuan_v3.1"
+#define SYSTEM_PROMPT     "You are a helpful assistant. Answer concisely in English."
 
 /* ------------------------------------------------------------- audio */
 
-/* BSP-fixed capture/playback format: 48 kHz / 16-bit / stereo interleaved.
- * ring_net wants 48 kHz / 16-bit / mono, in 20 ms frames. */
-#define MIC_RATE        48000
-#define FRAME_SAMPLES   RING_NET_FRAME_SAMPLES        /* 960 = 20 ms      */
-#define FRAME_STEREO    (FRAME_SAMPLES * 2 * 2)       /* 3840 bytes       */
-#define OUT_STEREO_MAX  (MIC_RATE * 2 * 2 / 1000 * 40) /* 40 ms = 15360 B */
+#define FRAME_SAMPLES      960                          /* 20 ms @ 48 kHz */
+#define MIC_FRAME_BYTES    (FRAME_SAMPLES * 2 * 2)      /* stereo 16-bit  */
+#define CAP_SEC            10
+#define CAP_FRAMES         (CAP_SEC * 1000 / 20)        /* 500 */
+#define CAP_SAMPLES_MAX    (CAP_FRAMES * FRAME_SAMPLES)
+#define CAP_BYTES_MAX      (CAP_SAMPLES_MAX * 2)        /* mono 16-bit     */
 
-#define TALK_GRACE_MS   3000    /* stop waiting this long after last audio */
-#define TALK_MAX_MS     15000   /* hard cap on one reply                   */
+#define LLM_REPLY_SZ       4096
+#define STT_TRANSCRIPT_SZ  1024
 
-/* ------------------------------------------------------------- task */
+/* ------------------------------------------------------------- tasks */
 
-#define WORKER_STACK    8192
-/* The Opus encoder's SILK path peaks at ~20 KB of stack (silk_encode_frame_FIX
- * alone has a ~9.5 KB frame); 8 KB overflowed on the first encoded frame. */
-/* Mono SILK peaked at ~20 KB; the stereo frames the SDP negotiates (see
- * RING_NET_OPUS_CHANNELS in ring_net.c) need more, and 24 KB overflowed. */
-#define TALK_TASK_STACK 65536
-#define WORKER_PRIO     5       /* below LVGL (6): button events win */
+#define CONNECT_STACK      8192
+#define CONNECT_PRIO       5
+#define TALK_STACK         16384
+#define TALK_PRIO          5
 
 /* ------------------------------------------------------------- UI */
 
-#define TITLE_Y   34
-#define BTN_CX    180
-#define BTN_CY    158
-#define BTN_R     78
-#define STATUS_Y  258
-#define BAR_W     220
-#define BAR_H     6
-#define BAR_Y     288
-#define HINT_Y    320
-
-#define COL_WAIT   RING_COLOR_GREEN          /* ready to talk   */
-#define COL_CONN   lv_color_hex(0x3A4048)     /* connecting      */
-#define COL_DIM    lv_color_hex(0x9E9E9E)
-/* Red covers both recording and waiting on the server response. */
-#define COL_TALK   lv_color_hex(0xFF1744)
-
-/* ------------------------------------------------------------- state */
+#define TITLE_Y        28
+#define STATUS_Y       192
+#define STAGE_Y        224
+#define TRANSCRIPT_Y   250
+#define REPLY_Y        278
+#define BAR_CX         180
+#define BAR_Y          320
+#define BAR_W          220
+#define BAR_H           6
+#define BTN_CX         180
+#define BTN_CY         114
+#define BTN_R           70
 
 static lv_obj_t *s_btn;
 static lv_obj_t *s_btn_label;
 static lv_obj_t *s_status;
+static lv_obj_t *s_stage;
+static lv_obj_t *s_transcript_label;
+static lv_obj_t *s_reply_label;
 static lv_obj_t *s_bar;
-static lv_obj_t *s_hint;
 
-static volatile bool s_stop = false;         /* RELEASED sets this        */
-static volatile bool s_worker_busy = false;  /* a talk turn is in flight  */
-static bool s_ui_ready = false;
+static bool s_ui_ready;
+static volatile bool s_stop;
+static volatile bool s_worker_busy;
 
-static uint8_t s_stereo[FRAME_STEREO];       /* 20 ms capture bounce      */
-static int16_t s_mono[FRAME_SAMPLES];
-static int16_t s_reply[FRAME_SAMPLES];
-static uint8_t s_play[OUT_STEREO_MAX];
+/* PSRAM capture buffer: 48 kHz / 16-bit / mono PCM (10 s max). */
+static int16_t *s_capture = NULL;
+static volatile size_t s_cap_samples;  /* written by capture loop, read by cascade */
 
+static char s_transcript[STT_TRANSCRIPT_SZ];
+static char s_reply[LLM_REPLY_SZ];
 static char s_api_key[160];
 
-/* ------------------------------------------------------------- UI helpers */
-
-static void ui_button(const char *text, const lv_font_t *font, lv_color_t color)
+static const char *stage_name(int stage)
 {
-    RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_btn_label, text);
-        lv_obj_set_style_text_font(s_btn_label, font, LV_PART_MAIN);
-        lv_obj_set_style_text_color(s_btn_label, lv_color_white(), LV_PART_MAIN);
-        lv_obj_align(s_btn_label, LV_ALIGN_CENTER, 0, 0);
-        /* Solid fill: the whole circle is the state colour, not an outline. */
-        lv_obj_set_style_bg_color(s_btn, color, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_btn, lv_color_darken(color, 60),
-                                  LV_STATE_PRESSED);
-        lv_obj_set_style_border_width(s_btn, 0, LV_PART_MAIN);
+    switch (stage) {
+    case 0: return "idle";
+    case 1: return "listening…";
+    case 2: return "heard: ";
+    case 3: return "thinking…";
+    case 4: return "replying…";
+    case -1: return "error";
+    default: return "?";
     }
 }
 
-static void ui_status(const char *text, lv_color_t color)
+/* ------------------------------------------------------------- UI */
+
+static void ui_button(const char *text, lv_color_t color)
 {
     RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_status, text);
-        lv_obj_set_style_text_color(s_status, color, LV_PART_MAIN);
+        lv_label_set_text(s_btn_label, text);
+        lv_obj_set_style_text_font(s_btn_label, &lv_font_montserrat_20, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_btn, color, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_btn, lv_color_darken(color, 60), LV_STATE_PRESSED);
+    }
+}
+
+static void ui_stage(int stage, const char *detail)
+{
+    char line[64];
+    if (stage == 2 && detail) {
+        snprintf(line, sizeof(line), "heard: %s", detail);
+    } else {
+        snprintf(line, sizeof(line), "%s", stage_name(stage));
+    }
+    lv_color_t col = lv_color_hex(0x9E9E9E);
+    if (stage == 2 || stage == 3) col = lv_color_hex(0xFF9800);
+    else if (stage == 4) col = lv_color_hex(0x2196F3);
+    else if (stage == 1) col = lv_color_hex(0xFF1744);
+    else if (stage == 0) col = RING_COLOR_GREEN;
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text(s_stage, line);
+        lv_obj_set_style_text_color(s_stage, col, LV_PART_MAIN);
+    }
+}
+
+static void ui_transcript(const char *text)
+{
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text(s_transcript_label, text);
+    }
+}
+
+static void ui_reply(const char *text)
+{
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text(s_reply_label, text);
     }
 }
 
@@ -142,109 +167,60 @@ static void ui_bar(uint8_t pct, lv_color_t color)
     }
 }
 
-static void ui_hint(const char *text)
-{
-    RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_hint, text);
-    }
-}
-
-static void ui_idle(const char *status)
+static void ui_idle(void)
 {
     RING_UI_LOCKED(-1) {
         lv_label_set_text(s_btn_label, "HOLD\nTO\nTALK");
-        lv_obj_set_style_text_font(s_btn_label, &lv_font_montserrat_20,
-                                   LV_PART_MAIN);
-        lv_obj_set_style_text_color(s_btn_label, lv_color_white(), LV_PART_MAIN);
-        lv_obj_align(s_btn_label, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_set_style_bg_color(s_btn, COL_WAIT, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_btn, lv_color_darken(COL_WAIT, 60),
-                                  LV_STATE_PRESSED);
-        lv_obj_set_style_border_width(s_btn, 0, LV_PART_MAIN);
+        lv_obj_set_style_text_font(s_btn_label, &lv_font_montserrat_20, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_btn, RING_COLOR_GREEN, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_btn, lv_color_darken(RING_COLOR_GREEN, 60), LV_STATE_PRESSED);
         lv_bar_set_value(s_bar, 0, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(s_bar, COL_WAIT, LV_PART_INDICATOR);
-        lv_label_set_text(s_status, status ? status : "press & hold to talk");
-        lv_obj_set_style_text_color(s_status, COL_DIM, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_bar, RING_COLOR_GREEN, LV_PART_INDICATOR);
+        lv_label_set_text(s_stage, "ready — press & hold to talk");
+        lv_obj_set_style_text_color(s_stage, lv_color_hex(0x9E9E9E), LV_PART_MAIN);
+        lv_label_set_text(s_transcript_label, "");
+        lv_label_set_text(s_reply_label, "");
     }
 }
 
-/* ------------------------------------------------------------- ring_net glue */
-
-static void net_state_cb(ring_net_state_t st, void *user)
+static void ui_error(const char *msg)
 {
-    (void)user;
-    if (!s_ui_ready) {
-        return;
-    }
-    switch (st) {
-    case RING_NET_READY:
-        /* Don't stomp on a turn that is still draining its reply. */
-        if (!s_worker_busy) {
-            ui_idle("ready — press & hold to talk");
-        }
-        break;
-    case RING_NET_LISTENING:
-        ui_button("TALK", &lv_font_montserrat_48, COL_TALK);
-        ui_status("listening…", COL_TALK);
-        ui_bar(0, COL_TALK);
-        break;
-    case RING_NET_SPEAKING:
-        ui_button("REPLY", &lv_font_montserrat_48, COL_TALK);
-        ui_status("replying…", COL_TALK);
-        ui_bar(100, COL_TALK);
-        break;
-    case RING_NET_CONNECTING:
-        ui_button("···", &lv_font_montserrat_48, COL_CONN);
-        ui_status("connecting…", COL_DIM);
-        ui_bar(0, COL_DIM);
-        break;
-    case RING_NET_ERROR:
-        if (!s_worker_busy) {
-            ui_button("!", &lv_font_montserrat_48, COL_TALK);
-            ui_status("connection lost — reconnecting", COL_TALK);
-        }
-        break;
-    case RING_NET_OFF:
-    default:
-        break;
+    ui_button("!", lv_color_hex(0xFF1744));
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text(s_stage, msg ? msg : "error");
+        lv_obj_set_style_text_color(s_stage, lv_color_hex(0xFF1744), LV_PART_MAIN);
     }
 }
 
-static void net_text_cb(const char *text, size_t len, bool is_user, void *user)
-{
-    (void)user;
-    (void)is_user;           /* the hint line shows the model's reply */
-    if (!s_ui_ready) {
-        return;
-    }
-    static char line[48];
-    size_t n = len < sizeof(line) - 1 ? len : sizeof(line) - 1;
-    memcpy(line, text, n);
-    line[n] = '\0';
-    ui_hint(line);
-}
+/* ------------------------------------------------------------- audio helpers */
 
-/* ------------------------------------------------------------- audio helpers
- *
- * The stereo<->mono fold lives in ringkit (`ring_audio_stereo_to_mono` /
- * `ring_audio_mono_to_stereo`); only the level meter is app-specific.
- * ------------------------------------------------------------------------- */
-
-static uint8_t level_of(const int16_t *pcm, size_t samples)
+static uint8_t level_pct(const int16_t *pcm, size_t samples)
 {
-    if (samples == 0) {
-        return 0;
-    }
+    if (samples == 0) return 0;
     uint32_t acc = 0;
     for (size_t i = 0; i < samples; i++) {
         int32_t v = pcm[i];
         acc += (uint32_t)(v < 0 ? -v : v);
     }
     uint32_t avg = acc / samples;
-    if (avg > 8000) {
-        return 100;
-    }
-    return (uint8_t)(avg * 100 / 8000);
+    if (avg < 80) return 0;
+    uint32_t pct = (avg - 80) * 100 / 2000;
+    return (uint8_t)(pct > 100 ? 100 : pct);
+}
+
+/* TTS audio callback: fold mono to stereo, mute-sequence, write to speaker. */
+static void tts_play_cb(const int16_t *mono, size_t samples, void *user)
+{
+    /* A 20 ms frame at 48 kHz stereo = 3840 bytes. We use a small on-stack
+     * buffer; the TTS SSE callback fires on the worker task which has
+     * TALK_STACK = 16 KB, so ~4 KB of stack for this is fine. */
+    uint8_t stereo[FRAME_SAMPLES * 4];  /* 3840 bytes (960 samples × 4) */
+    size_t out_s = samples > FRAME_SAMPLES ? FRAME_SAMPLES : samples;
+    ring_audio_mono_to_stereo(mono, (int16_t *)stereo, out_s);
+    ring_audio_set_mute(false);
+    ring_audio_write(stereo, out_s * 4);
+    ring_audio_set_mute(true);
+    (void)user;
 }
 
 /* ------------------------------------------------------------- talk turn */
@@ -252,74 +228,85 @@ static uint8_t level_of(const int16_t *pcm, size_t samples)
 static void talk_worker(void *arg)
 {
     (void)arg;
+    esp_err_t err;
 
-    ESP_LOGI(TAG, "turn: capture");
-    ui_hint("");
+    /* Capture. Read stereo frames from the mic, fold to mono, store in PSRAM. */
+    ui_stage(1, NULL);
+    ui_button("TALK", lv_color_hex(0xFF1744));
+    ui_transcript("");
+    ui_reply("");
 
-    /* Uplink: one 20 ms Opus frame at a time until released or the model
-     * starts answering. */
-    uint32_t frames = 0;
-    while (!s_stop && ring_net_state() == RING_NET_LISTENING) {
-        if (ring_audio_read(s_stereo, sizeof(s_stereo), 200) != ESP_OK) {
-            ESP_LOGW(TAG, "mic read failed");
-            break;
+    uint8_t stereo[MIC_FRAME_BYTES];
+    int16_t mono[FRAME_SAMPLES];
+    size_t captured = 0;
+
+    while (!s_stop && captured + FRAME_SAMPLES <= CAP_SAMPLES_MAX) {
+        err = ring_audio_read(stereo, sizeof(stereo), 50);
+        if (err != ESP_OK) continue;
+
+        ring_audio_stereo_to_mono((const int16_t *)stereo, mono, FRAME_SAMPLES);
+        memcpy(s_capture + captured, mono, FRAME_SAMPLES * 2);
+        captured += FRAME_SAMPLES;
+
+        uint8_t level = level_pct(mono, FRAME_SAMPLES);
+        static int frame_cnt = 0;
+        if ((frame_cnt++ % 25) == 0) {
+            ESP_LOGI(TAG, "capture: %u ms, level %u%%",
+                     (unsigned)(captured * 1000 / 48000), (unsigned)level);
         }
-        ring_audio_stereo_to_mono((const int16_t *)s_stereo, s_mono,
-                                   FRAME_SAMPLES);
-        esp_err_t serr = ring_net_send_audio(s_mono, FRAME_SAMPLES);
-        if (serr != ESP_OK) {
-            ESP_LOGW(TAG, "send audio failed: %s", esp_err_to_name(serr));
-            break;
-        }
-        if ((frames++ % 50) == 0) {
-            ESP_LOGI(TAG, "uplink frame %u, mic level %u", (unsigned)frames,
-                     level_of(s_mono, FRAME_SAMPLES));
-        }
-        ui_bar(level_of(s_mono, FRAME_SAMPLES), COL_TALK);
+        ui_bar(level, lv_color_hex(0xFF1744));
     }
 
-    ESP_LOGI(TAG, "turn: release");
-    ring_net_set_listening(false);
-
-    /* Downlink: play the reply until the model reports done and the buffer has
-     * drained. The button stays red while we wait for the server. If the model
-     * is already speaking, its SPEAKING callback owns the label. */
-    if (ring_net_state() == RING_NET_READY) {
-        ui_button("WAIT", &lv_font_montserrat_48, COL_TALK);
-        ui_status("waiting…", COL_TALK);
+    if (captured == 0) {
+        ui_error("empty capture");
+        s_worker_busy = false;
+        ui_idle();
+        vTaskDelete(NULL);
+        return;
     }
-    TickType_t last = xTaskGetTickCount();
-    TickType_t start = last;
+
+    ESP_LOGI(TAG, "capture: %u samples = %u ms",
+             (unsigned)captured, (unsigned)(captured * 1000 / 48000));
+
+    /* Stage 2: STT. */
+    ui_stage(2, NULL);
+    ui_bar(0, lv_color_hex(0xFF9800));
+    err = ring_chat_stt(s_capture, captured, s_transcript, sizeof(s_transcript));
+    if (err != ESP_OK) {
+        ui_error("STT failed");
+        s_worker_busy = false;
+        ui_idle();
+        vTaskDelete(NULL);
+        return;
+    }
+    ui_transcript(s_transcript);
+
+    /* Stage 3: LLM. */
+    ui_stage(3, NULL);
+    ring_chat_add_user(s_transcript);
+    err = ring_chat_llm_complete(s_reply, sizeof(s_reply));
+    if (err != ESP_OK) {
+        ui_error("LLM failed");
+        s_worker_busy = false;
+        ui_idle();
+        vTaskDelete(NULL);
+        return;
+    }
+    ui_reply(s_reply);
+
+    /* Stage 4: TTS (SSE stream to speaker). */
+    ui_stage(4, NULL);
+    ui_button("REPLY", lv_color_hex(0x2196F3));
     ring_audio_set_mute(true);
-
-    for (;;) {
-        size_t got = 0;
-        if (ring_net_read_audio(s_reply, FRAME_SAMPLES, &got, 200) == ESP_OK &&
-            got > 0) {
-            ring_audio_mono_to_stereo(s_reply, (int16_t *)s_play, got);
-            size_t bytes = got * 4;
-            last = xTaskGetTickCount();
-            ring_audio_set_mute(false);
-            if (ring_audio_write(s_play, bytes) != ESP_OK) {
-                ESP_LOGW(TAG, "speaker write failed");
-            }
-            ring_audio_set_mute(true);
-            ui_bar(level_of(s_reply, got), COL_TALK);
-        } else if (ring_net_state() == RING_NET_READY &&
-                   (xTaskGetTickCount() - last) > pdMS_TO_TICKS(TALK_GRACE_MS)) {
-            break;
-        }
-        if ((xTaskGetTickCount() - start) > pdMS_TO_TICKS(TALK_MAX_MS)) {
-            ESP_LOGW(TAG, "reply cap reached");
-            break;
-        }
-    }
+    err = ring_chat_tts(s_reply, tts_play_cb, NULL);
     ring_audio_set_mute(true);
+    if (err != ESP_OK) {
+        ui_error("TTS failed");
+    }
 
-    ESP_LOGI(TAG, "turn: done");
-    ui_hint("");
+    ESP_LOGI(TAG, "turn complete");
     s_worker_busy = false;
-    ui_idle("ready — press & hold to talk");
+    ui_idle();
     vTaskDelete(NULL);
 }
 
@@ -329,25 +316,20 @@ static void btn_cb(lv_event_t *e)
 {
     switch (lv_event_get_code(e)) {
     case LV_EVENT_PRESSED:
-        if (s_worker_busy || !s_ui_ready) {
-            return;
-        }
-        if (ring_net_state() != RING_NET_READY) {
-            ui_status("not ready yet", COL_DIM);
-            return;
+        if (s_worker_busy || !s_ui_ready) return;
+        if (s_capture == NULL) {
+            s_capture = heap_caps_malloc(CAP_BYTES_MAX, MALLOC_CAP_SPIRAM);
+            if (!s_capture) {
+                ui_error("no capture buffer");
+                return;
+            }
         }
         s_stop = false;
         s_worker_busy = true;
-        if (ring_net_set_listening(true) != ESP_OK) {
+        if (xTaskCreate(talk_worker, "qw-talk", TALK_STACK, NULL,
+                        TALK_PRIO, NULL) != pdPASS) {
             s_worker_busy = false;
-            return;
-        }
-        if (xTaskCreate(talk_worker, "qw-talk", TALK_TASK_STACK, NULL,
-                        WORKER_PRIO, NULL) != pdPASS) {
-            s_worker_busy = false;
-            ring_net_set_listening(false);
-            ui_status("could not start talk task", COL_DIM);
-            ESP_LOGE(TAG, "xTaskCreate failed");
+            ui_error("could not start talk task");
         }
         break;
 
@@ -378,15 +360,12 @@ static void connect_task(void *arg)
 {
     (void)arg;
 
-    /* 1. Wi-Fi first. The WebRTC session needs the link (and, via SNTP, a
-     * wall clock) before it can do anything, so bring the station up and show
-     * the link state on the screen before starting the session. */
-    ui_button("···", &lv_font_montserrat_48, COL_CONN);
+    ui_button("···", lv_color_hex(0x3A4048));
+    ui_stage(-1, "connecting…");
 
+    /* 1. Wi-Fi. */
     esp_err_t err = ring_wifi_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "ring_wifi_init: %s", esp_err_to_name(err));
-    }
+    if (err != ESP_OK) ESP_LOGE(TAG, "ring_wifi_init: %s", esp_err_to_name(err));
 
     for (;;) {
         char ssid[32] = "";
@@ -395,12 +374,11 @@ static void connect_task(void *arg)
         char line[64];
         snprintf(line, sizeof(line), "connecting to %s…",
                  ssid[0] ? ssid : "Wi-Fi");
-        ui_status(line, COL_DIM);
+        ui_stage(-1, line);
 
         err = ring_wifi_start();
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "wifi start: %s", esp_err_to_name(err));
-            ui_status("no Wi-Fi credentials — retrying", COL_TALK);
             vTaskDelay(pdMS_TO_TICKS(5000));
             continue;
         }
@@ -408,7 +386,7 @@ static void connect_task(void *arg)
         err = ring_wifi_wait_connected(20000);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "wifi connect: %s", esp_err_to_name(err));
-            ui_status("Wi-Fi timed out — retrying", COL_TALK);
+            ui_stage(-1, "Wi-Fi timed out — retrying");
             vTaskDelay(pdMS_TO_TICKS(5000));
             continue;
         }
@@ -416,21 +394,37 @@ static void connect_task(void *arg)
         char ip[16] = "";
         ring_wifi_get_ip(ip, sizeof(ip));
         ESP_LOGI(TAG, "Wi-Fi connected, IP %s", ip);
-        snprintf(line, sizeof(line), "Wi-Fi connected · %s", ip);
-        ui_status(line, COL_WAIT);
         break;
     }
 
-    /* 2. WebRTC session. ring_net_start() reuses the station we just brought
-     * up (ring_wifi_start() is idempotent). */
-    for (;;) {
-        if (ring_net_start(QIANWEN_MODEL, s_api_key) == ESP_OK) {
-            break;
-        }
-        ESP_LOGW(TAG, "connect failed — retry in 5 s");
-        ui_status("session failed — retrying", COL_TALK);
-        vTaskDelay(pdMS_TO_TICKS(5000));
+    /* 2. SNTP clock (needed for TLS cert validation). */
+    ui_stage(-1, "syncing clock…");
+    err = ring_net_sync_clock();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "clock sync: %s", esp_err_to_name(err));
+        /* Non-fatal — continue; HTTPS may or may not work without a clock. */
     }
+
+    /* 3. Initialise ring_chat. */
+    ring_chat_cfg_t cfg = {
+        .stt_model = STT_MODEL,
+        .llm_model = LLM_MODEL,
+        .tts_model = TTS_MODEL,
+        .voice = TTS_VOICE,
+        .system_prompt = SYSTEM_PROMPT,
+        .stt_language = NULL,
+        .max_history_turns = 10,
+    };
+    err = ring_chat_init(&cfg, s_api_key);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ring_chat_init: %s", esp_err_to_name(err));
+        ui_stage(-1, "chat init failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "ready");
+    ui_idle();
     vTaskDelete(NULL);
 }
 
@@ -440,7 +434,7 @@ esp_err_t ring_example_start(void)
 {
     load_api_key();
 
-    /* Board-tuned codec settings, same as 04_voice_loopback. */
+    /* Tune audio codec (same defaults as all other examples). */
     esp_codec_dev_handle_t codec = ring_audio_codec();
     if (codec != NULL) {
         esp_codec_dev_set_in_gain(codec, RING_AUDIO_REC_GAIN_DB);
@@ -448,12 +442,7 @@ esp_err_t ring_example_start(void)
     }
     ring_audio_set_mute(true);
 
-    esp_err_t err = ring_net_init(net_state_cb, net_text_cb, NULL);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "ring_net_init: %s", esp_err_to_name(err));
-        return err;
-    }
-
+    /* Build UI. */
     RING_UI_LOCKED(-1) {
         lv_obj_t *scr = ring_ui_screen();
 
@@ -462,32 +451,54 @@ esp_err_t ring_example_start(void)
                                             RING_COLOR_GREEN);
         ring_ui_place_centered(title, RING_CX, TITLE_Y);
 
-        /* The one big round button: a solid colour-filled circle. */
+        /* The big round button. */
         s_btn = lv_obj_create(scr);
         lv_obj_set_size(s_btn, BTN_R * 2, BTN_R * 2);
         lv_obj_set_pos(s_btn, BTN_CX - BTN_R, BTN_CY - BTN_R);
         lv_obj_set_style_radius(s_btn, BTN_R, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_btn, COL_CONN, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_btn, lv_color_hex(0x3A4048), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(s_btn, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_border_width(s_btn, 0, LV_PART_MAIN);
         lv_obj_set_style_shadow_width(s_btn, 0, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_btn, lv_color_darken(COL_CONN, 60),
+        lv_obj_set_style_bg_color(s_btn, lv_color_darken(lv_color_hex(0x3A4048), 60),
                                   LV_STATE_PRESSED);
         lv_obj_add_flag(s_btn, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_flag(s_btn, LV_OBJ_FLAG_SCROLLABLE);
 
         s_btn_label = ring_ui_add_label(s_btn, "···",
-                                        &lv_font_montserrat_48,
+                                        &lv_font_montserrat_20,
                                         lv_color_white());
         lv_obj_center(s_btn_label);
 
         s_status = ring_ui_add_label(scr, "connecting…",
-                                     &lv_font_montserrat_16, COL_DIM);
+                                     &lv_font_montserrat_16,
+                                     lv_color_hex(0x9E9E9E));
         ring_ui_place_centered(s_status, RING_CX, STATUS_Y);
+
+        s_stage = ring_ui_add_label(scr, "connecting…",
+                                    &lv_font_montserrat_16,
+                                    lv_color_hex(0x9E9E9E));
+        ring_ui_place_centered(s_stage, RING_CX, STAGE_Y);
+
+        s_transcript_label = ring_ui_add_label(scr, "",
+                                               &lv_font_montserrat_14,
+                                               lv_color_hex(0xFF9800));
+        lv_obj_set_width(s_transcript_label, 320);
+        lv_obj_set_style_text_align(s_transcript_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_label_set_long_mode(s_transcript_label, LV_LABEL_LONG_DOT);
+        ring_ui_place_centered(s_transcript_label, RING_CX, TRANSCRIPT_Y);
+
+        s_reply_label = ring_ui_add_label(scr, "",
+                                          &lv_font_montserrat_14,
+                                          lv_color_white());
+        lv_obj_set_width(s_reply_label, 320);
+        lv_obj_set_style_text_align(s_reply_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_label_set_long_mode(s_reply_label, LV_LABEL_LONG_DOT);
+        ring_ui_place_centered(s_reply_label, RING_CX, REPLY_Y);
 
         s_bar = lv_bar_create(scr);
         lv_obj_set_size(s_bar, BAR_W, BAR_H);
-        lv_obj_set_pos(s_bar, RING_CX - BAR_W / 2, BAR_Y);
+        lv_obj_set_pos(s_bar, BAR_CX - BAR_W / 2, BAR_Y);
         lv_bar_set_range(s_bar, 0, 100);
         lv_bar_set_value(s_bar, 0, LV_ANIM_OFF);
         lv_obj_set_style_radius(s_bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
@@ -500,10 +511,6 @@ esp_err_t ring_example_start(void)
         lv_obj_set_style_border_width(s_bar, 0, LV_PART_INDICATOR);
         lv_obj_remove_flag(s_bar, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
-        s_hint = ring_ui_add_label(scr, "hold = talk · release = reply",
-                                   &lv_font_montserrat_14, COL_DIM);
-        ring_ui_place_centered(s_hint, RING_CX, HINT_Y);
-
         lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_RELEASED, NULL);
         lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_PRESS_LOST, NULL);
@@ -511,14 +518,14 @@ esp_err_t ring_example_start(void)
     s_ui_ready = true;
 
     if (s_api_key[0] == '\0') {
-        ui_status("no API key — see README", COL_TALK);
+        ui_stage(-1, "no API key — see README");
         return ESP_OK;
     }
 
-    /* Connect in the background so the screen stays responsive. */
-    if (xTaskCreate(connect_task, "qw-connect", WORKER_STACK, NULL,
-                    WORKER_PRIO, NULL) != pdPASS) {
+    if (xTaskCreate(connect_task, "qw-connect", CONNECT_STACK, NULL,
+                    CONNECT_PRIO, NULL) != pdPASS) {
         ESP_LOGE(TAG, "xTaskCreate(connect) failed");
+        return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
 }

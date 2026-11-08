@@ -18,10 +18,14 @@ idf_component_register(
         "src/ring_wifi.c"
         "src/ring_bt.c"
         "src/ring_net.c"
+        "src/ring_ws.c"
+        "src/ring_ws_resample.c"
+        "src/ring_resample.c"
+        "src/ring_chat.c"
         "src/ring_ui.c"
         "src/ring_rand.c"
         "src/ring_secret.c"
     INCLUDE_DIRS "include"
-    REQUIRES smartring_plus lvgl esp_lvgl_adapter esp_wifi esp_netif esp_event nvs_flash bt esp_peer esp_http_client esp-tls lwip mbedtls esp_audio_codec
+    REQUIRES smartring_plus lvgl esp_lvgl_adapter esp_wifi esp_netif esp_event nvs_flash bt esp_peer esp_http_client esp-tls lwip mbedtls esp_audio_codec esp_websocket_client
     EMBED_TXTFILES "assets/qianwen_ca.pem"
 )
