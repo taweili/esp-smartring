@@ -6,6 +6,9 @@
  * that same task and may take the LVGL lock briefly.
  */
 #include "ringkit/ring_chat.h"
+#include "ringkit/ring_ca.h"
+#include "ringkit/ring_http.h"
+#include "ringkit/ring_json.h"
 #include "ringkit/ring_resample.h"
 
 #include "esp_log.h"
@@ -30,8 +33,8 @@
 #define TTS_URL     "https://" HOST "/api/v1/services/audio/tts/SpeechSynthesizer"
 
 /* The pinned CA (the server sends only its leaf cert). */
-extern const uint8_t qianwen_ca_pem_start[] asm("_binary_qianwen_ca_pem_start");
-extern const uint8_t qianwen_ca_pem_end[]   asm("_binary_qianwen_ca_pem_end");
+#define RING_CHAT_CA_PEM       ring_ca_pem()
+#define RING_CHAT_CA_LEN       ring_ca_pem_len()
 
 #define MAX_HISTORY_TURNS  20     /* compile-time cap for safety */
 #define WAV_CAP            (512 * 1024)   /* ~16 s @ 16 kHz mono: 512 KB */
@@ -60,50 +63,12 @@ static struct {
     bool               init;
 } s;
 
-/* ------------------------------------------------------------- JSON helpers
- *
- * Minimalist strstr-based extraction — mirrors ring_net.c's approach.
- * We extract these into ring_json.[ch] separately (standalone refactor).
- */
 
-static bool json_get_str(const char *json, const char *key,
-                         char *out, size_t cap)
+/* Thin wrapper over ring_json_get_str() to keep the local 4-arg call sites. */
+static bool ring_chat_json_get_str(const char *json, const char *key,
+                                   char *out, size_t cap)
 {
-    if (json == NULL || key == NULL || out == NULL || cap == 0) return false;
-    char pat[64];
-    snprintf(pat, sizeof(pat), "\"%s\"", key);
-    const char *p = strstr(json, pat);
-    if (p == NULL) return false;
-    p += strlen(pat);
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p++ != ':') return false;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p != '"') return false;
-    p++;
-    size_t len = 0;
-    while (*p && *p != '"' && len < cap - 1) {
-        if (*p == '\\') { p++; if (!*p) break; }
-        out[len++] = *p++;
-    }
-    out[len] = '\0';
-    return true;
-}
-
-/* Read until \n (or buffer full), appending to dst at *pos.
- * Skips CR. Returns false only on overflow. */
-static bool sse_read_line(esp_http_client_handle_t c,
-                          char *dst, int *pos, int cap)
-{
-    char ch;
-    while (*pos < cap - 1) {
-        int r = esp_http_client_read(c, &ch, 1);
-        if (r <= 0) break;
-        if (ch == '\r') continue;
-        if (ch == '\n') break;
-        dst[(*pos)++] = ch;
-    }
-    dst[*pos] = '\0';
-    return *pos < cap - 1;
+    return ring_json_get_str(json, key, out, cap, NULL);
 }
 
 /* ------------------------------------------------------------- audio helpers */
@@ -160,44 +125,6 @@ static void wav_header(uint8_t *dst, int sample_rate, int data_bytes)
     dst[43] = (uint8_t)((data_bytes >> 24) & 0xff);
 }
 
-/* ------------------------------------------------------------- HTTP helpers */
-
-static esp_http_client_handle_t http_init(void *user)
-{
-    (void)user;
-    esp_http_client_config_t http = {
-        .cert_pem = (const char *)qianwen_ca_pem_start,
-        .cert_len = (size_t)(qianwen_ca_pem_end - qianwen_ca_pem_start),
-        .buffer_size = 4096,
-        .buffer_size_tx = 1024,
-        .timeout_ms = LLM_TIMEOUT_MS,
-        .skip_cert_common_name_check = true,
-    };
-    return esp_http_client_init(&http);
-}
-
-static void http_set_common_headers(esp_http_client_handle_t c)
-{
-    char auth[200];
-    snprintf(auth, sizeof(auth), "Bearer %s", s.api_key);
-    esp_http_client_set_header(c, "Authorization", auth);
-}
-
-/* Read the full HTTP response body (chunked-safe). Returns ESP_OK on success. */
-static esp_err_t http_read_body(esp_http_client_handle_t c,
-                                 char *buf, size_t cap, int *out_len)
-{
-    int total = 0;
-    while (total < (int)cap - 1) {
-        int r = esp_http_client_read(c, buf + total, (int)cap - 1 - total);
-        if (r <= 0) break;
-        total += r;
-    }
-    buf[total] = '\0';
-    if (out_len) *out_len = total;
-    return total > 0 ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
-}
-
 /* ------------------------------------------------------------- STT */
 
 static char *s_wav_buf = NULL;  /* PSRAM */
@@ -221,7 +148,7 @@ esp_err_t ring_chat_stt(const int16_t *pcm48k, size_t samples,
     if (!out_f) { free(in_f); return ESP_ERR_NO_MEM; }
 
     /* Reset decimator state for each turn (no cross-turn history needed). */
-    ring_resample_decim_state_t decim;
+    ring_resample_decim_t decim;
     ring_resample_decim_init(&decim);
     int got = ring_resample_decim_process(&decim, in_f, n_float, out_f);
     free(in_f);
@@ -251,26 +178,41 @@ esp_err_t ring_chat_stt(const int16_t *pcm48k, size_t samples,
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    /* Build the Data URI prefix + JSON body (separate buffer to avoid overlap). */
-    char *body = malloc(JSON_CAP);
+    /* Build the Data URI prefix + JSON body. The base64 payload is the bulk
+     * of the body, so size the buffer for it rather than a fixed JSON_CAP. */
+    size_t body_cap = b64_len + 256;
+    char *body = malloc(body_cap);
     if (!body) return ESP_ERR_NO_MEM;
-    int body_len = snprintf(body, JSON_CAP,
-        "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":"
-        "[{\"type\":\"input_audio\",\"input_audio\":{\"data\":"
-        "\"data:audio/wav;base64,%s\"}}]}],\"stream\":false}",
-        s.cfg.stt_model, s_b64_buf);
-    if (body_len <= 0 || (size_t)body_len >= JSON_CAP) return ESP_ERR_INVALID_SIZE;
+    int body_len;
+    if (s.cfg.stt_language != NULL) {
+        body_len = snprintf(body, body_cap,
+            "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":"
+            "[{\"type\":\"input_audio\",\"input_audio\":{\"data\":"
+            "\"data:audio/wav;base64,%s\"}}]}],\"stream\":false,"
+            "\"asr_options\":{\"language\":\"%s\"}}",
+            s.cfg.stt_model, s_b64_buf, s.cfg.stt_language);
+    } else {
+        body_len = snprintf(body, body_cap,
+            "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":"
+            "[{\"type\":\"input_audio\",\"input_audio\":{\"data\":"
+            "\"data:audio/wav;base64,%s\"}}]}],\"stream\":false}",
+            s.cfg.stt_model, s_b64_buf);
+    }
+    if (body_len <= 0 || (size_t)body_len >= body_cap) {
+        free(body);
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     /* POST. */
-    esp_http_client_handle_t c = http_init(NULL);
+    esp_http_client_handle_t c = ring_http_init(STT_URL, RING_CHAT_CA_PEM,
+                                                RING_CHAT_CA_LEN, STT_TIMEOUT_MS,
+                                                4096, 1024);
     if (!c) { free(body); return ESP_ERR_NO_MEM; }
 
-    esp_http_client_set_url(c, STT_URL);
     esp_http_client_set_method(c, HTTP_METHOD_POST);
     esp_http_client_set_header(c, "Content-Type", "application/json");
-    http_set_common_headers(c);
+    ring_http_set_bearer(c, s.api_key);
     esp_http_client_set_post_field(c, body, body_len);
-    esp_http_client_set_timeout_ms(c, STT_TIMEOUT_MS);
 
     esp_err_t err = esp_http_client_perform(c);
     if (err == ESP_OK) {
@@ -279,8 +221,8 @@ esp_err_t ring_chat_stt(const int16_t *pcm48k, size_t samples,
             char *resp = malloc(JSON_CAP);
             if (resp) {
                 int rlen = 0;
-                if (http_read_body(c, resp, JSON_CAP, &rlen) == ESP_OK) {
-                    if (!json_get_str(resp, "content", out, out_cap)) {
+                if (ring_http_read_body(c, resp, JSON_CAP, &rlen) == ESP_OK) {
+                    if (!ring_chat_json_get_str(resp, "content", out, out_cap)) {
                         ESP_LOGW(TAG, "stt: could not extract content from: %.200s", resp);
                         err = ESP_ERR_INVALID_RESPONSE;
                     } else {
@@ -331,7 +273,46 @@ void ring_chat_reset_history(void)
     s.hist.count = 0;
 }
 
-/* Build a messages JSON array from history, respecting the cap. */
+/* Append one chat message as a JSON object with a trailing comma.
+ * Escapes the control characters that would otherwise break the request.
+ * Returns false when the buffer is full. */
+static bool append_message(char *buf, size_t cap, int *pos,
+                           const char *role, const char *text)
+{
+    if (!ring_json_append(buf, cap, pos, "{\"role\":\"%s\",\"content\":\"", role)) {
+        return false;
+    }
+    for (const char *p = text; *p != '\0'; p++) {
+        unsigned char c = (unsigned char)*p;
+        char esc_buf[8];
+        const char *esc;
+        switch (c) {
+        case '"':  esc = "\\\""; break;
+        case '\\': esc = "\\\\"; break;
+        case '\b': esc = "\\b"; break;
+        case '\f': esc = "\\f"; break;
+        case '\n': esc = "\\n"; break;
+        case '\r': esc = "\\r"; break;
+        case '\t': esc = "\\t"; break;
+        default:
+            if (c < 0x20) {
+                snprintf(esc_buf, sizeof(esc_buf), "\\u%04x", c);
+            } else {
+                esc_buf[0] = (char)c;
+                esc_buf[1] = '\0';
+            }
+            esc = esc_buf;
+            break;
+        }
+        if (!ring_json_append(buf, cap, pos, "%s", esc)) {
+            return false;
+        }
+    }
+    return ring_json_append(buf, cap, pos, "\"},");
+}
+
+/* Build a messages JSON array from history, respecting the cap.
+ * Returns the length, or -1 when the buffer is too small. */
 static int build_messages(char *buf, size_t cap)
 {
     int pos = 0;
@@ -340,31 +321,32 @@ static int build_messages(char *buf, size_t cap)
     int start = s.hist.count > cap_val * 2 ? s.hist.count - cap_val * 2 : 0;
     /* Ensure system prompt alignment — if cap implies removing the first turn,
      * remove pairs so user+assistant stays intact. */
-    if (start > 0 && (s.hist.count - start) % 2 != 0 && start > 0) start--;
+    if (start > 0 && (s.hist.count - start) % 2 != 0) start--;
 
-    pos += snprintf(buf + pos, cap - pos, "[");
-    /* System prompt, if any. */
-    if (s.cfg.system_prompt) {
-        pos += snprintf(buf + pos, cap - pos,
-                        "{\"role\":\"system\",\"content\":\"%s\"},",
-                        s.cfg.system_prompt);
+    if (!ring_json_append(buf, cap, &pos, "[")) {
+        return -1;
+    }
+    if (s.cfg.system_prompt &&
+        !append_message(buf, cap, &pos, "system", s.cfg.system_prompt)) {
+        return -1;
     }
     for (int i = start; i < s.hist.count; i++) {
-        if (s.hist.user_msgs[i]) {
-            /* Escape quotes in the text. */
-            pos += snprintf(buf + pos, cap - pos,
-                            "{\"role\":\"user\",\"content\":\"%s\"},",
-                            s.hist.user_msgs[i]);
+        if (s.hist.user_msgs[i] &&
+            !append_message(buf, cap, &pos, "user", s.hist.user_msgs[i])) {
+            return -1;
         }
-        if (s.hist.assistant_msgs[i]) {
-            pos += snprintf(buf + pos, cap - pos,
-                            "{\"role\":\"assistant\",\"content\":\"%s\"},",
-                            s.hist.assistant_msgs[i]);
+        if (s.hist.assistant_msgs[i] &&
+            !append_message(buf, cap, &pos, "assistant", s.hist.assistant_msgs[i])) {
+            return -1;
         }
     }
     /* Replace trailing comma with ] */
-    if (pos > 1 && buf[pos-1] == ',') pos--;
-    pos += snprintf(buf + pos, cap - pos, "]");
+    if (pos > 1 && buf[pos - 1] == ',') {
+        pos--;
+    }
+    if (!ring_json_append(buf, cap, &pos, "]")) {
+        return -1;
+    }
     return pos;
 }
 
@@ -375,10 +357,11 @@ esp_err_t ring_chat_llm_complete(char *reply, size_t cap)
 
     char *msgs = malloc(JSON_CAP);
     if (!msgs) return ESP_ERR_NO_MEM;
-    build_messages(msgs, JSON_CAP);
-
-    /* Trim trailing comma (build_messages already handles this, but be safe). */
-    size_t msgs_len = strlen(msgs);
+    int msgs_len = build_messages(msgs, JSON_CAP);
+    if (msgs_len < 0) {
+        free(msgs);
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     char *body = malloc(msgs_len + 256);
     if (!body) { free(msgs); return ESP_ERR_NO_MEM; }
@@ -386,17 +369,22 @@ esp_err_t ring_chat_llm_complete(char *reply, size_t cap)
         "{\"model\":\"%s\",\"messages\":%.*s,\"stream\":false,"
         "\"extra_body\":{\"enable_thinking\":false}}",
         s.cfg.llm_model, (int)msgs_len, msgs);
+    if (body_len <= 0 || (size_t)body_len >= msgs_len + 256) {
+        free(msgs);
+        free(body);
+        return ESP_ERR_INVALID_SIZE;
+    }
     free(msgs);
 
-    esp_http_client_handle_t c = http_init(NULL);
+    esp_http_client_handle_t c = ring_http_init(LLM_URL, RING_CHAT_CA_PEM,
+                                                RING_CHAT_CA_LEN, LLM_TIMEOUT_MS,
+                                                4096, 1024);
     if (!c) { free(body); return ESP_ERR_NO_MEM; }
 
-    esp_http_client_set_url(c, LLM_URL);
     esp_http_client_set_method(c, HTTP_METHOD_POST);
     esp_http_client_set_header(c, "Content-Type", "application/json");
-    http_set_common_headers(c);
+    ring_http_set_bearer(c, s.api_key);
     esp_http_client_set_post_field(c, body, body_len);
-    esp_http_client_set_timeout_ms(c, LLM_TIMEOUT_MS);
 
     esp_err_t err = esp_http_client_perform(c);
     free(body);
@@ -407,8 +395,8 @@ esp_err_t ring_chat_llm_complete(char *reply, size_t cap)
             char *resp = malloc(JSON_CAP);
             if (!resp) { esp_http_client_cleanup(c); return ESP_ERR_NO_MEM; }
             int rlen = 0;
-            if (http_read_body(c, resp, JSON_CAP, &rlen) == ESP_OK) {
-                if (!json_get_str(resp, "content", reply, cap)) {
+            if (ring_http_read_body(c, resp, JSON_CAP, &rlen) == ESP_OK) {
+                if (!ring_chat_json_get_str(resp, "content", reply, cap)) {
                     ESP_LOGW(TAG, "llm: could not extract content from: %.200s", resp);
                     err = ESP_ERR_INVALID_RESPONSE;
                 } else {
@@ -444,16 +432,18 @@ typedef struct {
     ring_chat_audio_cb_t cb;
     void               *user;
     int16_t            *pcm;       /* PSRAM decode buffer */
-    int                  pcm_cap;  /* samples */
-    int                  sentences;/* diagnostic counter */
-    int                  chunks;   /* per-sentence chunk counter */
+    int                 pcm_cap;   /* samples */
+    char               *b64;       /* base64 scratch (heap) */
+    size_t              b64_cap;
+    int                 sentences; /* diagnostic counter */
+    int                 chunks;    /* per-sentence chunk counter */
 } tts_ctx_t;
 
 static bool tts_handle_event(tts_ctx_t *ctx, const char *json)
 {
     /* Extract type. */
     char type[64];
-    if (!json_get_str(json, "type", type, sizeof(type))) return false;
+    if (!ring_chat_json_get_str(json, "type", type, sizeof(type))) return false;
 
     if (strcmp(type, "sentence-begin") == 0) {
         ctx->sentences++;
@@ -464,10 +454,11 @@ static bool tts_handle_event(tts_ctx_t *ctx, const char *json)
     if (strcmp(type, "sentence-synthesis") == 0) {
         ctx->chunks++;
         /* Extract the base64 audio data. */
-        char data_b64[SSE_LINE_CAP];
-        if (!json_get_str(json, "data", data_b64, sizeof(data_b64))) return false;
+        if (!ring_chat_json_get_str(json, "data", ctx->b64, ctx->b64_cap)) {
+            return false;
+        }
 
-        size_t b64_len = strlen(data_b64);
+        size_t b64_len = strlen(ctx->b64);
         size_t pcm_bytes = (b64_len / 4) * 3;  /* upper bound */
         if (pcm_bytes / 2 > (size_t)ctx->pcm_cap) {
             ESP_LOGW(TAG, "tts: pcm chunk too big (%u bytes)", (unsigned)pcm_bytes);
@@ -477,7 +468,7 @@ static bool tts_handle_event(tts_ctx_t *ctx, const char *json)
         size_t decoded = 0;
         if (mbedtls_base64_decode((unsigned char *)ctx->pcm, pcm_bytes,
                                   &decoded,
-                                  (const unsigned char *)data_b64,
+                                  (const unsigned char *)ctx->b64,
                                   b64_len) != 0) {
             ESP_LOGW(TAG, "tts: base64 decode failed");
             return false;
@@ -504,11 +495,17 @@ esp_err_t ring_chat_tts(const char *text, ring_chat_audio_cb_t cb, void *user)
     if (!s.init) return ESP_ERR_INVALID_STATE;
     ESP_LOGI(TAG, "tts: %u chars", (unsigned)strlen(text));
 
-    /* Build the TTS request body. */
+    /* Build the TTS request body. Heap, not stack: the caller's task may be
+     * as small as 16 KB and the body can be several KB. */
     size_t text_len = strlen(text);
-    /* Need to escape the text for JSON. */
+    size_t body_cap = text_len * 2 + 256;
     char *escaped = malloc(text_len * 2 + 1);
-    if (!escaped) return ESP_ERR_NO_MEM;
+    char *body = malloc(body_cap);
+    if (!escaped || !body) {
+        free(escaped);
+        free(body);
+        return ESP_ERR_NO_MEM;
+    }
     int esc_pos = 0;
     for (size_t i = 0; i < text_len; i++) {
         char ch = text[i];
@@ -519,33 +516,39 @@ esp_err_t ring_chat_tts(const char *text, ring_chat_audio_cb_t cb, void *user)
     }
     escaped[esc_pos] = '\0';
 
-    char body[JSON_CAP];
-    int body_len = snprintf(body, sizeof(body),
+    int body_len = snprintf(body, body_cap,
         "{\"model\":\"%s\",\"input\":{"
         "\"text\":\"%s\",\"voice\":\"%s\",\"format\":\"pcm\",\"sample_rate\":48000"
         "}}",
         s.cfg.tts_model, escaped, s.cfg.voice);
     free(escaped);
 
-    if (body_len <= 0 || (size_t)body_len >= sizeof(body)) return ESP_ERR_INVALID_SIZE;
+    if (body_len <= 0 || (size_t)body_len >= body_cap) {
+        free(body);
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     /* Open HTTP client. */
-    esp_http_client_handle_t c = http_init(NULL);
-    if (!c) return ESP_ERR_NO_MEM;
+    esp_http_client_handle_t c = ring_http_init(TTS_URL, RING_CHAT_CA_PEM,
+                                               RING_CHAT_CA_LEN, TTS_TIMEOUT_MS,
+                                               4096, 1024);
+    if (!c) {
+        free(body);
+        return ESP_ERR_NO_MEM;
+    }
 
-    esp_http_client_set_url(c, TTS_URL);
     esp_http_client_set_method(c, HTTP_METHOD_POST);
     esp_http_client_set_header(c, "Content-Type", "application/json");
     esp_http_client_set_header(c, "X-DashScope-SSE", "enable");
-    http_set_common_headers(c);
+    ring_http_set_bearer(c, s.api_key);
     esp_http_client_set_post_field(c, body, body_len);
-    esp_http_client_set_timeout_ms(c, TTS_TIMEOUT_MS);
 
     /* Streaming post — open, write, then read the SSE stream. */
     esp_err_t err = esp_http_client_open(c, body_len);
     if (err == ESP_OK) {
         int written = esp_http_client_write(c, body, body_len);
         if (written < 0) {
+            free(body);
             esp_http_client_cleanup(c);
             return ESP_FAIL;
         }
@@ -553,11 +556,13 @@ esp_err_t ring_chat_tts(const char *text, ring_chat_audio_cb_t cb, void *user)
         int status = esp_http_client_get_status_code(c);
         if (status != 200) {
             ESP_LOGW(TAG, "tts: HTTP %d", status);
+            free(body);
             esp_http_client_cleanup(c);
             return ESP_ERR_INVALID_RESPONSE;
         }
 
-        /* SSE read loop. */
+        /* SSE read loop. All scratch on the heap: this runs on the caller's
+         * task, which may have a small stack. */
         tts_ctx_t ctx;
         ctx.cb = cb;
         ctx.user = user;
@@ -565,21 +570,28 @@ esp_err_t ring_chat_tts(const char *text, ring_chat_audio_cb_t cb, void *user)
         ctx.chunks = 0;
         ctx.pcm_cap = 8192;  /* 8192 samples = 170 ms @ 48 kHz, per chunk */
         ctx.pcm = heap_caps_malloc(ctx.pcm_cap * 2, MALLOC_CAP_SPIRAM);
-        if (!ctx.pcm) {
+        ctx.b64_cap = SSE_LINE_CAP;
+        ctx.b64 = malloc(ctx.b64_cap);
+        char *line = malloc(4096);
+        if (!ctx.pcm || !ctx.b64 || !line) {
+            free(ctx.pcm);
+            free(ctx.b64);
+            free(line);
+            free(body);
             esp_http_client_cleanup(c);
             return ESP_ERR_NO_MEM;
         }
 
-        char line[4096];
         int line_pos = 0;
         bool done = false;
+        bool eof = false;
 
-        while (!done) {
+        while (!done && !eof) {
             line_pos = 0;
-            if (!sse_read_line(c, line, &line_pos, sizeof(line))) {
+            if (!ring_http_sse_line(c, line, &line_pos, 4096, &eof)) {
                 /* Buffer full — log and continue */
                 ESP_LOGW(TAG, "tts sse: long line truncated");
-                line[sizeof(line) - 1] = '\0';
+                line[4096 - 1] = '\0';
             }
 
             /* Skip empty lines, :keepalive, id:, event: markers. */
@@ -599,7 +611,7 @@ esp_err_t ring_chat_tts(const char *text, ring_chat_audio_cb_t cb, void *user)
 
                 /* Check for finish_reason (sentence-end marks stop). */
                 char fr[16];
-                if (json_get_str(json, "finish_reason", fr, sizeof(fr))) {
+                if (ring_chat_json_get_str(json, "finish_reason", fr, sizeof(fr))) {
                     if (strcmp(fr, "stop") == 0) {
                         done = true;
                     }
@@ -607,14 +619,17 @@ esp_err_t ring_chat_tts(const char *text, ring_chat_audio_cb_t cb, void *user)
             }
         }
 
-        ESP_LOGI(TAG, "tts: %d sentences, %d chunks total",
-                 ctx.sentences, ctx.chunks);
+        ESP_LOGI(TAG, "tts: %d sentences, %d chunks total%s",
+                 ctx.sentences, ctx.chunks, eof ? " (eof)" : "");
         free(ctx.pcm);
+        free(ctx.b64);
+        free(line);
         err = ESP_OK;
     } else {
         ESP_LOGW(TAG, "tts: open failed: %s", esp_err_to_name(err));
     }
 
+    free(body);
     esp_http_client_cleanup(c);
     return err;
 }

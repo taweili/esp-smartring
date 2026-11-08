@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -23,6 +24,27 @@ esp_err_t ring_ui_lock(int32_t timeout_ms);
 /** Release the LVGL lock. */
 void ring_ui_unlock(void);
 
+/* Lock handle with a cleanup handler. The cleanup runs on every exit path
+ * from the following block, including `return`, `break` and `goto`, which a
+ * plain lock/unlock pair (or a for-loop increment) cannot do. */
+typedef struct {
+    bool ok;
+} ring_ui_lock_t;
+
+static inline ring_ui_lock_t ring_ui_lock_make(int32_t timeout_ms)
+{
+    ring_ui_lock_t l = { .ok = (ring_ui_lock(timeout_ms) == ESP_OK) };
+    return l;
+}
+
+static inline void ring_ui_unlock_cleanup(ring_ui_lock_t *l)
+{
+    if (l->ok) {
+        ring_ui_unlock();
+        l->ok = false;
+    }
+}
+
 /**
  * @brief Run the following block (or single statement) holding the LVGL lock.
  *
@@ -32,12 +54,16 @@ void ring_ui_unlock(void);
  * }
  * @endcode
  *
- * Runs exactly once and always unlocks, even on early `return` / `break`.
+ * Runs exactly once and always unlocks, including on early `return` / `break`
+ * / `goto`. If the lock cannot be taken the block is skipped.
  */
-#define RING_UI_LOCKED(timeout_ms_)                              \
-    for (int _ring_locked = (ring_ui_lock(timeout_ms_) == ESP_OK); \
-         _ring_locked;                                            \
-         _ring_locked = (ring_ui_unlock(), 0))
+#define RING_UI_LOCKED(timeout_ms_)                                    \
+    for (int _ring_once = 0; _ring_once < 1; _ring_once++)             \
+        for (ring_ui_lock_t _ring_lock                                 \
+                 __attribute__((cleanup(ring_ui_unlock_cleanup))) =    \
+                 ring_ui_lock_make(timeout_ms_);                      \
+             _ring_lock.ok;                                            \
+             _ring_lock.ok = false)
 
 /**
  * @brief Active screen, cleared to the theme background.

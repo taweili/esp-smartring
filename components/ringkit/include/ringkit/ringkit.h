@@ -31,5 +31,14 @@
 #include "ringkit/ring_rand.h"
 #include "ringkit/ring_secret.h"
 
+/* Shared internal infrastructure, also public so apps can reuse it. */
+#include "ringkit/ring_ca.h"
+#include "ringkit/ring_time.h"
+#include "ringkit/ring_nvs.h"
+#include "ringkit/ring_json.h"
+#include "ringkit/ring_byte_ring.h"
+#include "ringkit/ring_resample.h"
+#include "ringkit/ring_http.h"
+
 /** Skeleton version, for logging. */
 #define RINGKIT_VERSION "1.0.0"

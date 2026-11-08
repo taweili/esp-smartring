@@ -13,13 +13,13 @@
  *    (it just schedules the transmission in the host task).
  */
 #include "ringkit/ring_bt.h"
+#include "ringkit/ring_nvs.h"
 
 #include <string.h>
 
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_err.h"
-#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -358,11 +358,13 @@ static int ring_bt_gatt_access(uint16_t conn_handle, uint16_t attr_handle,
     case BLE_GATT_ACCESS_OP_READ_CHR: {
         if (st->cb) {
             uint8_t buf[RING_BT_MAX_VALUE];
-            size_t out_len = st->max_len > RING_BT_MAX_VALUE ? RING_BT_MAX_VALUE
-                                                             : st->max_len;
+            size_t out_len = 0;
             esp_err_t err = st->cb(conn_handle, st->uuid, true,
                                    NULL, 0, buf, &out_len, st->user);
             if (err == ESP_OK && out_len > 0) {
+                if (out_len > RING_BT_MAX_VALUE) {
+                    out_len = RING_BT_MAX_VALUE;
+                }
                 int rc = os_mbuf_append(ctxt->om, buf, out_len);
                 return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
             }
@@ -502,13 +504,7 @@ esp_err_t ring_bt_init(const ring_bt_config_t *cfg)
     }
 
     /* NVS (PHY calibration + bonding keys). Handle a clobbered flash. */
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS needs re-format, erasing...");
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    ESP_RETURN_ON_ERROR(err, TAG, "nvs_flash_init failed: %s", esp_err_to_name(err));
+    ESP_RETURN_ON_ERROR(ring_nvs_init(), TAG, "nvs_flash_init failed");
 
     /* Copy the config into the context (it must be stable for the whole boot). */
     snprintf(s_ctx.name, sizeof(s_ctx.name), "%s", cfg->name);
@@ -527,8 +523,9 @@ esp_err_t ring_bt_init(const ring_bt_config_t *cfg)
 
     ESP_RETURN_ON_ERROR(build_database(cfg), TAG, "bad service table");
 
-    ESP_RETURN_ON_ERROR(nimble_port_init(), TAG, "nimble_port_init failed: %s",
-                        esp_err_to_name(err));
+    esp_err_t nimble_err = nimble_port_init();
+    ESP_RETURN_ON_ERROR(nimble_err, TAG, "nimble_port_init failed: %s",
+                        esp_err_to_name(nimble_err));
 
     /* Host config: callbacks are the whole programming model. */
     ble_hs_cfg.reset_cb = ring_bt_on_reset;

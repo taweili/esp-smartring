@@ -23,11 +23,15 @@
  */
 #include "ringkit/ring_net.h"
 #include "ringkit/ring_wifi.h"
+#include "ringkit/ring_ca.h"
+#include "ringkit/ring_time.h"
+#include "ringkit/ring_json.h"
+#include "ringkit/ring_byte_ring.h"
+#include "ringkit/ring_http.h"
 
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -36,8 +40,6 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_netif.h"
-#include "esp_netif_sntp.h"
-#include "esp_sntp.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
 #include "arpa/inet.h"
@@ -58,18 +60,14 @@
 
 #define TAG "ring_net"
 
-/* Embedded trust anchors (see assets/qianwen_ca.pem). */
-extern const uint8_t qianwen_ca_pem_start[] asm("_binary_qianwen_ca_pem_start");
-extern const uint8_t qianwen_ca_pem_end[]   asm("_binary_qianwen_ca_pem_end");
-
 const char *ring_net_ca_pem(void)
 {
-    return (const char *)qianwen_ca_pem_start;
+    return ring_ca_pem();
 }
 
 size_t ring_net_ca_pem_len(void)
 {
-    return (size_t)(qianwen_ca_pem_end - qianwen_ca_pem_start);
+    return ring_ca_pem_len();
 }
 
 /* ------------------------------------------------------------- config */
@@ -152,13 +150,10 @@ typedef struct {
     uint8_t                 *dec_mono;
 
     /* Downlink PCM ring buffer (48 kHz mono). */
-    uint8_t                 *dl_ring;
-    size_t                   dl_head;
-    size_t                   dl_tail;
-    size_t                   dl_count;
-    SemaphoreHandle_t        dl_mutex;
+    ring_byte_ring_t         dl_ring;
 
     QueueHandle_t            event_queue;
+    SemaphoreHandle_t        state_mutex;
     volatile bool            speaking;
 
     /* RTP presentation timestamp for the current session (sample count). */
@@ -196,10 +191,19 @@ const char *ring_net_state_name(ring_net_state_t state)
  * Safe to call from any task, including the peer thread. */
 static void state_set(ring_net_state_t st)
 {
+    if (s.state_mutex != NULL) {
+        xSemaphoreTake(s.state_mutex, portMAX_DELAY);
+    }
     if (s.state == st) {
+        if (s.state_mutex != NULL) {
+            xSemaphoreGive(s.state_mutex);
+        }
         return;
     }
     s.state = st;
+    if (s.state_mutex != NULL) {
+        xSemaphoreGive(s.state_mutex);
+    }
     ESP_LOGI(TAG, "state -> %s", ring_net_state_name(st));
     if (s.event_queue) {
         xQueueOverwrite(s.event_queue, &st);
@@ -218,33 +222,13 @@ static uint32_t now_ms(void)
 
 static void dl_push(const uint8_t *pcm, size_t len)
 {
-    if (s.dl_ring == NULL || len == 0) {
-        return;
-    }
-    xSemaphoreTake(s.dl_mutex, portMAX_DELAY);
-    for (size_t i = 0; i < len; i++) {
-        if (s.dl_count >= RING_NET_DL_BYTES) {
-            s.dl_tail = (s.dl_tail + 1) % RING_NET_DL_BYTES;   /* newest wins */
-            s.dl_count--;
-        }
-        s.dl_ring[s.dl_head] = pcm[i];
-        s.dl_head = (s.dl_head + 1) % RING_NET_DL_BYTES;
-        s.dl_count++;
-    }
-    xSemaphoreGive(s.dl_mutex);
+    size_t dropped = 0;
+    ring_byte_ring_push(&s.dl_ring, pcm, len, &dropped);
 }
 
 static size_t dl_pop(uint8_t *pcm, size_t len)
 {
-    size_t got = 0;
-    xSemaphoreTake(s.dl_mutex, portMAX_DELAY);
-    while (got < len && s.dl_count > 0) {
-        pcm[got++] = s.dl_ring[s.dl_tail];
-        s.dl_tail = (s.dl_tail + 1) % RING_NET_DL_BYTES;
-        s.dl_count--;
-    }
-    xSemaphoreGive(s.dl_mutex);
-    return got;
+    return ring_byte_ring_pop(&s.dl_ring, pcm, len);
 }
 
 /* ------------------------------------------------------------- codec */
@@ -312,50 +296,11 @@ static esp_err_t opus_open(void)
     return s.dec_mutex ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-/* ------------------------------------------------------------- SNTP */
-
-static esp_err_t sync_clock(void)
-{
-    static bool inited = false;
-    if (!inited) {
-        /* Init once: a retry must not re-init SNTP, and the clock may already
-         * be valid (waiting for a fresh sync event would then just time out). */
-        esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
-            2, ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "pool.ntp.org"));
-        config.start = true;
-        config.wait_for_sync = true;
-        esp_err_t err = esp_netif_sntp_init(&config);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "sntp init: %s", esp_err_to_name(err));
-            return err;
-        }
-        inited = true;
-    }
-    esp_netif_sntp_start();
-
-    if (esp_sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
-        esp_err_t err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_TIMEOUT_MS));
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "sntp sync wait: %s", esp_err_to_name(err));
-            return err;
-        }
-    }
-
-    time_t now = 0;
-    struct tm ti = { 0 };
-    time(&now);
-    localtime_r(&now, &ti);
-    ESP_LOGI(TAG, "clock synced: %04d-%02d-%02d %02d:%02d:%02d",
-             ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
-             ti.tm_hour, ti.tm_min, ti.tm_sec);
-    return ESP_OK;
-}
-
 /* ------------------------------------------------------------- network gate */
 
 esp_err_t ring_net_sync_clock(void)
 {
-    return sync_clock();
+    return ring_time_sync(SNTP_TIMEOUT_MS);
 }
 
 int ring_net_probe(const char *url)
@@ -432,28 +377,19 @@ static esp_err_t sdp_exchange(const char *offer, char *answer, size_t answer_len
     }
     normalise_sdp_crlf(offer, offer_crlf, SDP_MAX_BYTES);
 
-    esp_http_client_config_t http = {
-        .url = url,
-        .method = HTTP_METHOD_POST,
-        /* The bundled cert chain for this endpoint (assets/qianwen_ca.pem):
-         * the server does not send its intermediate CA. */
-        .cert_pem = ring_net_ca_pem(),
-        .cert_len = ring_net_ca_pem_len(),
-        .timeout_ms = HTTP_TIMEOUT_MS,
-        .buffer_size = SDP_MAX_BYTES,
-        .buffer_size_tx = 1024,
-    };
-
-    esp_http_client_handle_t c = esp_http_client_init(&http);
+    /* The bundled cert chain for this endpoint (assets/qianwen_ca.pem):
+     * the server does not send its intermediate CA. */
+    esp_http_client_handle_t c = ring_http_init(url, ring_ca_pem(),
+                                                ring_ca_pem_len(),
+                                                HTTP_TIMEOUT_MS,
+                                                SDP_MAX_BYTES, 1024);
     if (c == NULL) {
         free(offer_crlf);
         return ESP_ERR_NO_MEM;
     }
-
-    char auth[160];
-    snprintf(auth, sizeof(auth), "Bearer %s", s.api_key);
+    esp_http_client_set_method(c, HTTP_METHOD_POST);
     esp_http_client_set_header(c, "Content-Type", "application/sdp");
-    esp_http_client_set_header(c, "Authorization", auth);
+    ring_http_set_bearer(c, s.api_key);
 
     /* Stream instead of perform(): perform() swallows the response body, and
      * the Answer SDP *is* the body. */
@@ -483,19 +419,12 @@ static esp_err_t sdp_exchange(const char *offer, char *answer, size_t answer_len
 
     /* Read the whole Answer (chunked responses report length -1). */
     int n = 0;
-    while (n < (int)answer_len - 1) {
-        int r = esp_http_client_read(c, answer + n, (int)answer_len - 1 - n);
-        if (r <= 0) {
-            break;
-        }
-        n += r;
-    }
+    esp_err_t rerr = ring_http_read_body(c, answer, answer_len, &n);
     esp_http_client_cleanup(c);
-    if (n <= 0) {
+    if (rerr != ESP_OK) {
         ESP_LOGE(TAG, "SDP answer empty (content-length %d)", total);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    answer[n] = '\0';
     ESP_LOGI(TAG, "SDP answer: %d bytes", n);
     return ESP_OK;
 }
@@ -601,7 +530,8 @@ static int on_audio_data(esp_peer_audio_frame_t *frame, void *ctx)
     s.speaking = true;
     /* The reply can start after the button was released (state READY), so
      * accept both pre-turn states here. */
-    if (s.state == RING_NET_LISTENING || s.state == RING_NET_READY) {
+    ring_net_state_t st = ring_net_state();
+    if (st == RING_NET_LISTENING || st == RING_NET_READY) {
         state_set(RING_NET_SPEAKING);
     }
     return 0;
@@ -616,163 +546,6 @@ static int on_channel_open(esp_peer_data_channel_info_t *ch, void *ctx)
     /* The session is configured when the server sends session.created (see
      * on_data_frame): sending session.update from here races that event. */
     return 0;
-}
-
-/* ------------------------------------------------------------ JSON helpers
- *
- * DataChannel events are JSON, but picking a field out with strstr is
- * brittle: `"type":"error"` misses `{"type": "error"}`, a delta that
- * happens to contain the text "session.created" would trigger a
- * session.update, and a hand-rolled string reader drops leading spaces and
- * breaks on the first escaped quote. These two helpers are small enough to
- * run on the peer thread.
- */
-
-/* Copy the string value of `key` into `out` (always NUL-terminated).
- * Handles the standard escapes and encodes \uXXXX as UTF-8, including
- * surrogate pairs. Returns false when the key is absent or is not a string. */
-static bool json_get_str(const char *json, const char *key,
-                         char *out, size_t cap, size_t *out_len)
-{
-    if (json == NULL || key == NULL || out == NULL || cap == 0) {
-        return false;
-    }
-    char pat[64];
-    snprintf(pat, sizeof(pat), "\"%s\"", key);
-    const char *p = strstr(json, pat);
-    if (p == NULL) {
-        return false;
-    }
-    p += strlen(pat);
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
-        p++;
-    }
-    if (*p != ':') {
-        return false;
-    }
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
-        p++;
-    }
-    if (*p != '"') {
-        return false;
-    }
-    p++;
-
-    size_t n = 0;
-    while (*p != '\0' && *p != '"') {
-        char c = *p;
-        if (c != '\\') {
-            if (n + 1 < cap) {
-                out[n++] = c;
-            }
-            p++;
-            continue;
-        }
-        p++;
-        switch (*p) {
-        case '"':  c = '"';  break;
-        case '\\': c = '\\'; break;
-        case '/':  c = '/';  break;
-        case 'b':  c = '\b'; break;
-        case 'f':  c = '\f'; break;
-        case 'n':  c = '\n'; break;
-        case 'r':  c = '\r'; break;
-        case 't':  c = '\t'; break;
-        case 'u': {
-            unsigned cp = 0;
-            for (int i = 0; i < 4; i++) {
-                p++;
-                char h = *p;
-                cp <<= 4;
-                if (h >= '0' && h <= '9') {
-                    cp |= (unsigned)(h - '0');
-                } else if (h >= 'a' && h <= 'f') {
-                    cp |= (unsigned)(h - 'a' + 10);
-                } else if (h >= 'A' && h <= 'F') {
-                    cp |= (unsigned)(h - 'A' + 10);
-                } else {
-                    return false;
-                }
-            }
-            /* Combine a UTF-16 surrogate pair when one follows. */
-            if (cp >= 0xD800 && cp <= 0xDBFF &&
-                p[1] == '\\' && p[2] == 'u') {
-                unsigned lo = 0;
-                bool ok = true;
-                for (int i = 0; i < 4; i++) {
-                    char h = p[3 + i];
-                    lo <<= 4;
-                    if (h >= '0' && h <= '9') {
-                        lo |= (unsigned)(h - '0');
-                    } else if (h >= 'a' && h <= 'f') {
-                        lo |= (unsigned)(h - 'a' + 10);
-                    } else if (h >= 'A' && h <= 'F') {
-                        lo |= (unsigned)(h - 'A' + 10);
-                    } else {
-                        ok = false;
-                        break;
-                    }
-                }
-                if (ok && lo >= 0xDC00 && lo <= 0xDFFF) {
-                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                    p += 6;
-                }
-            }
-            char enc[4];
-            int m;
-            if (cp < 0x80) {
-                enc[0] = (char)cp;
-                m = 1;
-            } else if (cp < 0x800) {
-                enc[0] = (char)(0xC0 | (cp >> 6));
-                enc[1] = (char)(0x80 | (cp & 0x3F));
-                m = 2;
-            } else if (cp < 0x10000) {
-                enc[0] = (char)(0xE0 | (cp >> 12));
-                enc[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-                enc[2] = (char)(0x80 | (cp & 0x3F));
-                m = 3;
-            } else {
-                enc[0] = (char)(0xF0 | (cp >> 18));
-                enc[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
-                enc[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
-                enc[3] = (char)(0x80 | (cp & 0x3F));
-                m = 4;
-            }
-            for (int i = 0; i < m; i++) {
-                if (n + 1 < cap) {
-                    out[n++] = enc[i];
-                }
-            }
-            p++;
-            continue;
-        }
-        default:
-            return false;
-        }
-        if (n + 1 < cap) {
-            out[n++] = c;
-        }
-        p++;
-    }
-    if (*p != '"') {            /* unterminated: the frame was truncated */
-        return false;
-    }
-    out[n] = '\0';
-    if (out_len != NULL) {
-        *out_len = n;
-    }
-    return true;
-}
-
-/* True when the event's "type" field equals `type`. */
-static bool json_type_is(const char *json, const char *type)
-{
-    char buf[64];
-    size_t len = 0;
-    return json_get_str(json, "type", buf, sizeof(buf), &len) &&
-           len == strlen(type) && memcmp(buf, type, len) == 0;
 }
 
 /* DataChannel frames arrive as JSON strings. */
@@ -797,38 +570,38 @@ static int on_data_frame(esp_peer_data_frame_t *frame, void *ctx)
      * is USB-Serial-JTAG, whose writes block when the host stops reading. */
     ESP_LOGI(TAG, "dc: %.200s", json);
 
-    if (json_type_is(json, "session.created")) {
+    if (ring_json_type_is(json, "session.created")) {
         ESP_LOGI(TAG, "session created -> configuring");
         esp_err_t e = ring_net_send_event(
             "{\"type\":\"session.update\",\"session\":{\"modalities\":[\"text\",\"audio\"],"
             "\"voice\":\"longanqian_v3.1\",\"turn_detection\":{\"type\":\"server_vad\","
             "\"threshold\":0.5,\"silence_duration_ms\":800}}}");
         ESP_LOGI(TAG, "session.update sent: %s", esp_err_to_name(e));
-    } else if (json_type_is(json, "session.updated")) {
+    } else if (ring_json_type_is(json, "session.updated")) {
         ESP_LOGI(TAG, "session configured");
         state_set(RING_NET_READY);
-    } else if (json_type_is(json, "response.done")) {
+    } else if (ring_json_type_is(json, "response.done")) {
         s.speaking = false;
-        if (s.state == RING_NET_SPEAKING) {
+        if (ring_net_state() == RING_NET_SPEAKING) {
             state_set(RING_NET_READY);
         }
-    } else if (json_type_is(json, "error")) {
+    } else if (ring_json_type_is(json, "error")) {
         ESP_LOGE(TAG, "model error: %.200s", json);
-    } else if (json_type_is(json, "conversation.item.input_audio_transcription.completed")) {
+    } else if (ring_json_type_is(json, "conversation.item.input_audio_transcription.completed")) {
         /* The server transcribes the user's utterance by default; surfacing it
          * is the clearest evidence that the uplink arrived intact. */
         char text[256];
         size_t len = 0;
         if (s.text_cb != NULL &&
-            json_get_str(json, "transcript", text, sizeof(text), &len)) {
+            ring_json_get_str(json, "transcript", text, sizeof(text), &len)) {
             s.text_cb(text, len, true, s.user);
         }
     } else if (s.text_cb != NULL &&
-               (json_type_is(json, "response.text.delta") ||
-                json_type_is(json, "response.audio_transcript.delta"))) {
+               (ring_json_type_is(json, "response.text.delta") ||
+                ring_json_type_is(json, "response.audio_transcript.delta"))) {
         char text[128];
         size_t len = 0;
-        if (json_get_str(json, "delta", text, sizeof(text), &len)) {
+        if (ring_json_get_str(json, "delta", text, sizeof(text), &len)) {
             s.text_cb(text, len, false, s.user);
         }
     }
@@ -911,6 +684,25 @@ static void signal_task(void *arg)
     }
 }
 
+/* ------------------------------------------------------------- cleanup */
+
+/* Free every resource ring_net_init() may have allocated. Safe to call on a
+ * zero-initialised context and on partial init failure. */
+static void net_release(void)
+{
+    if (s.event_queue) { vQueueDelete(s.event_queue); s.event_queue = NULL; }
+    if (s.state_mutex) { vSemaphoreDelete(s.state_mutex); s.state_mutex = NULL; }
+    if (s.sdp_mutex) { vSemaphoreDelete(s.sdp_mutex); s.sdp_mutex = NULL; }
+    if (s.dec_mutex) { vSemaphoreDelete(s.dec_mutex); s.dec_mutex = NULL; }
+    if (s.enc) { esp_audio_enc_close(s.enc); s.enc = NULL; }
+    if (s.dec) { esp_audio_dec_close(s.dec); s.dec = NULL; }
+    free(s.enc_out); s.enc_out = NULL;
+    free(s.enc_in); s.enc_in = NULL;
+    free(s.dec_out); s.dec_out = NULL;
+    free(s.dec_mono); s.dec_mono = NULL;
+    ring_byte_ring_deinit(&s.dl_ring);
+}
+
 /* ------------------------------------------------------------- session */
 
 static esp_err_t peer_open(void)
@@ -981,15 +773,15 @@ esp_err_t ring_net_init(ring_net_state_cb_t state_cb,
     s.user = user;
 
     s.sdp_mutex = xSemaphoreCreateMutex();
-    s.dl_mutex = xSemaphoreCreateMutex();
+    s.state_mutex = xSemaphoreCreateMutex();
     s.event_queue = xQueueCreate(1, sizeof(ring_net_state_t));
-    if (s.sdp_mutex == NULL || s.dl_mutex == NULL || s.event_queue == NULL) {
+    if (s.sdp_mutex == NULL || s.state_mutex == NULL || s.event_queue == NULL) {
+        net_release();
         return ESP_ERR_NO_MEM;
     }
 
     /* The downlink buffer is 384 KB: it must live in PSRAM, not internal RAM. */
-    s.dl_ring = heap_caps_malloc(RING_NET_DL_BYTES, MALLOC_CAP_SPIRAM);
-    if (s.dl_ring == NULL) {
+    if (ring_byte_ring_init(&s.dl_ring, RING_NET_DL_BYTES, MALLOC_CAP_SPIRAM) != ESP_OK) {
         ESP_LOGW(TAG, "downlink ring allocation failed (%d bytes)",
                  RING_NET_DL_BYTES);
     }
@@ -997,6 +789,7 @@ esp_err_t ring_net_init(ring_net_state_cb_t state_cb,
     esp_err_t err = opus_open();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "opus init failed: %s", esp_err_to_name(err));
+        net_release();
         return err;
     }
 
@@ -1026,6 +819,10 @@ esp_err_t ring_net_start(const char *model, const char *api_key)
     }
     s.speaking = false;
     s.pts = 0;
+    /* A retry must not replay stale downlink audio or reuse a stale SCTP
+     * stream id from the previous session. */
+    ring_byte_ring_reset(&s.dl_ring);
+    s.send_stream_id = 0;
     state_set(RING_NET_CONNECTING);
 
     /* 1. Wi-Fi */
@@ -1043,7 +840,7 @@ esp_err_t ring_net_start(const char *model, const char *api_key)
     }
 
     /* 2. Clock — required for TLS/DTLS certificate validation. */
-    err = sync_clock();
+    err = ring_time_sync(SNTP_TIMEOUT_MS);
     if (err != ESP_OK) {
         state_set(RING_NET_ERROR);
         return err;
@@ -1065,16 +862,23 @@ esp_err_t ring_net_start(const char *model, const char *api_key)
     /* 4. Wait for the DataChannel + session.updated. */
     ESP_LOGI(TAG, "waiting for session...");
     uint32_t deadline = now_ms() + SESSION_TIMEOUT_MS;
-    while (now_ms() < deadline &&
-           (s.state == RING_NET_CONNECTING || s.state == RING_NET_OFF)) {
+    for (;;) {
+        ring_net_state_t st = ring_net_state();
+        if (st != RING_NET_CONNECTING && st != RING_NET_OFF) {
+            break;
+        }
+        if (now_ms() >= deadline) {
+            break;
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     /* READY is the state the wait loop looks for, but the app may have
      * already opened the uplink (LISTENING) or the reply may have started
      * (SPEAKING) by the time we re-check. Both imply the session is up. */
-    if (s.state != RING_NET_READY && s.state != RING_NET_LISTENING &&
-        s.state != RING_NET_SPEAKING) {
-        ESP_LOGW(TAG, "session not ready (%s)", ring_net_state_name(s.state));
+    ring_net_state_t st = ring_net_state();
+    if (st != RING_NET_READY && st != RING_NET_LISTENING &&
+        st != RING_NET_SPEAKING) {
+        ESP_LOGW(TAG, "session not ready (%s)", ring_net_state_name(st));
         return ESP_ERR_TIMEOUT;
     }
     ESP_LOGI(TAG, "session ready (model %s)", s.model);
@@ -1094,18 +898,25 @@ esp_err_t ring_net_stop(void)
 
 ring_net_state_t ring_net_state(void)
 {
-    return s.state;
+    if (s.state_mutex != NULL) {
+        xSemaphoreTake(s.state_mutex, portMAX_DELAY);
+    }
+    ring_net_state_t st = s.state;
+    if (s.state_mutex != NULL) {
+        xSemaphoreGive(s.state_mutex);
+    }
+    return st;
 }
 
 esp_err_t ring_net_set_listening(bool on)
 {
     if (on) {
-        if (s.state != RING_NET_READY) {
+        if (ring_net_state() != RING_NET_READY) {
             return ESP_ERR_INVALID_STATE;
         }
         s.speaking = false;
         state_set(RING_NET_LISTENING);
-    } else if (s.state == RING_NET_LISTENING) {
+    } else if (ring_net_state() == RING_NET_LISTENING) {
         /* Releasing while the model is already speaking must not cut the
          * reply short; the reply finishes and response.done returns us to
          * READY. */
@@ -1119,7 +930,10 @@ esp_err_t ring_net_send_audio(const int16_t *pcm, size_t samples)
     if (s.peer == NULL || pcm == NULL || samples == 0 || s.enc == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (s.state != RING_NET_LISTENING) {
+    if (samples != RING_NET_FRAME_SAMPLES) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (ring_net_state() != RING_NET_LISTENING) {
         return ESP_ERR_INVALID_STATE;
     }
 

@@ -11,6 +11,7 @@
  *    cause a tight reconnect loop.
  */
 #include "ringkit/ring_wifi.h"
+#include "ringkit/ring_nvs.h"
 
 #include <string.h>
 
@@ -19,8 +20,7 @@
 #include "esp_event.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "nvs_flash.h"
-#include "nvs.h"
+#include "nvs.h"   /* ESP_ERR_NVS_NOT_FOUND */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -69,38 +69,19 @@ static int64_t now_ms(void)
 
 /* --- NVS helpers -------------------------------------------------------- */
 
-static esp_err_t nvs_get_blob_str(nvs_handle_t h, const char *key,
-                                  char *out, size_t out_len)
-{
-    size_t len = out_len;
-    esp_err_t err = nvs_get_str(h, key, out, &len);
-    if (err != ESP_OK) {
-        return err;
-    }
-    /* Guard against a malformed/unterminated stored value. */
-    if (len >= out_len) {
-        out[out_len - 1] = '\0';
-    }
-    return ESP_OK;
-}
-
 /**
- * Load persisted credentials; if the namespace/key is missing entirely,
+ * Load persisted credentials; if the namespace/key is missing,
  * seed it from the compile-time defaults and write them back. Returns ESP_OK
  * with ssid/password filled in on success.
  */
 static esp_err_t load_or_seed_credentials(char *ssid, size_t ssid_len,
                                           char *password, size_t pass_len)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(RING_WIFI_NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err = nvs_get_blob_str(h, RING_WIFI_NVS_KEY_SSID, ssid, ssid_len);
+    esp_err_t err = ring_nvs_get_str(RING_WIFI_NVS_NAMESPACE,
+                                     RING_WIFI_NVS_KEY_SSID, ssid, ssid_len);
     if (err == ESP_OK) {
-        err = nvs_get_blob_str(h, RING_WIFI_NVS_KEY_PASS, password, pass_len);
+        err = ring_nvs_get_str(RING_WIFI_NVS_NAMESPACE,
+                               RING_WIFI_NVS_KEY_PASS, password, pass_len);
     }
 
     if (err == ESP_ERR_NVS_NOT_FOUND) {
@@ -108,26 +89,22 @@ static esp_err_t load_or_seed_credentials(char *ssid, size_t ssid_len,
          * persist. Without credentials the app must provision them instead of
          * trying to join "". */
         if (RING_WIFI_DEFAULT_SSID[0] == '\0') {
-            nvs_close(h);
             ESP_LOGE(TAG, "no Wi-Fi credentials: set RING_WIFI_SSID/_PASSWORD in "
                           "secrets.local or call ring_wifi_set_credentials()");
             return ESP_ERR_NOT_FOUND;
         }
         snprintf(ssid, ssid_len, "%s", RING_WIFI_DEFAULT_SSID);
         snprintf(password, pass_len, "%s", RING_WIFI_DEFAULT_PASSWORD);
-        err = nvs_set_str(h, RING_WIFI_NVS_KEY_SSID, ssid);
-        if (err == ESP_OK) {
-            err = nvs_set_str(h, RING_WIFI_NVS_KEY_PASS, password);
+        esp_err_t e1 = ring_nvs_set_str(RING_WIFI_NVS_NAMESPACE,
+                                        RING_WIFI_NVS_KEY_SSID, ssid);
+        esp_err_t e2 = ring_nvs_set_str(RING_WIFI_NVS_NAMESPACE,
+                                        RING_WIFI_NVS_KEY_PASS, password);
+        if (e1 != ESP_OK || e2 != ESP_OK) {
+            return (e1 != ESP_OK) ? e1 : e2;
         }
-        if (err == ESP_OK) {
-            err = nvs_commit(h);
-        }
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "seeded default credentials for '%s' into NVS", ssid);
-        }
+        ESP_LOGI(TAG, "seeded default credentials for '%s' into NVS", ssid);
+        return ESP_OK;
     }
-
-    nvs_close(h);
     return err;
 }
 
@@ -201,17 +178,11 @@ esp_err_t ring_wifi_init(void)
     }
 
     /* NVS (Wi-Fi + credentials live here). Handle a clobbered flash. */
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS partition needs re-format, erasing...");
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    ESP_RETURN_ON_ERROR(err, TAG, "nvs_flash_init failed: %s", esp_err_to_name(err));
+    ESP_RETURN_ON_ERROR(ring_nvs_init(), TAG, "nvs_flash_init failed");
 
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "esp_netif_init failed");
     /* The BSP does not create a default loop; if something else did, that's fine. */
-    err = esp_event_loop_create_default();
+    esp_err_t err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_RETURN_ON_ERROR(err, TAG, "esp_event_loop_create_default failed");
     }
@@ -286,17 +257,12 @@ esp_err_t ring_wifi_set_credentials(const char *ssid, const char *password)
         return ESP_ERR_INVALID_ARG;
     }
 
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(RING_WIFI_NVS_NAMESPACE, NVS_READWRITE, &h);
-    ESP_RETURN_ON_ERROR(err, TAG, "nvs_open failed");
-    err = nvs_set_str(h, RING_WIFI_NVS_KEY_SSID, ssid);
+    esp_err_t err = ring_nvs_set_str(RING_WIFI_NVS_NAMESPACE,
+                                     RING_WIFI_NVS_KEY_SSID, ssid);
     if (err == ESP_OK) {
-        err = nvs_set_str(h, RING_WIFI_NVS_KEY_PASS, password);
+        err = ring_nvs_set_str(RING_WIFI_NVS_NAMESPACE,
+                               RING_WIFI_NVS_KEY_PASS, password);
     }
-    if (err == ESP_OK) {
-        err = nvs_commit(h);
-    }
-    nvs_close(h);
     ESP_RETURN_ON_ERROR(err, TAG, "credential store failed: %s", esp_err_to_name(err));
 
     /* Live reconnect with the new credentials. */
@@ -318,18 +284,15 @@ esp_err_t ring_wifi_set_credentials(const char *ssid, const char *password)
 esp_err_t ring_wifi_get_credentials(char *ssid, size_t ssid_len,
                                     char *password, size_t pass_len)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(RING_WIFI_NVS_NAMESPACE, NVS_READONLY, &h);
-    if (err != ESP_OK) {
-        return err;
-    }
+    esp_err_t err = ESP_OK;
     if (ssid && ssid_len) {
-        err = nvs_get_blob_str(h, RING_WIFI_NVS_KEY_SSID, ssid, ssid_len);
+        err = ring_nvs_get_str(RING_WIFI_NVS_NAMESPACE,
+                               RING_WIFI_NVS_KEY_SSID, ssid, ssid_len);
     }
     if (err == ESP_OK && password && pass_len) {
-        err = nvs_get_blob_str(h, RING_WIFI_NVS_KEY_PASS, password, pass_len);
+        err = ring_nvs_get_str(RING_WIFI_NVS_NAMESPACE,
+                               RING_WIFI_NVS_KEY_PASS, password, pass_len);
     }
-    nvs_close(h);
     return err;
 }
 
@@ -350,6 +313,7 @@ esp_err_t ring_wifi_stop(void)
     state_lock();
     s_state.state = RING_WIFI_OFF;
     s_state.connected = false;
+    snprintf(s_state.ip, sizeof(s_state.ip), "0.0.0.0");
     state_unlock();
     return esp_wifi_stop();
 }
