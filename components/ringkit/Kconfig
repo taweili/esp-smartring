@@ -1,0 +1,38 @@
+menu "Ringkit"
+
+    config RINGKIT_NET
+        bool "Enable ring_net (WebRTC voice)"
+        default y
+        help
+            Compile the ring_net module: Qianwen WebRTC push-to-talk
+            (SDP signaling, Opus codec, DataChannel protocol). Disabling
+            drops esp_peer and the WebRTC code from the image; applications
+            that call ring_net_* will fail to link.
+
+    config RINGKIT_WS
+        bool "Enable ring_ws (WebSocket voice)"
+        default y
+        help
+            Compile the ring_ws module: Qianwen WebSocket voice chat
+            (session/turn JSON, PCM transport). Disabling drops
+            esp_websocket_client from the image; applications that call
+            ring_ws_* will fail to link.
+
+    config RINGKIT_CHAT
+        bool "Enable ring_chat (STT/LLM/TTS cascade)"
+        default y
+        help
+            Compile the ring_chat module: the STT -> LLM -> TTS cascade
+            used by the push-to-talk apps. Disabling drops ring_stt,
+            ring_llm and ring_tts; applications that call ring_chat_* will
+            fail to link.
+
+    config RINGKIT_BT
+        bool "Enable ring_bt (BLE peripheral)"
+        default y
+        help
+            Compile the ring_bt module: Bluetooth LE peripheral (GAP,
+            GATT). Disabling drops bt from the image; applications that
+            call ring_bt_* will fail to link.
+
+endmenu

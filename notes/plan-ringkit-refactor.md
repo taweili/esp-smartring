@@ -1,7 +1,7 @@
 # ringkit refactor — implementation plan
 
-**Status:** phase 1 complete (code + device boot verification).
-Phase 2–4 not started.
+**Status:** phases 1–3 complete (code + build verification).
+Phase 4 not started.
 **Companion to:** the `components/ringkit` review (findings recorded in the
 progress log below) and `notes/architecture-rationale.md`.
 **Goal:** extract the shared infrastructure that is currently copy-pasted
@@ -135,13 +135,20 @@ added to `components/ringkit/CMakeLists.txt` `SRCS`.
 
 ## 3. Phase 3 — build hygiene
 
-- [ ] Add `CONFIG_RINGKIT_NET` / `_WS` / `_CHAT` / `_BT` Kconfig symbols and
-      compile those sources conditionally.
-- [ ] Move `esp_peer`, `esp_audio_codec`, `esp_websocket_client`,
-      `esp_http_client`, `bt` from `REQUIRES` to `PRIV_REQUIRES` where the
-      public header does not expose their types (true for all four voice
-      headers and `ring_bt.h`).
-- [ ] Measure app 00's size/build-time delta.
+- [x] Add `CONFIG_RINGKIT_NET` / `_WS` / `_CHAT` / `_BT` Kconfig symbols and
+      compile those sources conditionally. (`components/ringkit/Kconfig`,
+      `default y` so existing apps are unchanged; the shared leaves stay
+      unconditional so any gate combination links.)
+- [x] Move `esp_peer`, `esp_audio_codec`, `esp_websocket_client`, `bt` (and
+      the other non-exposed deps) from `REQUIRES` to `PRIV_REQUIRES`.
+      `esp_http_client` stays public — `ring_http.h` exposes
+      `esp_http_client_handle_t` (the plan's assumption that only the four
+      voice headers are public was wrong). Also moved: `esp_lvgl_adapter`,
+      `esp_wifi`, `esp_netif`, `esp_event`, `nvs_flash`, `esp-tls`, `lwip`,
+      `mbedtls`.
+- [x] Measure app 00's size/build-time delta. Size unchanged (750,532 B);
+      build time within noise (45.35 s vs 45.97 s). Gate test confirms the
+      modules are dropped when disabled.
 
 > Note: the `00` map already contains no `ring_net`/`ring_ws`/`ring_chat`/
 > `esp_peer` symbols, so the linker GC's unused modules. The benefit here is
@@ -162,7 +169,7 @@ added to `components/ringkit/CMakeLists.txt` `SRCS`.
 
 ## 5. Progress log
 
-### 2025-11-08 — plan created
+### 2026-11-08 — plan created
 
 - Plan written; phase 1 todo list compiled. No code changes yet.
 - Review findings that drive the phase 1 order:
@@ -180,7 +187,7 @@ added to `components/ringkit/CMakeLists.txt` `SRCS`.
   - `ring_ws` `instructions` (`ring_ws.h:48`) and `ring_chat` `stt_language`
     (`ring_chat.h:34`) are never sent.
 
-### 2025-11-08 — phase 1 code complete (pending device boot check)
+### 2026-11-08 — phase 1 code complete (pending device boot check)
 
 **New shared modules** (`components/ringkit/{include/ringkit,src}/`):
 `ring_ca`, `ring_time`, `ring_nvs`, `ring_json`, `ring_byte_ring`,
@@ -232,7 +239,7 @@ escaping rules.
 **Final rebuild:** all five apps (`00`, `06`, `07`, `09`, `10`) build clean
 after the follow-up fix.
 
-### 2025-11-08 — device boot verification complete
+### 2026-11-08 — device boot verification complete
 
 Flashed `00_glyph_grid_reveal` and `09_hello_smoke_test` to the ring and
 captured the boot log (continuous drain, no back-pressure hang). Both:
@@ -245,7 +252,7 @@ captured the boot log (continuous drain, no back-pressure hang). Both:
 
 Phase 1 is complete. The ring is currently running `09_hello_smoke_test`.
 
-### 2025-11-08 — phase 2 complete: oversized modules split
+### 2026-11-08 — phase 2 complete: oversized modules split
 
 **`ring_net`** → `ring_net.c` (public API, state, event task — 398 lines) +
 `ring_net_signaling.c` (SDP/HTTPS + peer bring-up — 283) +
@@ -285,6 +292,40 @@ The private `*_priv.h` headers live in `components/ringkit/src/`, not
   line, no `panic` / `assert` / `Guru Meditation` / stack-overflow hook.
   The ring is running `09_hello_smoke_test`.
 
+### 2026-11-08 — phase 3 complete: build hygiene
+
+**Kconfig gates.** New `components/ringkit/Kconfig` adds `CONFIG_RINGKIT_NET`,
+`_WS`, `_CHAT`, `_BT` (all `default y`, so existing apps are unchanged).
+`CMakeLists.txt` compiles each module's sources only when its symbol is set;
+the shared leaves (`ring_ca`, `ring_time`, `ring_nvs`, `ring_json`,
+`ring_byte_ring`, `ring_resample`, `ring_http`) stay unconditional so any
+gate combination links.
+
+**Dependency split.** `REQUIRES` now holds only `smartring_plus`, `lvgl` and
+`esp_http_client`. Moved to `PRIV_REQUIRES`: `esp_lvgl_adapter`, `esp_wifi`,
+`esp_netif`, `esp_event`, `nvs_flash`, `bt`, `esp_peer`, `esp-tls`, `lwip`,
+`mbedtls`, `esp_audio_codec`, `esp_websocket_client`.
+
+Deviation from the plan: `esp_http_client` stays **public** because
+`ring_http.h` exposes `esp_http_client_handle_t` — the plan assumed only the
+four voice headers were public and missed `ring_http.h`. `esp_audio_codec`
+does move to `PRIV_REQUIRES` (used by `ring_net_codec.c`'s Opus path, not
+exposed). `esp_lvgl_adapter` also moves (not exposed by any ringkit header;
+already public transitively via `smartring_plus`).
+
+**Verification:**
+- Clean `-B` builds of `00`, `06`, `07`, `08`, `09`, `10` — all pass, zero
+  compiler warnings.
+- Vendored overrides still win in every build
+  (`components/espressif__esp_codec_dev`, `components/viewesmart__smartring_plus`).
+- App 00 size unchanged: 750,532 B total image (506,806 flash code /
+  156,076 flash data) before and after. Build time 45.35 s vs 45.97 s
+  baseline — within noise.
+- Gate test: with all four `CONFIG_RINGKIT_*` set to `n`, app 00 builds and
+  the `ring_net*` / `ring_ws*` / `ring_chat*` / `ring_stt|llm|tts` /
+  `ring_bt*` objects are absent; image size is unchanged (the linker GC
+  already dropped them).
+
 ---
 
 ## 6. Files touched
@@ -299,7 +340,8 @@ The private `*_priv.h` headers live in `components/ringkit/src/`, not
 | `components/ringkit/src/ring_{net,ws,chat,bt}_priv.h` | new (phase 2 private interfaces) |
 | `components/ringkit/src/ring_{net,ws,chat,bt}.c` | split (phase 2) |
 | `tools/gen_ws_resampler.py` | emit tables to the new location |
-| `components/ringkit/CMakeLists.txt` | add new SRCS |
+| `components/ringkit/Kconfig` | new (phase 3: `CONFIG_RINGKIT_{NET,WS,CHAT,BT}`) |
+| `components/ringkit/CMakeLists.txt` | add new SRCS; phase 3: conditional SRCS + `PRIV_REQUIRES` split |
 | `components/ringkit/include/ringkit/ringkit.h` | include new headers |
 | `components/ringkit/include/ringkit/ring_ui.h` | fix `RING_UI_LOCKED` |
 | `components/ringkit/include/ringkit/ring_{net,ws,chat,bt,wifi}.h` | contract fixes |
