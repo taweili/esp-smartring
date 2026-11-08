@@ -65,6 +65,13 @@ static inline void ring_ui_unlock_cleanup(ring_ui_lock_t *l)
  *
  * Runs exactly once and always unlocks, including on early `return` / `break`
  * / `goto`. If the lock cannot be taken the block is skipped.
+ *
+ * The unlock happens in the loop increment: it runs on the normal exit path
+ * (and clears .ok, so the scope cleanup does not unlock twice), while the
+ * cleanup handler covers an early `return`/`break`/`goto` out of the body.
+ * Setting .ok = false in the increment instead would leak the mutex — the
+ * handler would then see .ok == false and skip the unlock entirely, and the
+ * LVGL worker task would block forever on `esp_lv_adapter_lock(-1)`.
  */
 #define RING_UI_LOCKED(timeout_ms_)                                    \
     for (int _ring_once = 0; _ring_once < 1; _ring_once++)             \
@@ -72,7 +79,7 @@ static inline void ring_ui_unlock_cleanup(ring_ui_lock_t *l)
                  __attribute__((cleanup(ring_ui_unlock_cleanup))) =    \
                  ring_ui_lock_make(timeout_ms_);                      \
              _ring_lock.ok;                                            \
-             _ring_lock.ok = false)
+             ring_ui_unlock_cleanup(&_ring_lock))
 
 /**
  * @brief Active screen, cleared to the theme background.

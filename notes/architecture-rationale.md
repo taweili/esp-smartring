@@ -99,6 +99,39 @@ on `ring_ui_lock()` / `ring_ui_unlock()`. It releases the lock on every exit
 path, including `return` and `break` — which a hand-written
 `esp_lv_adapter_lock()` / `unlock()` pair leaks on early return.
 
+The macro is a double `for` loop, and the order of its parts is load-bearing:
+
+```c
+for (ring_ui_lock_t _ring_lock __attribute__((cleanup(ring_ui_unlock_cleanup))) = ...;
+     _ring_lock.ok;
+     ring_ui_unlock_cleanup(&_ring_lock))      /* NOT: _ring_lock.ok = false */
+```
+
+The unlock must happen in the **increment**. Clearing `.ok = false` there
+instead looks equivalent but is not: the increment runs *before* the scope's
+`cleanup` handler, so the handler would see `.ok == false`, skip the unlock,
+and leak the mutex on the normal path. That bug shipped in the phase-1 refactor
+and cost a long debugging session — the symptom is very indirect:
+
+- `esp_lv_adapter_lock()` is a **recursive** mutex, so the task that leaked it
+  keeps working (its next lock just increments the count) and the app's own
+  code looks fine;
+- the **LVGL worker task** (`lvgl_adapter`) is the one that starves: it blocks
+  forever in `esp_lv_adapter_lock(-1)` and never calls `lv_timer_handler()`
+  again, so the screen keeps whatever was flushed during bring-up and nothing
+  the app draws after `ring_example_start()` ever appears;
+- no panic, no assert, no error log — just a frozen image. Booting `09` shows
+  the adapter's full-screen bring-up flush (near-white `0xF7BE`) but no second
+  flush after the app's UI is built.
+
+Diagnosis ladder that found it: instrument the adapter worker loop to log
+`enter` / `prelock` / `lock=` per iteration, then reset the board and read the
+log. Last line `loop N: prelock` with no `lock=` means the worker is waiting on
+the mutex — i.e. somebody leaked it — not that drawing or QSPI is broken. Note
+the `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` back-pressure trap: keep draining
+`/dev/ttyACM0` while you do this or you will "reproduce" a hang that is only
+the unread console.
+
 ---
 
 ## 4. Applications (`examples/`)

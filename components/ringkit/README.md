@@ -127,7 +127,11 @@ a mutex; `ring_wifi`/`ring_bt` do the same.
 - All LVGL object creation/updates happen inside `RING_UI_LOCKED(-1) { ... }`.
   The macro uses a `cleanup` handler, so it unlocks on `return` / `break` /
   `goto` — a hand-written `ring_ui_lock()`/`ring_ui_unlock()` pair will leak
-  the lock on an early exit.
+  the lock on an early exit. Do not "simplify" the macro: the unlock lives in
+  the loop **increment**, and setting `.ok = false` there instead leaks the
+  mutex on the normal path, which freezes the `lvgl_adapter` worker task and
+  stops all repaints without any error (see `notes/architecture-rationale.md`
+  §3 "Lock discipline").
 - Mandatory init uses `ESP_ERROR_CHECK`; optional peripherals (SD, IMU) fail
   soft and are reported in `ring_board_t`.
 - Log with `ESP_LOGI/LOGW/LOGE` and a `TAG`.

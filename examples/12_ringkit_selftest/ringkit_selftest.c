@@ -31,6 +31,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
+#include "esp_heap_caps.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -58,6 +59,24 @@ enum {
     ST_CHAT,
     ST_COUNT,
 };
+
+
+/* Internal-RAM headroom at each selftest step.
+ *
+ * This is the number that decides whether the panel can still be refreshed:
+ * the QSPI flush needs one contiguous internal DMA-capable block of
+ * buffer_height(40) * 360 * 2 = 28.8 KB per strip. The voice-module inits hold
+ * their internal RAM for good (ringkit has no deinit for them), so once
+ * `largest_dma` drops below ~29 KB every repaint fails with ESP_ERR_NO_MEM. */
+static void dbg_heap(const char *when)
+{
+    ESP_LOGI(TAG, "heap after %-10s internal=%6u dma=%6u largest_dma=%6u psram=%7u",
+             when,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
 
 static const char *const s_names[ST_COUNT] = {
     "display", "touch", "audio", "imu", "sd", "battery",
@@ -196,6 +215,7 @@ static void selftest_task(void *arg)
     set_status(ST_BATTERY, "%d%%", bat.percent);
 
     /* ---- Wi-Fi ---- */
+    dbg_heap("start");
     esp_err_t err = ring_wifi_init();
     set_status(ST_WIFI, "%s", err == ESP_OK ? "init ok" : "init fail");
     if (err == ESP_OK) {
@@ -217,6 +237,7 @@ static void selftest_task(void *arg)
     }
 
     /* ---- BLE ---- */
+    dbg_heap("wifi");
     err = ring_bt_init(&bt_cfg);
     set_status(ST_BT, "%s", err == ESP_OK ? "init ok" : "init fail");
     if (err == ESP_OK) {
@@ -226,15 +247,18 @@ static void selftest_task(void *arg)
         ESP_LOGI(TAG, "bt: %s", bt_state_name(ring_bt_state()));
     }
 
+    dbg_heap("bt");
     /* ---- voice modules: init then stop ---- */
     err = ring_net_init(NULL, NULL, NULL);
     set_status(ST_NET, "%s", err == ESP_OK ? "init ok" : "init fail");
     ESP_LOGI(TAG, "ring_net_init: %s", esp_err_to_name(err));
 
+    dbg_heap("net_init");
     err = ring_ws_init(NULL, NULL, NULL, NULL);
     set_status(ST_WS, "%s", err == ESP_OK ? "init ok" : "init fail");
     ESP_LOGI(TAG, "ring_ws_init: %s", esp_err_to_name(err));
 
+    dbg_heap("ws_init");
     err = ring_chat_init(&chat_cfg, "sk-test");
     set_status(ST_CHAT, "%s", err == ESP_OK ? "init ok" : "init fail");
     ESP_LOGI(TAG, "ring_chat_init: %s", esp_err_to_name(err));
@@ -246,7 +270,24 @@ static void selftest_task(void *arg)
     set_status(ST_NET, "stopped");
     set_status(ST_WS, "stopped");
 
+    /* Switch the radios off again. Wi-Fi holds tens of KB of internal RAM in
+     * RX/TX buffers, and the QSPI flush needs ~29 KB of internal DMA-capable
+     * RAM per 40-row strip. Leaving Wi-Fi + BLE up makes every repaint fail
+     * with `spicommon_dma_setup_priv_buffer: Failed to allocate priv TX
+     * buffer` / `Draw bitmap failed: ESP_ERR_NO_MEM` — the panel freezes on
+     * the last frame that did make it out. The probe is done, so release it. */
+    dbg_heap("chat_init");
+    ring_bt_stop_advertising();
+    ring_wifi_stop();
+    set_status(ST_BT, "%s", bt_state_name(ring_bt_state()));
+    set_status(ST_WIFI, "stopped");
+
+    dbg_heap("stops");
     ESP_LOGI(TAG, "selftest complete");
+
+    /* A FreeRTOS task must never fall off the end of its function: without
+     * this the kernel aborts ("should not return") and the board reboots. */
+    vTaskDelete(NULL);
 }
 
 /* --------------------------------------------------------------- app */
