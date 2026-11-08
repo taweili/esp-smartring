@@ -20,13 +20,21 @@ extern "C" {
 /** Mount point ("/sdcard"). */
 #define RING_SD_MOUNT "/sdcard"
 
-/** TRUE when a card is mounted. */
+/**
+ * @brief TRUE when a card is mounted.
+ *
+ * @return true when mounted (and therefore listable).
+ */
 bool ring_sd_is_mounted(void);
 
 /** Unmount; safe to call when not mounted. */
 void ring_sd_deinit(void);
 
-/** Card handle for sdmmc_card_print_info debugging; NULL when unmounted. */
+/**
+ * @brief Card handle for sdmmc_card_print_info debugging.
+ *
+ * @return the card handle, or NULL when unmounted.
+ */
 const sdmmc_card_t *ring_sd_card(void);
 
 /**

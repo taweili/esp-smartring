@@ -1,7 +1,7 @@
 # ringkit refactor — implementation plan
 
-**Status:** phases 1–3 complete (code + build verification).
-Phase 4 not started.
+**Status:** phases 1–4 complete (code + build verification).
+No device boot check (ring not connected).
 **Companion to:** the `components/ringkit` review (findings recorded in the
 progress log below) and `notes/architecture-rationale.md`.
 **Goal:** extract the shared infrastructure that is currently copy-pasted
@@ -156,14 +156,17 @@ added to `components/ringkit/CMakeLists.txt` `SRCS`.
 
 ## 4. Phase 4 — tests + docs
 
-- [ ] Host-side unit tests: `ring_json` (escapes, unicode, truncation),
+- [x] Host-side unit tests: `ring_json` (escapes, unicode, truncation),
       `ring_resample` (impulse/step), `ring_byte_ring` (overwrite/alignment),
-      `build_messages` (escaping, cap).
-- [ ] `examples/12_ringkit_selftest` — board/display/touch/audio/IMU/SD/Wi-Fi/
-      BT init + voice `init`/`stop`.
-- [ ] `components/ringkit/README.md` — module map, task/thread model, state
+      `build_messages` (escaping, cap). (`tests/` — Makefile + ESP-IDF/FreeRTOS
+      stubs; `make check` runs all four suites.)
+- [x] `examples/12_ringkit_selftest` — board/display/touch/audio/IMU/SD/Wi-Fi/
+      BT init + voice `init`/`stop`. (Runs the sequence in its own task; a
+      5 Hz timer renders the status under the LVGL lock.)
+- [x] `components/ringkit/README.md` — module map, task/thread model, state
       machines, API contract, voice-transport decision guide.
-- [ ] Doxygen pass on the public headers.
+- [x] Doxygen pass on the public headers. (Every public function has
+      `@brief`, `@param` per argument, `@return` for non-void.)
 
 ---
 
@@ -326,6 +329,61 @@ already public transitively via `smartring_plus`).
   `ring_bt*` objects are absent; image size is unchanged (the linker GC
   already dropped them).
 
+### 2026-11-08 — phase 4 complete: tests + docs
+
+**Host tests** (`tests/`): a Makefile harness compiles the real ringkit
+sources against minimal ESP-IDF/FreeRTOS stubs and runs on the host — no
+hardware, no idf.py. `make check` runs four suites:
+- `test_ring_json` (83 checks): escapes, `\uXXXX`, surrogate pairs, truncation,
+  int/bool, `type_is`, append overflow, append_string escaping.
+- `test_ring_resample` (1297 checks): coefficient DC gain, decim/interp DC
+  steady state, impulse response shape, streaming-chunk equivalence, NULL
+  guards.
+- `test_ring_byte_ring` (37 checks): push/pop, partial reads, newest-wins
+  overflow, even-drop 16-bit alignment, reset, NULL guards.
+- `test_ring_chat_messages` (46 checks): empty/system-only output, message
+  order, escaping, JSON buffer cap, history storage cap, `max_history_turns`
+  window. `build_messages()` is static, so the test includes `ring_llm.c` and
+  renames the symbol (white-box); the real `ring_chat.c` is linked for
+  `ring_chat_s` and the history API.
+
+**Bug found and fixed:** `ring_chat_init()` allocated the history arrays with
+`cap = max_history_turns`, but `hist.count` counts *messages* (user/assistant
+are interleaved), so `max_history_turns = 10` (example 06) stored only 5 turns
+and `ring_chat_add_assistant()` returned `ESP_ERR_NO_MEM` on the 6th turn. The
+storage is now the compile-time worst case (`RING_CHAT_MAX_HISTORY_TURNS * 2`)
+and `build_messages()` windows to `max_history_turns` — which is what the
+original comment already claimed. Covered by `test_history_storage_cap` and
+`test_history_window`.
+
+**`examples/12_ringkit_selftest`:** a diagnostic app that probes
+display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the
+three voice modules (`ring_net`, `ring_ws`, `ring_chat`). The sequence runs
+in its own task; a 5 Hz timer copies the status into labels under the LVGL
+lock. No network call (Wi-Fi association needs credentials/AP; a voice turn
+needs a human).
+
+**`components/ringkit/README.md`:** module map (board wrappers,
+connectivity, voice, shared infrastructure), board bring-up order, the
+task/thread model (which tasks exist, which may take the LVGL lock), the five
+state machines, the API contract, and a voice-transport decision guide
+(`ring_chat` vs `ring_ws` vs `ring_net`).
+
+**Doxygen pass:** every public function now has `@brief`, `@param` for each
+argument, and `@return` for non-void. Added the missing tags to
+`ring_audio`, `ring_board`, `ring_display`, `ring_battery`, `ring_touch`,
+`ring_time`, `ring_nvs`, `ring_ca`, `ring_imu`, `ring_sd`, `ring_ui` and
+`ring_rand`.
+
+**Verification:**
+- `cd tests && make check` — all four suites pass (0 failures).
+- Clean `-B` builds of `00`, `06`, `07`, `08`, `09`, `10`, `12` — all pass,
+  zero compiler warnings.
+- Vendored overrides still win in every build.
+- **Not done:** device boot log (ring not connected — no `/dev/ttyACM0`).
+  The `ring_chat` change is a heap-allocation size only; the header changes
+  are comments. The selftest app's UI/voice paths need a visual/device check.
+
 ---
 
 ## 6. Files touched
@@ -345,6 +403,11 @@ already public transitively via `smartring_plus`).
 | `components/ringkit/include/ringkit/ringkit.h` | include new headers |
 | `components/ringkit/include/ringkit/ring_ui.h` | fix `RING_UI_LOCKED` |
 | `components/ringkit/include/ringkit/ring_{net,ws,chat,bt,wifi}.h` | contract fixes |
+| `tests/` | new (phase 4: host unit tests + stubs + Makefile) |
+| `examples/12_ringkit_selftest/` | new (phase 4: subsystem diagnostic app) |
+| `components/ringkit/README.md` | new (phase 4: module/thread/state/API/transport guide) |
+| `components/ringkit/src/ring_chat.c` | phase 4: fix history storage cap |
+| `components/ringkit/include/ringkit/ring_{audio,board,display,battery,touch,time,nvs,ca,imu,sd,ui,rand}.h` | phase 4: Doxygen pass |
 
 ---
 

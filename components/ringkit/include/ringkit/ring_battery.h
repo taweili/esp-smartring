@@ -13,16 +13,40 @@
 extern "C" {
 #endif
 
-/** Which power path was detected. */
+/**
+ * @brief Which power path was detected.
+ *
+ * @return RING_PMIC_V2_AXP2101 or RING_PMIC_V1_ADC.
+ */
 ring_pmic_t ring_battery_pmic_type(void);
 
-/** Latest snapshot (voltage / percent / charging). */
+/**
+ * @brief Latest snapshot (voltage / percent / charging).
+ *
+ * @param out  Destination snapshot; thread safe.
+ */
 void ring_battery_get(ring_battery_data_t *out);
 
-/** Convenience queries. */
+/**
+ * @brief Battery voltage.
+ *
+ * @return voltage in volts.
+ */
 float ring_battery_voltage(void);
-int   ring_battery_percent(void);
-bool  ring_battery_is_charging(void);
+
+/**
+ * @brief Battery state of charge.
+ *
+ * @return 0..100.
+ */
+int ring_battery_percent(void);
+
+/**
+ * @brief Charging state.
+ *
+ * @return true when charging or externally powered.
+ */
+bool ring_battery_is_charging(void);
 
 #ifdef __cplusplus
 }

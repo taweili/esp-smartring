@@ -39,13 +39,22 @@ typedef struct {
  * card-detect pin; IMU may be absent) and only reported in @p out.
  *
  * @param out  optional summary, filled even on partial success
+ * @return ESP_OK when the mandatory stages succeeded.
  */
 esp_err_t ring_board_init(ring_board_t *out);
 
-/** Log one line per subsystem: OK / FAILED. */
+/**
+ * @brief Log one line per subsystem: OK / FAILED.
+ *
+ * @param b  summary returned by ring_board_init(); NULL is a no-op.
+ */
 void ring_board_log_summary(const ring_board_t *b);
 
-/** Shared I2C bus (SDA=8/SCL=9/400kHz). NULL before ring_board_init(). */
+/**
+ * @brief Shared I2C bus (SDA=8/SCL=9/400kHz).
+ *
+ * @return the bus handle, or NULL before ring_board_init().
+ */
 i2c_master_bus_handle_t ring_board_i2c_bus(void);
 
 #ifdef __cplusplus

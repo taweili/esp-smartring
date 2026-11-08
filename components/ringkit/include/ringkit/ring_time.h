@@ -22,6 +22,7 @@ extern "C" {
  * ESP_OK once the clock is valid; a retry does not re-initialise SNTP.
  *
  * @param timeout_ms  Max time to wait for the first sync (0 = poll only).
+ * @return ESP_OK once the clock is valid, ESP_ERR_TIMEOUT otherwise.
  */
 esp_err_t ring_time_sync(uint32_t timeout_ms);
 

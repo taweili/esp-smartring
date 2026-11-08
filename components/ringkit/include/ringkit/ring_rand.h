@@ -19,16 +19,33 @@
 extern "C" {
 #endif
 
-/** Reset the sequence. Seed 0 is remapped (xorshift must not run on zero). */
+/**
+ * @brief Reset the sequence. Seed 0 is remapped (xorshift must not run on zero).
+ *
+ * @param seed  Seed value.
+ */
 void ring_rand_seed(uint32_t seed);
 
-/** Next 32-bit value. Auto-seeds on first use if ring_rand_seed() was never called. */
+/**
+ * @brief Next 32-bit value. Auto-seeds on first use if ring_rand_seed() was never called.
+ *
+ * @return the next pseudo-random value.
+ */
 uint32_t ring_rand_u32(void);
 
-/** Uniform-ish value in [0, n). Returns 0 when n == 0. */
+/**
+ * @brief Uniform-ish value in [0, n).
+ *
+ * @param n  Exclusive upper bound.
+ * @return a value in [0, n), or 0 when n == 0.
+ */
 uint32_t ring_rand_below(uint32_t n);
 
-/** Fair coin. */
+/**
+ * @brief Fair coin.
+ *
+ * @return true or false.
+ */
 bool ring_rand_bool(void);
 
 #ifdef __cplusplus

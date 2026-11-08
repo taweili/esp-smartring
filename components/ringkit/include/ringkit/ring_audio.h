@@ -25,6 +25,11 @@ i2s_chan_handle_t ring_audio_rx(void);
  * @brief Blocking PCM record; returns once @p len bytes are filled.
  *
  * Format is fixed: 48 kHz, 16-bit, stereo interleaved (~192 kB/s).
+ *
+ * @param buf         Destination buffer.
+ * @param len         Bytes to read.
+ * @param timeout_ms  Read timeout in milliseconds.
+ * @return ESP_OK on success, ESP_ERR_TIMEOUT if the buffer was not filled.
  */
 esp_err_t ring_audio_read(void *buf, size_t len, uint32_t timeout_ms);
 
@@ -34,10 +39,19 @@ esp_err_t ring_audio_read(void *buf, size_t len, uint32_t timeout_ms);
  * Does NOT manage mute. The caller owns the sequence, otherwise the speaker
  * pops:
  *   ring_audio_set_mute(false)  ->  ring_audio_write(...)  ->  ring_audio_set_mute(true)
+ *
+ * @param buf   PCM buffer (48 kHz / 16-bit / stereo interleaved).
+ * @param len   Bytes to write.
+ * @return ESP_OK on success.
  */
 esp_err_t ring_audio_write(const void *buf, size_t len);
 
-/** Output mute switch (see the playback sequence above). */
+/**
+ * @brief Output mute switch (see the playback sequence above).
+ *
+ * @param mute  true to mute the speaker.
+ * @return ESP_OK on success.
+ */
 esp_err_t ring_audio_set_mute(bool mute);
 
 /*
@@ -48,11 +62,23 @@ esp_err_t ring_audio_set_mute(bool mute);
  * examples previously carried near-identical copies.
  */
 
-/** Fold 48 kHz / 16-bit stereo interleaved -> mono (average L/R). */
+/**
+ * @brief Fold 48 kHz / 16-bit stereo interleaved -> mono (average L/R).
+ *
+ * @param stereo  Interleaved stereo frames.
+ * @param mono    Destination mono frames.
+ * @param frames  Number of frames.
+ */
 void ring_audio_stereo_to_mono(const int16_t *stereo, int16_t *mono,
                                size_t frames);
 
-/** Expand mono -> 48 kHz / 16-bit stereo interleaved. */
+/**
+ * @brief Expand mono -> 48 kHz / 16-bit stereo interleaved.
+ *
+ * @param mono    Mono frames.
+ * @param stereo  Destination interleaved stereo frames.
+ * @param frames  Number of frames.
+ */
 void ring_audio_mono_to_stereo(const int16_t *mono, int16_t *stereo,
                                size_t frames);
 

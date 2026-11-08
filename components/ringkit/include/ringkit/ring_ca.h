@@ -14,10 +14,18 @@
 extern "C" {
 #endif
 
-/** Null-terminated PEM chain. Valid for the lifetime of the firmware. */
+/**
+ * @brief Null-terminated PEM chain. Valid for the lifetime of the firmware.
+ *
+ * @return the embedded PEM chain.
+ */
 const char *ring_ca_pem(void);
 
-/** Bytes in the PEM chain (excluding any terminator). */
+/**
+ * @brief Bytes in the PEM chain (excluding any terminator).
+ *
+ * @return length in bytes.
+ */
 size_t ring_ca_pem_len(void);
 
 #ifdef __cplusplus

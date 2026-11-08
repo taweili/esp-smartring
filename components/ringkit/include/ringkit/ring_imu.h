@@ -12,7 +12,11 @@
 extern "C" {
 #endif
 
-/** Latest filtered acceleration in board axes, m/s² (thread safe). */
+/**
+ * @brief Latest filtered acceleration in board axes, m/s² (thread safe).
+ *
+ * @param ax, ay, az  Destination components.
+ */
 void ring_imu_accel(float *ax, float *ay, float *az);
 
 /**
@@ -23,10 +27,18 @@ void ring_imu_accel(float *ax, float *ay, float *az);
  */
 void ring_imu_tilt(float *gx, float *gy);
 
-/** Latest filtered gyro rate, board axes, deg/s (thread safe). */
+/**
+ * @brief Latest filtered gyro rate, board axes, deg/s (thread safe).
+ *
+ * @param gx, gy, gz  Destination components.
+ */
 void ring_imu_gyro(float *gx, float *gy, float *gz);
 
-/** Latest die temperature, deg C (raw/256, driver convention; thread safe). */
+/**
+ * @brief Latest die temperature, deg C (raw/256, driver convention; thread safe).
+ *
+ * @param temperature  Destination value.
+ */
 void ring_imu_temp(float *temperature);
 
 /* ---- level calibration (optional; reference implementation) ---- */
@@ -34,7 +46,11 @@ void ring_imu_temp(float *temperature);
 /** (Re)start calibration: resets the window and the 30 s deadline. */
 void ring_imu_calib_start(void);
 
-/** Poll state — typical UI cadence is every 100..200 ms. */
+/**
+ * @brief Poll state — typical UI cadence is every 100..200 ms.
+ *
+ * @return the current calibration state.
+ */
 ring_imu_calib_t ring_imu_calib_poll(void);
 
 /**

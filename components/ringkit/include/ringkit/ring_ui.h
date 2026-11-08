@@ -18,10 +18,19 @@
 extern "C" {
 #endif
 
-/** Take the LVGL lock (-1 == wait forever). */
+/**
+ * @brief Take the LVGL lock.
+ *
+ * @param timeout_ms  -1 to wait forever, or a timeout in milliseconds.
+ * @return ESP_OK when the lock was taken.
+ */
 esp_err_t ring_ui_lock(int32_t timeout_ms);
 
-/** Release the LVGL lock. */
+/**
+ * @brief Release the LVGL lock.
+ *
+ * Prefer RING_UI_LOCKED, which unlocks on every exit path.
+ */
 void ring_ui_unlock(void);
 
 /* Lock handle with a cleanup handler. The cleanup runs on every exit path
@@ -69,13 +78,19 @@ static inline void ring_ui_unlock_cleanup(ring_ui_lock_t *l)
  * @brief Active screen, cleared to the theme background.
  *
  * Caller must hold the lock.
+ *
+ * @return the active screen object.
  */
 lv_obj_t *ring_ui_screen(void);
 
 /**
  * @brief Create a label on @p parent. Caller must hold the lock.
  *
- * @param color  use lv_color_white() etc; pass RING_COLOR_BG to start hidden
+ * @param parent  Object to attach the label to.
+ * @param text    Initial text.
+ * @param font    LVGL font.
+ * @param color   use lv_color_white() etc; pass RING_COLOR_BG to start hidden.
+ * @return the new label.
  */
 lv_obj_t *ring_ui_add_label(lv_obj_t *parent, const char *text,
                             const lv_font_t *font, lv_color_t color);
@@ -86,6 +101,10 @@ lv_obj_t *ring_ui_add_label(lv_obj_t *parent, const char *text,
  * LVGL's area centre is x + (w - 1) / 2, so naive positioning leaves every
  * glyph half off-centre. This also forces a layout pass first, otherwise
  * lv_obj_get_width()/height() still return 0 for freshly created labels.
+ *
+ * @param obj  Object to position.
+ * @param x    Target x coordinate.
+ * @param y    Target y coordinate.
  */
 void ring_ui_place_centered(lv_obj_t *obj, int x, int y);
 

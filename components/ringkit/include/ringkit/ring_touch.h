@@ -15,6 +15,8 @@ extern "C" {
  * Normal UI code does not need this: the adapter already wired the touch
  * panel to LVGL, so use LV_EVENT_CLICKED / LV_EVENT_GESTURE on objects.
  * This is for reading raw coordinates.
+ *
+ * @return the touch handle, or NULL before ring_board_init().
  */
 esp_lcd_touch_handle_t ring_touch_handle(void);
 

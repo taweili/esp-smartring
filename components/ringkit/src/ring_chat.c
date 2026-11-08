@@ -128,12 +128,11 @@ esp_err_t ring_chat_init(const ring_chat_cfg_t *cfg, const char *api_key)
     ring_chat_s.cfg = *cfg;
     snprintf(ring_chat_s.api_key, sizeof(ring_chat_s.api_key), "%s", api_key);
 
-    /* Allocate history arrays (worst-case: MAX_HISTORY_TURNS pairs). */
-    int max_pairs = cfg->max_history_turns > 0 ? cfg->max_history_turns
-                   : RING_CHAT_MAX_HISTORY_TURNS;
-    ring_chat_s.hist.cap = max_pairs;
-    ring_chat_s.hist.user_msgs = calloc(max_pairs, sizeof(char *));
-    ring_chat_s.hist.assistant_msgs = calloc(max_pairs, sizeof(char *));
+    /* Allocate history arrays for the compile-time worst case (MAX_HISTORY_TURNS
+     * pairs); build_messages() windows to cfg->max_history_turns. */
+    ring_chat_s.hist.cap = RING_CHAT_MAX_HISTORY_TURNS * 2;
+    ring_chat_s.hist.user_msgs = calloc(ring_chat_s.hist.cap, sizeof(char *));
+    ring_chat_s.hist.assistant_msgs = calloc(ring_chat_s.hist.cap, sizeof(char *));
     if (!ring_chat_s.hist.user_msgs || !ring_chat_s.hist.assistant_msgs) {
         free(ring_chat_s.hist.user_msgs);
         free(ring_chat_s.hist.assistant_msgs);

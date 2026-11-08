@@ -1,0 +1,5 @@
+# Host test binaries (built by `make`).
+/test_ring_json
+/test_ring_resample
+/test_ring_byte_ring
+/test_ring_chat_messages
