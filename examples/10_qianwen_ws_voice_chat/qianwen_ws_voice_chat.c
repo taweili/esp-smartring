@@ -6,28 +6,36 @@
  * (no Opus, no DTLS, no SRTP), 16 kHz in / 24 kHz out, resampled to/from
  * the ring's fixed 48 kHz path.
  *
- * By default this app runs in **push-to-talk** mode (a round button on screen —
- * hold to talk, release to hear the reply). Tapping (or server VAD in hands-free
- * mode) triggers a barge-in to interrupt the model's reply.
+ * Default mode is **push-to-talk** (a round button on screen — hold to talk,
+ * release to hear the reply). A long-press on the title opens a settings
+ * panel for turn mode / voice / speech rate / language; the settings persist
+ * in NVS and a change that needs a reconnect (mode, voice) restarts the
+ * session. A tap while the model is replying is a barge-in.
+ *
+ * The screen shows a rolling transcript (user in orange, model in white), a
+ * wire-stats line (bytes/s, turn count, mode, battery) refreshed once a
+ * second, and a level bar during capture/playback.
  *
  * Audio: ring_audio is 48 kHz / 16-bit / stereo interleaved; ring_ws is
  * 48 kHz / 16-bit / mono. This file only does the stereo <-> mono fold.
  *
  * Task structure:
- *   qw-connect  8192 B internal  — Wi-Fi + SNTP + WS session
+ *   qw-connect  8192 B internal  — Wi-Fi + SNTP + WS session + reconnects
  *   qw-talk     8192 B internal  — PTT worker (sequential capture + play)
- *                                  or hands-free tasks
+ *   LVGL task   stats timer      — 1 Hz wire/battery readout
  */
 #include "ring_example.h"
 
 #include "ringkit/ringkit.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -58,6 +66,10 @@
 #define TALK_GRACE_MS    500
 #define TALK_MAX_MS      15000
 
+/* Level-bar redraw cadence. The bar does not need 50 fps, and every call
+ * takes the LVGL lock; 10 Hz is plenty. */
+#define BAR_UPDATE_MS    100
+
 /* ------------------------------------------------------------- tasks */
 
 #define CONNECT_STACK    8192
@@ -66,22 +78,57 @@
 
 /* ------------------------------------------------------------- UI */
 
-#define TITLE_Y   34
+#define TITLE_Y   30
 #define BTN_CX    180
 #define BTN_CY    160
 #define BTN_SZ    148
-#define STATUS_Y  268
-#define BAR_W    220
-#define BAR_H    6
-#define BAR_Y    298
-#define HINT_Y   328
-#define NETINFO_Y 348
+#define STATUS_Y  250
+#define USER_Y    272
+#define MODEL_Y   292
+#define STATS_Y   308
+#define BAR_W     210
+#define BAR_H     6
+#define BAR_Y     322
+/* The bottom of the round panel is only ~129 px wide; the netinfo line is
+ * ~260 px, so it lives under the title (~281 px wide) instead. */
+#define NETINFO_Y 64
+
+/* Settings panel rows. */
+#define SET_ROW_Y0   100
+#define SET_ROW_DY   40
+#define SET_BTN_W    300
+#define SET_BACK_Y   290
 
 #define COL_WAIT   RING_COLOR_GREEN
 #define COL_CONN   lv_color_hex(0x3A4048)
 #define COL_DIM    lv_color_hex(0x9E9E9E)
 #define COL_TALK   lv_color_hex(0xFF1744)
 #define COL_WS     lv_color_hex(0x448AFF)
+#define COL_USER   lv_color_hex(0xFF9800)
+#define COL_PANEL  lv_color_hex(0x14181D)
+#define COL_ROW    lv_color_hex(0x242A31)
+
+/* ------------------------------------------------------------- settings
+ *
+ * Session settings that survive a reboot via NVS. The Qianwen API only
+ * accepts turn_detection / voice while IDLE, so changing them reconnects the
+ * session (see plan-ws-voice-chat.md C1). */
+
+static const char *const kTurnModes[] = { "ptt", "server_vad", "smart_turn_v2" };
+static const char *const kVoices[] = {
+    "longanqian_v3.1", "longanhuan_v3.1", "longanlingxin_v3.1",
+    "longanfengyue_v3.1", "xunanchuan_v3.1"
+};
+static const float kRates[] = { 0.5f, 1.0f, 1.5f, 2.0f };
+static const char *const kLangs[] = { "auto", "zh", "en" };
+
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+
+static int s_cfg_turn;
+static int s_cfg_voice;
+static int s_cfg_rate = 1;   /* index into kRates: 1.0 = normal speed */
+static int s_cfg_lang;
+static volatile bool s_cfg_dirty;
 
 /* ------------------------------------------------------------- state */
 
@@ -89,12 +136,23 @@ static lv_obj_t *s_btn;
 static lv_obj_t *s_btn_label;
 static lv_obj_t *s_status;
 static lv_obj_t *s_bar;
-static lv_obj_t *s_hint;
+static lv_obj_t *s_user;
+static lv_obj_t *s_model;
+static lv_obj_t *s_stats;
 static lv_obj_t *s_netinfo;
+static lv_obj_t *s_settings;
+static lv_obj_t *s_set_rows[4];
 
 static volatile bool s_stop = false;
 static volatile bool s_worker_busy = false;
 static bool s_ui_ready = false;
+static bool s_settings_visible = false;
+
+/* The Qianwen server closes a session that has not generated a response for
+ * 180 s. A session.update every 60 s keeps it alive without producing a
+ * reply (verified with scripts/test_qianwen_ws_keepalive.py). */
+#define KEEPALIVE_MS 60000
+static TickType_t s_last_keepalive_tick;
 
 static uint8_t  s_stereo[FRAME_STEREO];
 static int16_t  s_mono[FRAME_SAMPLES];
@@ -107,6 +165,10 @@ static char     s_wifi_ip[16];
 static char     s_ws_state[20];
 
 static ring_ws_session_cfg_t s_ws_cfg;
+
+/* s_ws_state / s_wifi_* are written from the event task and the connect
+ * task and read by the UI; guard them with a mutex. */
+static SemaphoreHandle_t s_state_mtx;
 
 /* ------------------------------------------------------------- UI helpers */
 
@@ -140,10 +202,24 @@ static void ui_bar(uint8_t pct, lv_color_t color)
     }
 }
 
-static void ui_hint(const char *text)
+static void ui_user(const char *text)
 {
     RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_hint, text);
+        lv_label_set_text(s_user, text);
+    }
+}
+
+static void ui_model(const char *text)
+{
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text(s_model, text);
+    }
+}
+
+static void ui_stats(const char *text)
+{
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text(s_stats, text);
     }
 }
 
@@ -155,10 +231,30 @@ static void ui_netinfo(const char *text, lv_color_t color)
     }
 }
 
-/* Update the bottom status bar with combined Wi-Fi + WebSocket state. */
+static void clear_transcript(void)
+{
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text(s_user, "");
+        lv_label_set_text(s_model, "");
+    }
+}
+
+static void set_ws_state(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    xSemaphoreTake(s_state_mtx, portMAX_DELAY);
+    vsnprintf(s_ws_state, sizeof(s_ws_state), fmt, ap);
+    xSemaphoreGive(s_state_mtx);
+    va_end(ap);
+}
+
+/* Update the status line with combined Wi-Fi + WebSocket state. Snapshot the
+ * shared strings under the lock — an unsynchronised snprintf can tear. */
 static void ui_update_netinfo(lv_color_t color)
 {
     char line[96];
+    xSemaphoreTake(s_state_mtx, portMAX_DELAY);
     if (s_wifi_ip[0]) {
         if (s_ws_state[0]) {
             snprintf(line, sizeof(line), "%s · %s  │ %s",
@@ -170,6 +266,7 @@ static void ui_update_netinfo(lv_color_t color)
     } else {
         snprintf(line, sizeof(line), "%s", s_ws_state[0] ? s_ws_state : "");
     }
+    xSemaphoreGive(s_state_mtx);
     ui_netinfo(line, color);
 }
 
@@ -189,7 +286,194 @@ static void ui_idle(const char *status)
         lv_obj_set_style_bg_color(s_bar, COL_WAIT, LV_PART_INDICATOR);
         lv_label_set_text(s_status, status ? status : "press & hold to talk");
         lv_obj_set_style_text_color(s_status, COL_DIM, LV_PART_MAIN);
+        lv_label_set_text(s_model, "hold = talk · release = reply");
     }
+}
+
+/* ------------------------------------------------------------- settings */
+
+static void settings_load(void)
+{
+    char buf[32];
+
+    if (ring_nvs_get_str("qianwen", "turn_mode", buf, sizeof(buf)) == ESP_OK) {
+        for (int i = 0; i < (int)ARRAY_SIZE(kTurnModes); i++) {
+            if (strcmp(buf, kTurnModes[i]) == 0) {
+                s_cfg_turn = i;
+                break;
+            }
+        }
+    }
+    if (ring_nvs_get_str("qianwen", "voice", buf, sizeof(buf)) == ESP_OK) {
+        for (int i = 0; i < (int)ARRAY_SIZE(kVoices); i++) {
+            if (strcmp(buf, kVoices[i]) == 0) {
+                s_cfg_voice = i;
+                break;
+            }
+        }
+    }
+    if (ring_nvs_get_str("qianwen", "rate", buf, sizeof(buf)) == ESP_OK) {
+        for (int i = 0; i < (int)ARRAY_SIZE(kRates); i++) {
+            char tmp[8];
+            snprintf(tmp, sizeof(tmp), "%.1f", kRates[i]);
+            if (strcmp(buf, tmp) == 0) {
+                s_cfg_rate = i;
+                break;
+            }
+        }
+    }
+    if (ring_nvs_get_str("qianwen", "lang", buf, sizeof(buf)) == ESP_OK) {
+        for (int i = 0; i < (int)ARRAY_SIZE(kLangs); i++) {
+            if (strcmp(buf, kLangs[i]) == 0) {
+                s_cfg_lang = i;
+                break;
+            }
+        }
+    }
+}
+
+static void settings_save(void)
+{
+    char tmp[8];
+    ring_nvs_set_str("qianwen", "turn_mode", kTurnModes[s_cfg_turn]);
+    ring_nvs_set_str("qianwen", "voice", kVoices[s_cfg_voice]);
+    snprintf(tmp, sizeof(tmp), "%.1f", kRates[s_cfg_rate]);
+    ring_nvs_set_str("qianwen", "rate", tmp);
+    ring_nvs_set_str("qianwen", "lang", kLangs[s_cfg_lang]);
+}
+
+/* Fill s_ws_cfg from the selected settings. Called before every
+ * ring_ws_start(); a mode/voice change forces a reconnect. */
+static void settings_apply(void)
+{
+    memset(&s_ws_cfg, 0, sizeof(s_ws_cfg));
+    s_ws_cfg.voice = kVoices[s_cfg_voice];
+    s_ws_cfg.turn_detection = (strcmp(kTurnModes[s_cfg_turn], "ptt") == 0)
+                                  ? NULL : kTurnModes[s_cfg_turn];
+    s_ws_cfg.speech_rate = kRates[s_cfg_rate];
+    s_ws_cfg.max_history_turns = 20;
+    if (strcmp(kLangs[s_cfg_lang], "auto") != 0) {
+        s_ws_cfg.input_language = kLangs[s_cfg_lang];
+        s_ws_cfg.output_language = kLangs[s_cfg_lang];
+    }
+}
+
+static void settings_refresh(void)
+{
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text_fmt(s_set_rows[0], "Mode:  %s", kTurnModes[s_cfg_turn]);
+        lv_label_set_text_fmt(s_set_rows[1], "Voice: %s", kVoices[s_cfg_voice]);
+        lv_label_set_text_fmt(s_set_rows[2], "Rate:  %.1f", kRates[s_cfg_rate]);
+        lv_label_set_text_fmt(s_set_rows[3], "Lang:  %s", kLangs[s_cfg_lang]);
+    }
+}
+
+static void settings_cycle(int row)
+{
+    switch (row) {
+    case 0:
+        s_cfg_turn = (s_cfg_turn + 1) % (int)ARRAY_SIZE(kTurnModes);
+        break;
+    case 1:
+        s_cfg_voice = (s_cfg_voice + 1) % (int)ARRAY_SIZE(kVoices);
+        break;
+    case 2:
+        s_cfg_rate = (s_cfg_rate + 1) % (int)ARRAY_SIZE(kRates);
+        break;
+    case 3:
+        s_cfg_lang = (s_cfg_lang + 1) % (int)ARRAY_SIZE(kLangs);
+        break;
+    default:
+        return;
+    }
+    settings_save();
+    s_cfg_dirty = true;
+    settings_refresh();
+}
+
+static void settings_row_cb(lv_event_t *e)
+{
+    int row = (int)(intptr_t)lv_event_get_user_data(e);
+    settings_cycle(row);
+}
+
+static void settings_hide(void)
+{
+    s_settings_visible = false;
+    RING_UI_LOCKED(-1) {
+        lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void settings_back_cb(lv_event_t *e)
+{
+    (void)e;
+    settings_hide();
+}
+
+static void settings_show(void)
+{
+    s_settings_visible = true;
+    settings_refresh();
+    RING_UI_LOCKED(-1) {
+        lv_obj_clear_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void title_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_ui_ready) {
+        return;
+    }
+    if (s_settings_visible) {
+        settings_hide();
+    } else {
+        settings_show();
+    }
+}
+
+/* ------------------------------------------------------------- stats timer */
+
+static uint32_t s_last_up;
+static uint32_t s_last_down;
+static uint32_t s_last_ms;
+static bool s_stats_ready;
+
+static void stats_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_ui_ready) {
+        return;
+    }
+    ring_ws_stats_t st;
+    if (ring_ws_get_stats(&st) != ESP_OK) {
+        return;
+    }
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (!s_stats_ready) {
+        s_last_up = st.bytes_up;
+        s_last_down = st.bytes_down;
+        s_last_ms = now;
+        s_stats_ready = true;
+        return;
+    }
+    uint32_t dt = now - s_last_ms;
+    if (dt < 1000) {
+        return;
+    }
+    float up = (float)(st.bytes_up - s_last_up) * 1000.0f / (float)dt;
+    float down = (float)(st.bytes_down - s_last_down) * 1000.0f / (float)dt;
+    s_last_up = st.bytes_up;
+    s_last_down = st.bytes_down;
+    s_last_ms = now;
+
+    char line[80];
+    snprintf(line, sizeof(line), "↑%.0f ↓%.0f B/s · turn %u · %s · %d%%",
+             up, down, (unsigned)st.turns,
+             st.turn_mode ? st.turn_mode : "ptt",
+             ring_battery_percent());
+    ui_stats(line);
 }
 
 /* ------------------------------------------------------------- ring_ws callbacks */
@@ -202,8 +486,7 @@ static void ws_state_cb(ring_ws_state_t st, void *user)
     }
     switch (st) {
     case RING_WS_READY: {
-        snprintf(s_ws_state, sizeof(s_ws_state), "WS %s",
-                 ring_ws_turn_mode() ? ring_ws_turn_mode() : "ptt");
+        set_ws_state("WS %s", ring_ws_turn_mode() ? ring_ws_turn_mode() : "ptt");
         ui_update_netinfo(COL_WAIT);
         if (!s_worker_busy) {
             char line[64];
@@ -214,37 +497,50 @@ static void ws_state_cb(ring_ws_state_t st, void *user)
         break;
     }
     case RING_WS_LISTENING:
-        snprintf(s_ws_state, sizeof(s_ws_state), "listening");
+        set_ws_state("listening");
         ui_update_netinfo(COL_TALK);
         ui_button("TALK", &lv_font_montserrat_48, COL_TALK);
         ui_status("listening…", COL_TALK);
         ui_bar(0, COL_TALK);
         break;
     case RING_WS_SPEAKING:
-        snprintf(s_ws_state, sizeof(s_ws_state), "reply…");
+        set_ws_state("reply…");
         ui_update_netinfo(COL_WS);
         ui_button("REPLY", &lv_font_montserrat_48, COL_WS);
-        ui_status("replying…", COL_WS);
+        /* The half-duplex gate mutes the mic while the model talks. */
+        ui_status("replying… · mic off", COL_WS);
         ui_bar(100, COL_WS);
         break;
     case RING_WS_CONNECTING:
-        snprintf(s_ws_state, sizeof(s_ws_state), "WS…");
+        set_ws_state("WS…");
         ui_update_netinfo(COL_DIM);
         ui_button("···", &lv_font_montserrat_48, COL_CONN);
         ui_status("connecting…", COL_DIM);
         ui_bar(0, COL_DIM);
         break;
-    case RING_WS_ERROR:
-        snprintf(s_ws_state, sizeof(s_ws_state), "WS err");
+    case RING_WS_ERROR: {
+        set_ws_state("WS err");
         ui_update_netinfo(COL_TALK);
         if (!s_worker_busy) {
             ui_button("!", &lv_font_montserrat_48, COL_TALK);
-            ui_status("connection lost", COL_TALK);
+            /* Surface the protocol error (type/param) when we have one. */
+            ring_ws_stats_t est;
+            if (ring_ws_get_stats(&est) == ESP_OK &&
+                est.last_error_type && est.last_error_type[0]) {
+                char line[64];
+                snprintf(line, sizeof(line), "error: %s %s",
+                         est.last_error_type,
+                         est.last_error_param ? est.last_error_param : "");
+                ui_status(line, COL_TALK);
+            } else {
+                ui_status("connection lost", COL_TALK);
+            }
         }
         break;
+    }
     case RING_WS_OFF:
     default:
-        s_ws_state[0] = '\0';
+        set_ws_state("");
         break;
     }
 }
@@ -255,11 +551,15 @@ static void ws_text_cb(const char *text, size_t len, bool is_user, void *user)
     if (!s_ui_ready) {
         return;
     }
-    static char line[48];
+    static char line[64];
     size_t n = len < sizeof(line) - 1 ? len : sizeof(line) - 1;
     memcpy(line, text, n);
     line[n] = '\0';
-    ui_hint(line);
+    if (is_user) {
+        ui_user(line);
+    } else {
+        ui_model(line);
+    }
 }
 
 /* ------------------------------------------------------------- level meter */
@@ -285,12 +585,16 @@ static uint8_t level_of(const int16_t *pcm, size_t samples)
 
 static void turn_finish(void)
 {
-    ui_hint("");
+    clear_transcript();
     s_worker_busy = false;
-    char line[64];
-    snprintf(line, sizeof(line), "ready (%s) — hold to talk",
-             ring_ws_turn_mode() ? ring_ws_turn_mode() : "ptt");
-    ui_idle(line);
+    /* Only claim "ready" when the session actually is; a turn that ended
+     * because the socket dropped must not leave the button looking live. */
+    if (ring_ws_state() == RING_WS_READY) {
+        char line[64];
+        snprintf(line, sizeof(line), "ready (%s) — hold to talk",
+                 ring_ws_turn_mode() ? ring_ws_turn_mode() : "ptt");
+        ui_idle(line);
+    }
 }
 
 /* Downlink: play the reply until response.done + buffer drained. */
@@ -310,8 +614,22 @@ static void play_reply(void)
     bool got_audio = false;
     TickType_t last = xTaskGetTickCount();
     TickType_t start = last;
+    TickType_t last_bar = last;
+
+    /* response.done (observed via the turn counter) is the authoritative end
+     * of the reply; the audio grace is only a fallback for a lost done. */
+    uint32_t turns_start = 0;
+    ring_ws_stats_t stats;
+    if (ring_ws_get_stats(&stats) == ESP_OK) {
+        turns_start = stats.turns;
+    }
 
     for (;;) {
+        /* A dropped socket must end the turn now, not after the 15 s cap. */
+        if (ring_ws_state() == RING_WS_ERROR) {
+            ESP_LOGW(TAG, "session lost during reply");
+            break;
+        }
         size_t got = 0;
         if (ring_ws_read_audio(s_reply, FRAME_SAMPLES, &got, 200) == ESP_OK &&
             got > 0) {
@@ -326,12 +644,24 @@ static void play_reply(void)
             if (ring_audio_write(s_play, bytes) != ESP_OK) {
                 ESP_LOGW(TAG, "speaker write failed");
             }
-            ui_bar(level_of(s_reply, got), COL_WS);
-        } else if (got_audio &&
-                   ring_ws_state() == RING_WS_READY &&
-                   !ring_ws_playback_pending() &&
-                   (xTaskGetTickCount() - last) > pdMS_TO_TICKS(TALK_GRACE_MS)) {
-            break;
+            TickType_t now = xTaskGetTickCount();
+            if (now - last_bar >= pdMS_TO_TICKS(BAR_UPDATE_MS)) {
+                last_bar = now;
+                ui_bar(level_of(s_reply, got), COL_WS);
+            }
+        } else {
+            /* Draining after response.done: stop once the ring is empty. */
+            ring_ws_stats_t cur;
+            if (ring_ws_get_stats(&cur) == ESP_OK && cur.turns > turns_start &&
+                ring_ws_state() == RING_WS_READY && !ring_ws_playback_pending()) {
+                break;
+            }
+            if (got_audio &&
+                ring_ws_state() == RING_WS_READY &&
+                !ring_ws_playback_pending() &&
+                (xTaskGetTickCount() - last) > pdMS_TO_TICKS(TALK_GRACE_MS)) {
+                break;
+            }
         }
         if ((xTaskGetTickCount() - start) > pdMS_TO_TICKS(TALK_MAX_MS)) {
             ESP_LOGW(TAG, "reply cap reached");
@@ -342,13 +672,18 @@ static void play_reply(void)
 
     ring_ws_stats_t st;
     if (ring_ws_get_stats(&st) == ESP_OK) {
+        UBaseType_t hwm = uxTaskGetStackHighWaterMark(NULL);
         ESP_LOGI(TAG, "turn done: up=%u B down=%u B turns=%u "
                       "dropped up/down=%u/%u ring_high=%u ms "
                       "stack_hwm=%u B",
                  (unsigned)st.bytes_up, (unsigned)st.bytes_down,
                  (unsigned)st.turns, (unsigned)st.dropped_up,
                  (unsigned)st.dropped_down, (unsigned)st.ring_high_ms,
-                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
+                 (unsigned)hwm);
+        if (hwm < 1000) {
+            ESP_LOGW(TAG, "talk task stack headroom low (%u B) — raise WORKER_STACK",
+                     (unsigned)hwm);
+        }
     }
 }
 
@@ -357,10 +692,11 @@ static void talk_worker(void *arg)
     (void)arg;
 
     ESP_LOGI(TAG, "turn: capture");
-    ui_hint("");
+    clear_transcript();
 
     /* Uplink: one 20 ms frame at a time until released. */
     uint32_t frames = 0;
+    TickType_t last_bar = xTaskGetTickCount();
     while (!s_stop && ring_ws_state() == RING_WS_LISTENING) {
         if (ring_audio_read(s_stereo, sizeof(s_stereo), 200) != ESP_OK) {
             ESP_LOGW(TAG, "mic read failed");
@@ -377,17 +713,31 @@ static void talk_worker(void *arg)
             ESP_LOGI(TAG, "uplink frame %u, mic level %u",
                      (unsigned)frames, level_of(s_mono, FRAME_SAMPLES));
         }
-        ui_bar(level_of(s_mono, FRAME_SAMPLES), COL_TALK);
+        TickType_t now = xTaskGetTickCount();
+        if (now - last_bar >= pdMS_TO_TICKS(BAR_UPDATE_MS)) {
+            last_bar = now;
+            ui_bar(level_of(s_mono, FRAME_SAMPLES), COL_TALK);
+        }
     }
 
     ESP_LOGI(TAG, "turn: release");
     ring_ws_set_listening(false);
 
+    /* A socket that dropped during capture has no session to commit to. */
+    if (ring_ws_state() == RING_WS_ERROR) {
+        ESP_LOGW(TAG, "session lost during capture");
+        turn_finish();
+        vTaskDelete(NULL);
+        return;
+    }
+
     /* Commit + create response. Show the wait state while the server thinks;
      * the reply can take a few hundred ms to start. */
     ui_button("WAIT", &lv_font_montserrat_48, COL_TALK);
     ui_status("waiting…", COL_TALK);
-    ring_ws_commit();
+    if (ring_ws_commit() != ESP_OK) {
+        ESP_LOGW(TAG, "commit failed — no response will come");
+    }
 
     play_reply();
 
@@ -444,7 +794,9 @@ static void selftest_task(void *arg)
     }
 
     ring_ws_set_listening(false);
-    ring_ws_commit();
+    if (ring_ws_commit() != ESP_OK) {
+        ESP_LOGW(TAG, "selftest: commit failed");
+    }
     play_reply();
 
     ESP_LOGI(TAG, "selftest: done");
@@ -546,30 +898,47 @@ static void connect_task(void *arg)
         break;
     }
 
-    snprintf(s_ws_state, sizeof(s_ws_state), "WS…");
+    set_ws_state("WS…");
     ui_update_netinfo(COL_DIM);
     ui_status("connecting to model…", COL_DIM);
 
-    /* session config: PTT mode for first implementation */
-    memset(&s_ws_cfg, 0, sizeof(s_ws_cfg));
-    s_ws_cfg.voice = "longanqian_v3.1";
-    s_ws_cfg.turn_detection = NULL;   /* PTT */
-    s_ws_cfg.speech_rate = 0.0f;
-    s_ws_cfg.max_history_turns = 20;
-
     for (;;) {
+        settings_apply();
         if (ring_ws_start(QIANWEN_MODEL, s_api_key, &s_ws_cfg) == ESP_OK) {
             ESP_LOGI(TAG, "session up — supervising");
+            s_last_keepalive_tick = xTaskGetTickCount();
             /* Stay alive: a successful start used to end this task, so a
              * later disconnect left the UI on "!" forever. Reconnect when
-             * the session drops. */
+             * the session drops or the settings changed. */
             while (ring_ws_state() != RING_WS_ERROR &&
                    ring_ws_state() != RING_WS_OFF) {
+                if (s_cfg_dirty) {
+                    break;
+                }
+                TickType_t now = xTaskGetTickCount();
+                if (ring_ws_state() == RING_WS_READY &&
+                    (now - s_last_keepalive_tick) > pdMS_TO_TICKS(KEEPALIVE_MS)) {
+                    s_last_keepalive_tick = now;
+                    ESP_LOGI(TAG, "keep-alive: session.update");
+                    esp_err_t ka_err = ring_ws_keepalive();
+                    if (ka_err != ESP_OK && ka_err != ESP_ERR_INVALID_STATE) {
+                        ESP_LOGW(TAG, "keep-alive failed: %s",
+                                 esp_err_to_name(ka_err));
+                    }
+                }
                 vTaskDelay(pdMS_TO_TICKS(500));
             }
             /* Let an in-flight turn finish before tearing the client down. */
             while (s_worker_busy) {
                 vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            if (s_cfg_dirty) {
+                ESP_LOGI(TAG, "settings changed — reconnecting");
+                ui_status("applying settings…", COL_DIM);
+                ring_ws_stop();
+                s_cfg_dirty = false;
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
             }
             ESP_LOGW(TAG, "session lost — reconnecting");
             ui_status("session lost — reconnecting", COL_TALK);
@@ -587,7 +956,23 @@ static void connect_task(void *arg)
 
 esp_err_t ring_example_start(void)
 {
+    s_state_mtx = xSemaphoreCreateMutex();
+    if (s_state_mtx == NULL) {
+        ESP_LOGE(TAG, "cannot create state mutex");
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* NVS must be up before ring_secret_get() reads the persisted key.
+     * ring_wifi_init() would do it later, but the key is needed now. */
+    esp_err_t nvs_err = ring_nvs_init();
+    if (nvs_err != ESP_OK) {
+        ESP_LOGW(TAG, "ring_nvs_init: %s (build-time key still usable)",
+                 esp_err_to_name(nvs_err));
+    }
+
     load_api_key();
+    settings_load();
+    settings_apply();
 
     esp_codec_dev_handle_t codec = ring_audio_codec();
     if (codec != NULL) {
@@ -632,6 +1017,9 @@ esp_err_t ring_example_start(void)
 
         s_status = ring_ui_add_label(scr, "connecting…",
                                      &lv_font_montserrat_16, COL_DIM);
+        lv_obj_set_width(s_status, 300);
+        lv_obj_set_style_text_align(s_status, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_label_set_long_mode(s_status, LV_LABEL_LONG_DOT);
         ring_ui_place_centered(s_status, RING_CX, STATUS_Y);
 
         s_bar = lv_bar_create(scr);
@@ -649,13 +1037,84 @@ esp_err_t ring_example_start(void)
         lv_obj_set_style_border_width(s_bar, 0, LV_PART_INDICATOR);
         lv_obj_remove_flag(s_bar, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
-        s_hint = ring_ui_add_label(scr, "hold = talk · release = reply",
-                                   &lv_font_montserrat_14, COL_DIM);
-        ring_ui_place_centered(s_hint, RING_CX, HINT_Y);
+        /* Rolling transcript: user (orange) above, model (grey) below. Both
+         * are capped to the round panel's width at their y. */
+        s_user = ring_ui_add_label(scr, "", &lv_font_montserrat_14, COL_USER);
+        lv_obj_set_width(s_user, 300);
+        lv_obj_set_style_text_align(s_user, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_label_set_long_mode(s_user, LV_LABEL_LONG_DOT);
+        ring_ui_place_centered(s_user, RING_CX, USER_Y);
+
+        s_model = ring_ui_add_label(scr, "hold = talk · release = reply",
+                                    &lv_font_montserrat_14, COL_DIM);
+        lv_obj_set_width(s_model, 270);
+        lv_obj_set_style_text_align(s_model, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_label_set_long_mode(s_model, LV_LABEL_LONG_DOT);
+        ring_ui_place_centered(s_model, RING_CX, MODEL_Y);
+
+        s_stats = ring_ui_add_label(scr, "", &lv_font_montserrat_14, COL_DIM);
+        lv_obj_set_width(s_stats, 250);
+        lv_obj_set_style_text_align(s_stats, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_label_set_long_mode(s_stats, LV_LABEL_LONG_DOT);
+        ring_ui_place_centered(s_stats, RING_CX, STATS_Y);
 
         s_netinfo = ring_ui_add_label(scr, "",
                                       &lv_font_montserrat_14, COL_DIM);
+        /* Under the title the panel is ~281 px wide. */
+        lv_obj_set_width(s_netinfo, 270);
+        lv_obj_set_style_text_align(s_netinfo, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_label_set_long_mode(s_netinfo, LV_LABEL_LONG_DOT);
         ring_ui_place_centered(s_netinfo, RING_CX, NETINFO_Y);
+
+        /* Settings panel — hidden until the title is long-pressed. */
+        s_settings = lv_obj_create(scr);
+        lv_obj_set_size(s_settings, RING_PANEL_W, RING_PANEL_H);
+        lv_obj_center(s_settings);
+        lv_obj_set_style_bg_color(s_settings, COL_PANEL, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(s_settings, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(s_settings, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_border_width(s_settings, 0, LV_PART_MAIN);
+        lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t *set_title = ring_ui_add_label(s_settings, "SETTINGS",
+                                                &lv_font_montserrat_20,
+                                                RING_COLOR_GREEN);
+        ring_ui_place_centered(set_title, RING_CX, 40);
+
+        for (int i = 0; i < 4; i++) {
+            s_set_rows[i] = lv_label_create(s_settings);
+            lv_obj_set_width(s_set_rows[i], SET_BTN_W);
+            lv_obj_set_style_text_align(s_set_rows[i], LV_TEXT_ALIGN_CENTER,
+                                        LV_PART_MAIN);
+            lv_obj_set_style_bg_color(s_set_rows[i], COL_ROW, LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(s_set_rows[i], LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_radius(s_set_rows[i], 8, LV_PART_MAIN);
+            lv_obj_add_flag(s_set_rows[i], LV_OBJ_FLAG_CLICKABLE);
+            ring_ui_place_centered(s_set_rows[i], RING_CX,
+                                   SET_ROW_Y0 + i * SET_ROW_DY);
+            lv_obj_add_event_cb(s_set_rows[i], settings_row_cb,
+                                LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        }
+
+        lv_obj_t *back = lv_label_create(s_settings);
+        lv_label_set_text(back, "BACK");
+        lv_obj_set_width(back, 120);
+        lv_obj_set_style_text_align(back, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(back, COL_ROW, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(back, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(back, 8, LV_PART_MAIN);
+        lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+        ring_ui_place_centered(back, RING_CX, SET_BACK_Y);
+        lv_obj_add_event_cb(back, settings_back_cb, LV_EVENT_CLICKED, NULL);
+
+        settings_refresh();
+
+        /* Long-press the title to toggle the settings panel. */
+        lv_obj_add_flag(title, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(title, title_cb, LV_EVENT_LONG_PRESSED, NULL);
+
+        /* 1 Hz wire/battery readout. */
+        lv_timer_create(stats_timer_cb, 1000, NULL);
 
         lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_RELEASED, NULL);
