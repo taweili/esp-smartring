@@ -6,15 +6,15 @@
  * (no Opus, no DTLS, no SRTP), 16 kHz in / 24 kHz out, resampled to/from
  * the ring's fixed 48 kHz path.
  *
- * Default mode is **push-to-talk** (a round button on screen — hold to talk,
- * release to hear the reply). A long-press on the title opens a settings
- * panel for turn mode / voice / speech rate / language; the settings persist
- * in NVS and a change that needs a reconnect (mode, voice) restarts the
- * session. A tap while the model is replying is a barge-in.
+ * Default mode is **push-to-talk** (a round orb on screen — hold to talk,
+ * release to hear the reply). A tap while the model is replying is a
+ * barge-in. Three screens:
  *
- * The screen shows a rolling transcript (user in orange, model in white), a
- * wire-stats line (bytes/s, turn count, mode, battery) refreshed once a
- * second, and a level bar during capture/playback.
+ *   Talk   — the orb (button + radial level ring), the last exchange and
+ *            the state line.
+ *   Chat   — the full scrolling transcript plus wire/battery stats.
+ *   Set    — turn mode / voice / rate / language, persisted in NVS; a mode
+ *            or voice change reconnects the session.
  *
  * Audio: ring_audio is 48 kHz / 16-bit / stereo interleaved; ring_ws is
  * 48 kHz / 16-bit / mono. This file only does the stereo <-> mono fold.
@@ -66,9 +66,9 @@
 #define TALK_GRACE_MS    500
 #define TALK_MAX_MS      15000
 
-/* Level-bar redraw cadence. The bar does not need 50 fps, and every call
+/* Level-ring redraw cadence. The ring does not need 50 fps, and every call
  * takes the LVGL lock; 10 Hz is plenty. */
-#define BAR_UPDATE_MS    100
+#define LEVEL_UPDATE_MS  100
 
 /* ------------------------------------------------------------- tasks */
 
@@ -78,26 +78,37 @@
 
 /* ------------------------------------------------------------- UI */
 
-#define TITLE_Y   30
-#define BTN_CX    180
-#define BTN_CY    160
-#define BTN_SZ    148
-#define STATUS_Y  250
-#define USER_Y    272
-#define MODEL_Y   292
-#define STATS_Y   308
-#define BAR_W     210
-#define BAR_H     6
-#define BAR_Y     322
-/* The bottom of the round panel is only ~129 px wide; the netinfo line is
- * ~260 px, so it lives under the title (~281 px wide) instead. */
-#define NETINFO_Y 64
+/* Talk screen. The orb (ring + button) is centred at (BTN_CX, BTN_CY). */
+#define TOPBAR_Y         26
+#define BTN_CX          180
+#define BTN_CY          158
+#define BTN_SZ          148
+#define RING_SZ         176
+#define RING_WEAR        8      /* ring thickness */
 
-/* Settings panel rows. */
-#define SET_ROW_Y0   100
-#define SET_ROW_DY   40
-#define SET_BTN_W    300
-#define SET_BACK_Y   290
+#define TALK_USER_Y     256
+#define TALK_MODEL_Y    288
+#define TALK_TEXT_W     280
+#define TALK_TEXT_H      32      /* two wrapped lines */
+
+#define STATUS_Y        326
+#define STATUS_W        210
+
+/* Chat screen. The box must fit the circle at its top edge (y=56). */
+#define CHAT_Y           56
+#define CHAT_W          260
+#define CHAT_H          224
+#define CHAT_LABEL_W    (CHAT_W - 16)
+#define CHAT_STATS_Y    290
+#define CHAT_NETINFO_Y  310
+
+/* Settings screen. */
+#define SET_TITLE_Y      40
+#define SET_ROW_Y0      100
+#define SET_ROW_DY       40
+#define SET_BTN_W       300
+#define SET_BTN_H        32
+#define SET_BACK_Y      290
 
 #define COL_WAIT   RING_COLOR_GREEN
 #define COL_CONN   lv_color_hex(0x3A4048)
@@ -107,6 +118,7 @@
 #define COL_USER   lv_color_hex(0xFF9800)
 #define COL_PANEL  lv_color_hex(0x14181D)
 #define COL_ROW    lv_color_hex(0x242A31)
+#define COL_RING   lv_color_hex(0x2A2F36)
 
 /* ------------------------------------------------------------- settings
  *
@@ -132,27 +144,45 @@ static volatile bool s_cfg_dirty;
 
 /* ------------------------------------------------------------- state */
 
+/* Screens. */
+static lv_obj_t *s_talk_scr;
+static lv_obj_t *s_chat_scr;
+static lv_obj_t *s_set_scr;
+
+/* Talk screen. */
 static lv_obj_t *s_btn;
 static lv_obj_t *s_btn_label;
+static lv_obj_t *s_ring;
 static lv_obj_t *s_status;
-static lv_obj_t *s_bar;
-static lv_obj_t *s_user;
-static lv_obj_t *s_model;
-static lv_obj_t *s_stats;
-static lv_obj_t *s_netinfo;
-static lv_obj_t *s_settings;
+static lv_obj_t *s_talk_user;
+static lv_obj_t *s_talk_model;
+
+/* Chat screen. */
+static lv_obj_t *s_chat_box;
+static lv_obj_t *s_chat_stats;
+static lv_obj_t *s_chat_netinfo;
+
+/* Settings screen. */
 static lv_obj_t *s_set_rows[4];
 
 static volatile bool s_stop = false;
 static volatile bool s_worker_busy = false;
 static bool s_ui_ready = false;
-static bool s_settings_visible = false;
 
 /* The Qianwen server closes a session that has not generated a response for
  * 180 s. A session.update every 60 s keeps it alive without producing a
  * reply (verified with scripts/test_qianwen_ws_keepalive.py). */
 #define KEEPALIVE_MS 60000
 static TickType_t s_last_keepalive_tick;
+
+/* Rolling transcript: the talk screen shows the last exchange, the chat
+ * screen the full history. The buffers accumulate streaming deltas and are
+ * replaced by the complete text on the .done/.completed events. */
+#define CHAT_TEXT_MAX 256
+static char s_talk_user_buf[CHAT_TEXT_MAX];
+static char s_talk_model_buf[CHAT_TEXT_MAX];
+static bool s_user_streaming;
+static bool s_model_streaming;
 
 static uint8_t  s_stereo[FRAME_STEREO];
 static int16_t  s_mono[FRAME_SAMPLES];
@@ -169,6 +199,12 @@ static ring_ws_session_cfg_t s_ws_cfg;
 /* s_ws_state / s_wifi_* are written from the event task and the connect
  * task and read by the UI; guard them with a mutex. */
 static SemaphoreHandle_t s_state_mtx;
+
+/* 1 Hz wire/battery readout. */
+static uint32_t s_last_up;
+static uint32_t s_last_down;
+static uint32_t s_last_ms;
+static bool s_stats_ready;
 
 /* ------------------------------------------------------------- UI helpers */
 
@@ -194,48 +230,34 @@ static void ui_status(const char *text, lv_color_t color)
     }
 }
 
-static void ui_bar(uint8_t pct, lv_color_t color)
+/* The radial level ring: value 0..100, colour follows the state. */
+static void ui_level(uint8_t pct, lv_color_t color)
 {
     RING_UI_LOCKED(-1) {
-        lv_bar_set_value(s_bar, pct, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(s_bar, color, LV_PART_INDICATOR);
+        lv_arc_set_value(s_ring, pct);
+        lv_obj_set_style_arc_color(s_ring, color, LV_PART_INDICATOR);
     }
 }
 
-static void ui_user(const char *text)
+static void ui_talk_transcript(void)
 {
     RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_user, text);
-    }
-}
-
-static void ui_model(const char *text)
-{
-    RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_model, text);
-    }
-}
-
-static void ui_stats(const char *text)
-{
-    RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_stats, text);
+        lv_label_set_text(s_talk_user, s_talk_user_buf);
+        if (s_talk_model_buf[0]) {
+            lv_label_set_text(s_talk_model, s_talk_model_buf);
+        } else if (s_talk_user_buf[0] == '\0') {
+            lv_label_set_text(s_talk_model, "hold = talk · release = reply");
+        } else {
+            lv_label_set_text(s_talk_model, "");
+        }
     }
 }
 
 static void ui_netinfo(const char *text, lv_color_t color)
 {
     RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_netinfo, text);
-        lv_obj_set_style_text_color(s_netinfo, color, LV_PART_MAIN);
-    }
-}
-
-static void clear_transcript(void)
-{
-    RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_user, "");
-        lv_label_set_text(s_model, "");
+        lv_label_set_text(s_chat_netinfo, text);
+        lv_obj_set_style_text_color(s_chat_netinfo, color, LV_PART_MAIN);
     }
 }
 
@@ -249,8 +271,8 @@ static void set_ws_state(const char *fmt, ...)
     va_end(ap);
 }
 
-/* Update the status line with combined Wi-Fi + WebSocket state. Snapshot the
- * shared strings under the lock — an unsynchronised snprintf can tear. */
+/* Update the chat screen's net line with Wi-Fi + WebSocket state. Snapshot
+ * the shared strings under the lock — an unsynchronised snprintf can tear. */
 static void ui_update_netinfo(lv_color_t color)
 {
     char line[96];
@@ -282,11 +304,30 @@ static void ui_idle(const char *status)
         lv_obj_set_style_bg_color(s_btn, lv_color_darken(COL_WAIT, 60),
                                   LV_STATE_PRESSED);
         lv_obj_set_style_border_width(s_btn, 0, LV_PART_MAIN);
-        lv_bar_set_value(s_bar, 0, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(s_bar, COL_WAIT, LV_PART_INDICATOR);
+        lv_arc_set_value(s_ring, 0);
+        lv_obj_set_style_arc_color(s_ring, COL_WAIT, LV_PART_INDICATOR);
         lv_label_set_text(s_status, status ? status : "press & hold to talk");
         lv_obj_set_style_text_color(s_status, COL_DIM, LV_PART_MAIN);
-        lv_label_set_text(s_model, "hold = talk · release = reply");
+        ui_talk_transcript();
+    }
+}
+
+/* ------------------------------------------------------------- chat log */
+
+static void chat_append(bool is_user, const char *text)
+{
+    if (!s_ui_ready || text[0] == '\0') {
+        return;
+    }
+    RING_UI_LOCKED(-1) {
+        lv_obj_t *lbl = lv_label_create(s_chat_box);
+        lv_obj_set_width(lbl, CHAT_LABEL_W);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_set_style_text_color(lbl, is_user ? COL_USER : COL_WS, LV_PART_MAIN);
+        lv_label_set_text(lbl, text);
+        lv_obj_update_layout(s_chat_box);
+        lv_obj_scroll_to_y(s_chat_box, LV_COORD_MAX, LV_ANIM_OFF);
     }
 }
 
@@ -397,48 +438,42 @@ static void settings_row_cb(lv_event_t *e)
     settings_cycle(row);
 }
 
-static void settings_hide(void)
+/* ------------------------------------------------------------- navigation */
+
+static void go_chat(void)
 {
-    s_settings_visible = false;
-    RING_UI_LOCKED(-1) {
-        lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
-    }
+    lv_screen_load_anim(s_chat_scr, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
 }
 
-static void settings_back_cb(lv_event_t *e)
+static void go_settings(void)
+{
+    lv_screen_load_anim(s_set_scr, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
+}
+
+static void go_talk(void)
+{
+    lv_screen_load_anim(s_talk_scr, LV_SCREEN_LOAD_ANIM_MOVE_RIGHT, 200, 0, false);
+}
+
+static void nav_back_cb(lv_event_t *e)
 {
     (void)e;
-    settings_hide();
+    go_talk();
 }
 
-static void settings_show(void)
-{
-    s_settings_visible = true;
-    settings_refresh();
-    RING_UI_LOCKED(-1) {
-        lv_obj_clear_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-static void title_cb(lv_event_t *e)
+static void go_chat_cb(lv_event_t *e)
 {
     (void)e;
-    if (!s_ui_ready) {
-        return;
-    }
-    if (s_settings_visible) {
-        settings_hide();
-    } else {
-        settings_show();
-    }
+    go_chat();
+}
+
+static void go_settings_cb(lv_event_t *e)
+{
+    (void)e;
+    go_settings();
 }
 
 /* ------------------------------------------------------------- stats timer */
-
-static uint32_t s_last_up;
-static uint32_t s_last_down;
-static uint32_t s_last_ms;
-static bool s_stats_ready;
 
 static void stats_timer_cb(lv_timer_t *t)
 {
@@ -473,7 +508,9 @@ static void stats_timer_cb(lv_timer_t *t)
              up, down, (unsigned)st.turns,
              st.turn_mode ? st.turn_mode : "ptt",
              ring_battery_percent());
-    ui_stats(line);
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text(s_chat_stats, line);
+    }
 }
 
 /* ------------------------------------------------------------- ring_ws callbacks */
@@ -501,7 +538,7 @@ static void ws_state_cb(ring_ws_state_t st, void *user)
         ui_update_netinfo(COL_TALK);
         ui_button("TALK", &lv_font_montserrat_48, COL_TALK);
         ui_status("listening…", COL_TALK);
-        ui_bar(0, COL_TALK);
+        ui_level(0, COL_TALK);
         break;
     case RING_WS_SPEAKING:
         set_ws_state("reply…");
@@ -509,14 +546,14 @@ static void ws_state_cb(ring_ws_state_t st, void *user)
         ui_button("REPLY", &lv_font_montserrat_48, COL_WS);
         /* The half-duplex gate mutes the mic while the model talks. */
         ui_status("replying… · mic off", COL_WS);
-        ui_bar(100, COL_WS);
+        ui_level(100, COL_WS);
         break;
     case RING_WS_CONNECTING:
         set_ws_state("WS…");
         ui_update_netinfo(COL_DIM);
         ui_button("···", &lv_font_montserrat_48, COL_CONN);
         ui_status("connecting…", COL_DIM);
-        ui_bar(0, COL_DIM);
+        ui_level(0, COL_DIM);
         break;
     case RING_WS_ERROR: {
         set_ws_state("WS err");
@@ -535,6 +572,7 @@ static void ws_state_cb(ring_ws_state_t st, void *user)
             } else {
                 ui_status("connection lost", COL_TALK);
             }
+            ui_level(0, COL_TALK);
         }
         break;
     }
@@ -545,21 +583,37 @@ static void ws_state_cb(ring_ws_state_t st, void *user)
     }
 }
 
-static void ws_text_cb(const char *text, size_t len, bool is_user, void *user)
+static void ws_text_cb(const char *text, size_t len, bool is_user, bool final,
+                       void *user)
 {
     (void)user;
     if (!s_ui_ready) {
         return;
     }
-    static char line[64];
-    size_t n = len < sizeof(line) - 1 ? len : sizeof(line) - 1;
-    memcpy(line, text, n);
-    line[n] = '\0';
-    if (is_user) {
-        ui_user(line);
+    char *buf = is_user ? s_talk_user_buf : s_talk_model_buf;
+    bool *streaming = is_user ? &s_user_streaming : &s_model_streaming;
+
+    if (final) {
+        /* The .done/.completed events carry the complete text. */
+        size_t n = len < CHAT_TEXT_MAX - 1 ? len : CHAT_TEXT_MAX - 1;
+        memcpy(buf, text, n);
+        buf[n] = '\0';
+        *streaming = false;
+        chat_append(is_user, buf);
     } else {
-        ui_model(line);
+        /* Streaming deltas are incremental. */
+        if (!*streaming) {
+            buf[0] = '\0';
+            *streaming = true;
+        }
+        size_t cur = strlen(buf);
+        if (cur < CHAT_TEXT_MAX - 1) {
+            size_t n = len < CHAT_TEXT_MAX - 1 - cur ? len : CHAT_TEXT_MAX - 1 - cur;
+            memcpy(buf + cur, text, n);
+            buf[cur + n] = '\0';
+        }
     }
+    ui_talk_transcript();
 }
 
 /* ------------------------------------------------------------- level meter */
@@ -585,7 +639,6 @@ static uint8_t level_of(const int16_t *pcm, size_t samples)
 
 static void turn_finish(void)
 {
-    clear_transcript();
     s_worker_busy = false;
     /* Only claim "ready" when the session actually is; a turn that ended
      * because the socket dropped must not leave the button looking live. */
@@ -614,7 +667,7 @@ static void play_reply(void)
     bool got_audio = false;
     TickType_t last = xTaskGetTickCount();
     TickType_t start = last;
-    TickType_t last_bar = last;
+    TickType_t last_level = last;
 
     /* response.done (observed via the turn counter) is the authoritative end
      * of the reply; the audio grace is only a fallback for a lost done. */
@@ -645,9 +698,9 @@ static void play_reply(void)
                 ESP_LOGW(TAG, "speaker write failed");
             }
             TickType_t now = xTaskGetTickCount();
-            if (now - last_bar >= pdMS_TO_TICKS(BAR_UPDATE_MS)) {
-                last_bar = now;
-                ui_bar(level_of(s_reply, got), COL_WS);
+            if (now - last_level >= pdMS_TO_TICKS(LEVEL_UPDATE_MS)) {
+                last_level = now;
+                ui_level(level_of(s_reply, got), COL_WS);
             }
         } else {
             /* Draining after response.done: stop once the ring is empty. */
@@ -692,11 +745,14 @@ static void talk_worker(void *arg)
     (void)arg;
 
     ESP_LOGI(TAG, "turn: capture");
-    clear_transcript();
+    s_talk_user_buf[0] = '\0';
+    s_talk_model_buf[0] = '\0';
+    s_user_streaming = s_model_streaming = false;
+    ui_talk_transcript();
 
     /* Uplink: one 20 ms frame at a time until released. */
     uint32_t frames = 0;
-    TickType_t last_bar = xTaskGetTickCount();
+    TickType_t last_level = xTaskGetTickCount();
     while (!s_stop && ring_ws_state() == RING_WS_LISTENING) {
         if (ring_audio_read(s_stereo, sizeof(s_stereo), 200) != ESP_OK) {
             ESP_LOGW(TAG, "mic read failed");
@@ -714,9 +770,9 @@ static void talk_worker(void *arg)
                      (unsigned)frames, level_of(s_mono, FRAME_SAMPLES));
         }
         TickType_t now = xTaskGetTickCount();
-        if (now - last_bar >= pdMS_TO_TICKS(BAR_UPDATE_MS)) {
-            last_bar = now;
-            ui_bar(level_of(s_mono, FRAME_SAMPLES), COL_TALK);
+        if (now - last_level >= pdMS_TO_TICKS(LEVEL_UPDATE_MS)) {
+            last_level = now;
+            ui_level(level_of(s_mono, FRAME_SAMPLES), COL_TALK);
         }
     }
 
@@ -954,6 +1010,177 @@ static void connect_task(void *arg)
 
 /* ------------------------------------------------------------- build */
 
+/* A top bar with a left icon button, a centred title and an optional right
+ * icon button. Returns the title so callers can style it. */
+static lv_obj_t *build_topbar(lv_obj_t *scr, const char *left_sym,
+                              const char *title, const char *right_sym,
+                              lv_event_cb_t left_cb, lv_event_cb_t right_cb)
+{
+    if (left_sym) {
+        lv_obj_t *b = lv_label_create(scr);
+        lv_label_set_text(b, left_sym);
+        lv_obj_set_style_text_font(b, &lv_font_montserrat_20, LV_PART_MAIN);
+        lv_obj_set_style_text_color(b, COL_DIM, LV_PART_MAIN);
+        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+        ring_ui_place_centered(b, 100, TOPBAR_Y);
+        if (left_cb) {
+            lv_obj_add_event_cb(b, left_cb, LV_EVENT_CLICKED, NULL);
+        }
+    }
+
+    lv_obj_t *t = ring_ui_add_label(scr, title, &lv_font_montserrat_20,
+                                    RING_COLOR_GREEN);
+    ring_ui_place_centered(t, 182, TOPBAR_Y);
+
+    if (right_sym) {
+        lv_obj_t *b = lv_label_create(scr);
+        lv_label_set_text(b, right_sym);
+        lv_obj_set_style_text_font(b, &lv_font_montserrat_20, LV_PART_MAIN);
+        lv_obj_set_style_text_color(b, COL_DIM, LV_PART_MAIN);
+        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+        ring_ui_place_centered(b, 258, TOPBAR_Y);
+        if (right_cb) {
+            lv_obj_add_event_cb(b, right_cb, LV_EVENT_CLICKED, NULL);
+        }
+    }
+    return t;
+}
+
+static void build_talk(void)
+{
+    build_topbar(s_talk_scr, LV_SYMBOL_LIST, "QIANWEN WS", LV_SYMBOL_SETTINGS,
+                 go_chat_cb, go_settings_cb);
+
+    /* Radial level ring, behind the button. */
+    s_ring = lv_arc_create(s_talk_scr);
+    lv_obj_set_size(s_ring, RING_SZ, RING_SZ);
+    lv_obj_set_pos(s_ring, BTN_CX - RING_SZ / 2, BTN_CY - RING_SZ / 2);
+    lv_arc_set_range(s_ring, 0, 100);
+    lv_arc_set_value(s_ring, 0);
+    lv_arc_set_mode(s_ring, LV_ARC_MODE_NORMAL);
+    lv_arc_set_bg_angles(s_ring, 0, 360);
+    lv_arc_set_rotation(s_ring, 270);   /* 0 % at 12 o'clock */
+    lv_obj_remove_style(s_ring, NULL, LV_PART_KNOB);
+    lv_obj_set_style_arc_width(s_ring, RING_WEAR, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s_ring, COL_RING, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(s_ring, false, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(s_ring, RING_WEAR, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s_ring, COL_WAIT, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(s_ring, true, LV_PART_INDICATOR);
+    lv_obj_remove_flag(s_ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    /* The talk button. */
+    s_btn = lv_obj_create(s_talk_scr);
+    lv_obj_set_size(s_btn, BTN_SZ, BTN_SZ);
+    lv_obj_set_pos(s_btn, BTN_CX - BTN_SZ / 2, BTN_CY - BTN_SZ / 2);
+    lv_obj_set_style_radius(s_btn, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_btn, COL_CONN, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_btn, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(s_btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_btn, lv_color_darken(COL_CONN, 60),
+                              LV_STATE_PRESSED);
+    lv_obj_add_flag(s_btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(s_btn, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_btn_label = ring_ui_add_label(s_btn, "···", &lv_font_montserrat_48,
+                                    lv_color_white());
+    lv_obj_center(s_btn_label);
+
+    /* State line. */
+    s_status = ring_ui_add_label(s_talk_scr, "connecting…",
+                                 &lv_font_montserrat_16, COL_DIM);
+    lv_obj_set_width(s_status, STATUS_W);
+    lv_obj_set_style_text_align(s_status, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_label_set_long_mode(s_status, LV_LABEL_LONG_DOT);
+    ring_ui_place_centered(s_status, RING_CX, STATUS_Y);
+
+    /* Last exchange: user above, model below. Two wrapped lines each. */
+    s_talk_user = ring_ui_add_label(s_talk_scr, "", &lv_font_montserrat_14,
+                                    COL_USER);
+    lv_obj_set_size(s_talk_user, TALK_TEXT_W, TALK_TEXT_H);
+    lv_obj_set_pos(s_talk_user, RING_CX - TALK_TEXT_W / 2, TALK_USER_Y);
+    lv_label_set_long_mode(s_talk_user, LV_LABEL_LONG_WRAP);
+
+    s_talk_model = ring_ui_add_label(s_talk_scr, "hold = talk · release = reply",
+                                     &lv_font_montserrat_14, COL_DIM);
+    lv_obj_set_size(s_talk_model, TALK_TEXT_W, TALK_TEXT_H);
+    lv_obj_set_pos(s_talk_model, RING_CX - TALK_TEXT_W / 2, TALK_MODEL_Y);
+    lv_label_set_long_mode(s_talk_model, LV_LABEL_LONG_WRAP);
+
+    lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_PRESS_LOST, NULL);
+}
+
+static void build_chat(void)
+{
+    build_topbar(s_chat_scr, LV_SYMBOL_LEFT, "CHAT", NULL, nav_back_cb, NULL);
+
+    s_chat_box = lv_obj_create(s_chat_scr);
+    lv_obj_set_size(s_chat_box, CHAT_W, CHAT_H);
+    lv_obj_set_pos(s_chat_box, RING_CX - CHAT_W / 2, CHAT_Y);
+    lv_obj_set_flex_flow(s_chat_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_chat_box, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(s_chat_box, 8, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(s_chat_box, 8, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_chat_box, lv_color_hex(0x1A1F26), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_chat_box, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_chat_box, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_chat_box, 0, LV_PART_MAIN);
+    lv_obj_add_flag(s_chat_box, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_chat_stats = ring_ui_add_label(s_chat_scr, "",
+                                     &lv_font_montserrat_14, COL_DIM);
+    lv_obj_set_width(s_chat_stats, CHAT_W);
+    lv_obj_set_style_text_align(s_chat_stats, LV_TEXT_ALIGN_CENTER,
+                                LV_PART_MAIN);
+    lv_label_set_long_mode(s_chat_stats, LV_LABEL_LONG_DOT);
+    ring_ui_place_centered(s_chat_stats, RING_CX, CHAT_STATS_Y);
+
+    s_chat_netinfo = ring_ui_add_label(s_chat_scr, "",
+                                       &lv_font_montserrat_14, COL_DIM);
+    /* y=310 is only ~249 px wide; keep the box inside the circle. */
+    lv_obj_set_width(s_chat_netinfo, 240);
+    lv_obj_set_style_text_align(s_chat_netinfo, LV_TEXT_ALIGN_CENTER,
+                                LV_PART_MAIN);
+    lv_label_set_long_mode(s_chat_netinfo, LV_LABEL_LONG_DOT);
+    ring_ui_place_centered(s_chat_netinfo, RING_CX, CHAT_NETINFO_Y);
+}
+
+static void build_settings(void)
+{
+    build_topbar(s_set_scr, LV_SYMBOL_LEFT, "SETTINGS", NULL, nav_back_cb, NULL);
+
+    for (int i = 0; i < 4; i++) {
+        s_set_rows[i] = lv_label_create(s_set_scr);
+        lv_obj_set_size(s_set_rows[i], SET_BTN_W, SET_BTN_H);
+        lv_obj_set_pos(s_set_rows[i], RING_CX - SET_BTN_W / 2,
+                       SET_ROW_Y0 + i * SET_ROW_DY);
+        lv_obj_set_style_text_align(s_set_rows[i], LV_TEXT_ALIGN_CENTER,
+                                    LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_set_rows[i], COL_ROW, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(s_set_rows[i], LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(s_set_rows[i], 8, LV_PART_MAIN);
+        lv_obj_add_flag(s_set_rows[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_set_rows[i], settings_row_cb,
+                            LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+    settings_refresh();
+
+    lv_obj_t *back = lv_label_create(s_set_scr);
+    lv_label_set_text(back, "BACK");
+    lv_obj_set_size(back, 120, 32);
+    lv_obj_set_pos(back, RING_CX - 60, SET_BACK_Y);
+    lv_obj_set_style_text_align(back, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(back, COL_ROW, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(back, 8, LV_PART_MAIN);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(back, nav_back_cb, LV_EVENT_CLICKED, NULL);
+}
+
 esp_err_t ring_example_start(void)
 {
     s_state_mtx = xSemaphoreCreateMutex();
@@ -988,137 +1215,26 @@ esp_err_t ring_example_start(void)
     }
 
     RING_UI_LOCKED(-1) {
-        lv_obj_t *scr = ring_ui_screen();
+        /* Talk (active) screen. */
+        s_talk_scr = ring_ui_screen();
+        build_talk();
 
-        lv_obj_t *title = ring_ui_add_label(scr, "QIANWEN WS",
-                                            &lv_font_montserrat_20,
-                                            RING_COLOR_GREEN);
-        ring_ui_place_centered(title, RING_CX, TITLE_Y);
+        /* Chat screen. */
+        s_chat_scr = lv_obj_create(NULL);
+        lv_obj_set_style_bg_color(s_chat_scr, RING_COLOR_BG, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(s_chat_scr, LV_OPA_COVER, LV_PART_MAIN);
+        build_chat();
 
-        s_btn = lv_obj_create(scr);
-        lv_obj_set_size(s_btn, BTN_SZ, BTN_SZ);
-        lv_obj_set_pos(s_btn, BTN_CX - BTN_SZ / 2, BTN_CY - BTN_SZ / 2);
-        /* The button is round (README/design): a 148 px square with radius
-         * 0 reads as a tile, not a talk button. */
-        lv_obj_set_style_radius(s_btn, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_btn, COL_CONN, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(s_btn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(s_btn, 0, LV_PART_MAIN);
-        lv_obj_set_style_shadow_width(s_btn, 0, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_btn, lv_color_darken(COL_CONN, 60),
-                                  LV_STATE_PRESSED);
-        lv_obj_add_flag(s_btn, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_remove_flag(s_btn, LV_OBJ_FLAG_SCROLLABLE);
-
-        s_btn_label = ring_ui_add_label(s_btn, "···",
-                                        &lv_font_montserrat_48,
-                                        lv_color_white());
-        lv_obj_center(s_btn_label);
-
-        s_status = ring_ui_add_label(scr, "connecting…",
-                                     &lv_font_montserrat_16, COL_DIM);
-        lv_obj_set_width(s_status, 300);
-        lv_obj_set_style_text_align(s_status, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        lv_label_set_long_mode(s_status, LV_LABEL_LONG_DOT);
-        ring_ui_place_centered(s_status, RING_CX, STATUS_Y);
-
-        s_bar = lv_bar_create(scr);
-        lv_obj_set_size(s_bar, BAR_W, BAR_H);
-        lv_obj_set_pos(s_bar, RING_CX - BAR_W / 2, BAR_Y);
-        lv_bar_set_range(s_bar, 0, 100);
-        lv_bar_set_value(s_bar, 0, LV_ANIM_OFF);
-        lv_obj_set_style_radius(s_bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_bar, lv_color_hex(0x2A2F36), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(s_bar, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(s_bar, 0, LV_PART_MAIN);
-        lv_obj_set_style_radius(s_bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(s_bar, RING_COLOR_GREEN, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_opa(s_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-        lv_obj_set_style_border_width(s_bar, 0, LV_PART_INDICATOR);
-        lv_obj_remove_flag(s_bar, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-
-        /* Rolling transcript: user (orange) above, model (grey) below. Both
-         * are capped to the round panel's width at their y. */
-        s_user = ring_ui_add_label(scr, "", &lv_font_montserrat_14, COL_USER);
-        lv_obj_set_width(s_user, 300);
-        lv_obj_set_style_text_align(s_user, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        lv_label_set_long_mode(s_user, LV_LABEL_LONG_DOT);
-        ring_ui_place_centered(s_user, RING_CX, USER_Y);
-
-        s_model = ring_ui_add_label(scr, "hold = talk · release = reply",
-                                    &lv_font_montserrat_14, COL_DIM);
-        lv_obj_set_width(s_model, 270);
-        lv_obj_set_style_text_align(s_model, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        lv_label_set_long_mode(s_model, LV_LABEL_LONG_DOT);
-        ring_ui_place_centered(s_model, RING_CX, MODEL_Y);
-
-        s_stats = ring_ui_add_label(scr, "", &lv_font_montserrat_14, COL_DIM);
-        lv_obj_set_width(s_stats, 250);
-        lv_obj_set_style_text_align(s_stats, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        lv_label_set_long_mode(s_stats, LV_LABEL_LONG_DOT);
-        ring_ui_place_centered(s_stats, RING_CX, STATS_Y);
-
-        s_netinfo = ring_ui_add_label(scr, "",
-                                      &lv_font_montserrat_14, COL_DIM);
-        /* Under the title the panel is ~281 px wide. */
-        lv_obj_set_width(s_netinfo, 270);
-        lv_obj_set_style_text_align(s_netinfo, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        lv_label_set_long_mode(s_netinfo, LV_LABEL_LONG_DOT);
-        ring_ui_place_centered(s_netinfo, RING_CX, NETINFO_Y);
-
-        /* Settings panel — hidden until the title is long-pressed. */
-        s_settings = lv_obj_create(scr);
-        lv_obj_set_size(s_settings, RING_PANEL_W, RING_PANEL_H);
-        lv_obj_center(s_settings);
-        lv_obj_set_style_bg_color(s_settings, COL_PANEL, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(s_settings, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_radius(s_settings, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_border_width(s_settings, 0, LV_PART_MAIN);
-        lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
-
-        lv_obj_t *set_title = ring_ui_add_label(s_settings, "SETTINGS",
-                                                &lv_font_montserrat_20,
-                                                RING_COLOR_GREEN);
-        ring_ui_place_centered(set_title, RING_CX, 40);
-
-        for (int i = 0; i < 4; i++) {
-            s_set_rows[i] = lv_label_create(s_settings);
-            lv_obj_set_width(s_set_rows[i], SET_BTN_W);
-            lv_obj_set_style_text_align(s_set_rows[i], LV_TEXT_ALIGN_CENTER,
-                                        LV_PART_MAIN);
-            lv_obj_set_style_bg_color(s_set_rows[i], COL_ROW, LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(s_set_rows[i], LV_OPA_COVER, LV_PART_MAIN);
-            lv_obj_set_style_radius(s_set_rows[i], 8, LV_PART_MAIN);
-            lv_obj_add_flag(s_set_rows[i], LV_OBJ_FLAG_CLICKABLE);
-            ring_ui_place_centered(s_set_rows[i], RING_CX,
-                                   SET_ROW_Y0 + i * SET_ROW_DY);
-            lv_obj_add_event_cb(s_set_rows[i], settings_row_cb,
-                                LV_EVENT_CLICKED, (void *)(intptr_t)i);
-        }
-
-        lv_obj_t *back = lv_label_create(s_settings);
-        lv_label_set_text(back, "BACK");
-        lv_obj_set_width(back, 120);
-        lv_obj_set_style_text_align(back, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(back, COL_ROW, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(back, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_radius(back, 8, LV_PART_MAIN);
-        lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
-        ring_ui_place_centered(back, RING_CX, SET_BACK_Y);
-        lv_obj_add_event_cb(back, settings_back_cb, LV_EVENT_CLICKED, NULL);
-
-        settings_refresh();
-
-        /* Long-press the title to toggle the settings panel. */
-        lv_obj_add_flag(title, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(title, title_cb, LV_EVENT_LONG_PRESSED, NULL);
+        /* Settings screen. */
+        s_set_scr = lv_obj_create(NULL);
+        lv_obj_set_style_bg_color(s_set_scr, RING_COLOR_BG, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(s_set_scr, LV_OPA_COVER, LV_PART_MAIN);
+        build_settings();
 
         /* 1 Hz wire/battery readout. */
         lv_timer_create(stats_timer_cb, 1000, NULL);
 
-        lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_RELEASED, NULL);
-        lv_obj_add_event_cb(s_btn, btn_cb, LV_EVENT_PRESS_LOST, NULL);
+        lv_screen_load(s_talk_scr);
     }
     s_ui_ready = true;
 
