@@ -4,7 +4,7 @@ Guidance for AI coding agents and contributors working in this repository.
 
 ## Project overview
 
-This is an **ESP-IDF** project for the **VIEWE "Smart Ring Plus"** — a round, 1.8-inch (360×360) capacitive-touch terminal based on the **ESP32-S3-N16R8** (8 MB octal PSRAM / 16 MB flash). The app boots all board peripherals through the official **`viewesmart/smartring_plus`** Board Support Package and renders a UI with **LVGL 9** via `esp_lvgl_adapter`.
+This is an **ESP-IDF** project for the **VIEWE "Smart Ring Plus"** — a round, 1.8-inch **360×360 px** capacitive-touch terminal (ST77916 IPS over QSPI) based on the **ESP32-S3-N16R8** (8 MB octal PSRAM / 16 MB flash). The app boots all board peripherals through the official **`viewesmart/smartring_plus`** Board Support Package and renders a UI with **LVGL 9** via `esp_lvgl_adapter`.
 
 Today it is structured as a **generic skeleton plus interchangeable applications**: `components/ringkit/` wraps the whole BSP, and each app under `examples/<name>/` is selected at build time with `RING_APP`.
 
@@ -205,6 +205,23 @@ IMU fail soft and are reported in `ring_board_t`.
 All LVGL object creation/updates **must** happen inside
 `RING_UI_LOCKED(-1) { ... }` (or an explicit `ring_ui_lock()`/`ring_ui_unlock()` pair).
 
+### Display geometry (360×360 round panel)
+
+The panel is **360×360 px**, 1.8" round IPS (ST77916 over QSPI), centre
+`(180, 180)`, radius `180`. It is a **square display with a circular active
+area**: the four square corners are outside the round glass and are never
+visible. UI design must account for this:
+
+- Keep text, icons and touch targets inside the **safe circle**
+  (`RING_SAFE_RADIUS`, ~172 px) — never in the corners, and not flush against
+  the edge.
+- Never assume a rectangle maps to the screen: a full-width row at the
+  top/bottom loses its ends, and a four-corner status bar is mostly invisible.
+- Use the shared geometry in `components/ringkit/include/ringkit/ring_theme.h`
+  (`RING_PANEL_W/H`, `RING_CX/CY`, `RING_RADIUS`, `RING_SAFE_RADIUS`,
+  `RING_IN_CIRCLE()`) instead of hardcoding 360/180.
+- Design in panel coordinates; `ring_ui_place_centered()` centres exactly.
+
 ### Key ringkit APIs
 
 - Board: `ring_board_init()`, `ring_board_log_summary()`, `ring_board_i2c_bus()`
@@ -320,6 +337,8 @@ grep -oE "(components|managed_components)/viewesmart__smartring_plus" \
 - Log with `ESP_LOGI/LOGW/LOGE` using a `TAG`.
 - Prefer `ESP_ERROR_CHECK` for mandatory init; soft-fail optional peripherals (SD, IMU) —
   `ring_board_init()` already encodes this split.
+- **Design for the round panel.** 360×360 px with a circular active area —
+  keep critical content inside `RING_SAFE_RADIUS` (see "Display geometry").
 - **Do not** add an `idf_component.yml` under `examples/`; the single manifest is
   `main/idf_component.yml`.
 - Host-side unit tests for the pure-logic modules live in `tests/`; run `make check`

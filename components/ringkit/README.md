@@ -25,7 +25,7 @@ the two-symbol example contract (see `examples/README.md`).
 | `ring_imu.h` | QMI8658A accel + gyro + temp | thread-safe getters, level calibration |
 | `ring_sd.h` | SDMMC + FAT `/sdcard` | no card-detect pin: "no card" == "mount failed" |
 | `ring_ui.h` | LVGL lock + helpers | `RING_UI_LOCKED`, label creation, exact centring |
-| `ring_theme.h` | colours / geometry / motion | `RING_PANEL_*`, `RING_COLOR_*`, `RING_MS_*` |
+| `ring_theme.h` | colours / geometry / motion | `RING_PANEL_*`, `RING_SAFE_RADIUS`, `RING_IN_CIRCLE()`, `RING_COLOR_*`, `RING_MS_*` |
 | `ring_rand.h` | deterministic xorshift32 | **not** `esp_random()` — determinism is the point |
 
 ### Connectivity
