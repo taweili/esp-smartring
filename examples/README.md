@@ -16,7 +16,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `07_qianwen_realtime_harness` | Hands-free voice loop: Wi-Fi → SNTP → HTTPS probe → WebRTC session, then mic → Opus → `qwen-audio-3.1-realtime-flash` → Opus → speaker, with server-VAD turn-taking. See `07_qianwen_realtime_harness/README.md`. |
 | `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing`, exposes a vendor service (0xFFE0) with a readable name/battery (READ/NOTIFY) and a writable command pipe (WRITE/NOTIFY). Pairable/bondable; scan + connect with a phone (nRF Connect / LightBlue). See `08_ble_peripheral/README.md`. |
 | `09_hello_smoke_test` | Bring-up smoke test: white screen, one large "Hello" glyph. See `09_hello_smoke_test/README.md`. |
-| `10_qianwen_ws_voice_chat` | **WebSocket voice chat** with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, push-to-talk / `server_vad` / `smart_turn_v2` turn-taking (settings panel, NVS-persisted), barge-in, rolling transcript, wire/battery stats. The only realtime transport that works where UDP is blocked. |
+| `10_qianwen_ws_voice_chat` | **WebSocket voice chat** with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, push-to-talk / `server_vad` / `smart_turn_v2` turn-taking (Set screen, NVS-persisted), barge-in, orb with radial level ring, Talk/Chat/Set screens, wire/battery stats. The only realtime transport that works where UDP is blocked. |
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. See `12_ringkit_selftest/README.md`. |
 
 ## Building an app

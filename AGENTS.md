@@ -121,7 +121,7 @@ EOF
 │   ├── 09_hello_smoke_test/     # bring-up smoke test (white screen + label, README)
 │   ├── 10_qianwen_ws_voice_chat/ # WebSocket voice chat: PCM 16k in / 24k out,
 │   │                            #   esp_websocket_client, PTT + hands-free modes,
-│   │                            #   barge-in, transcript, settings (README)
+│   │                            #   orb + chat/settings screens (README)
 │   ├── 11_quic_voice_chat/      # PLANNED (design only) — notes/design-quic-voice-chat.md
 │   └── 12_ringkit_selftest/     # subsystem diagnostic: probe + voice init/stop (README)
 ├── scripts/

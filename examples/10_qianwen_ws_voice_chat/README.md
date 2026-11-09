@@ -6,29 +6,36 @@ realtime API — the only realtime transport that works on a UDP-blocked network
 
 ```
         ┌─────────────────────────────┐
-        │  QIANWEN WS                   │ ← long-press = settings
-        │  Pretty-Donkey-1 · 192.168…   │ ← Wi-Fi + WS state
-        │      ┌───────────────┐      │
-        │      │               │      │
-        │      │  HOLD TO TALK │      │  ← round button, solid colour fill
-        │      │               │      │
-        │      └───────────────┘      │
-        │    ready (ptt) — hold to    │  ← status
-        │      "你好，帮我…"            │  ← user transcript (orange)
-        │      "Sure — …"             │  ← model reply (white)
-        │   ↑0 ↓0 B/s · turn 0 · ptt   │  ← wire stats + battery
-        │      ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁      │  ← level bar
+        │ ≡  QIANWEN WS          ⚙    │ ← Talk · chat · settings
+        │      ╭───────────────╮      │
+        │     │ ╭───────────╮ │      │ ← radial level ring
+        │     │ │  ◉        │ │      │   (green mic / blue reply)
+        │     │ │ HOLD      │ │      │
+        │     │ │ TO TALK   │ │      │
+        │     │ ╰───────────╯ │      │
+        │      ╰───────────────╯      │
+        │    ready (ptt) — hold to    │  ← state line
+        │    "你好，帮我…"             │  ← last exchange
+        │    "Sure — …"               │    (user orange / model white)
         └─────────────────────────────┘
 ```
 
-| State | Button | Status | What happens |
+Three screens, switched from the top bar:
+
+- **Talk** (home) — the orb (button + radial level ring), the state line and
+  the last exchange. The ring is green while capturing, blue while playing.
+- **Chat** (`≡`) — the full scrolling transcript, plus wire/battery stats and
+  the Wi-Fi/WS state.
+- **Set** (`⚙`) — turn mode / voice / rate / language (see below).
+
+| State | Orb | Status | What happens |
 |---|---|---|---|
-| Idle | **green fill**, `HOLD TO TALK` | "ready (ptt) — hold to talk" | session open, mic closed |
-| Talking | **red fill**, `TALK` | "listening…" + level | 48k mic → 16k PCM → base64 → WS |
-| Waiting | **red fill**, `WAIT` | "waiting…" | released, server processing |
-| Replying | **blue fill**, `REPLY` | "replying… · mic off" + level | WS → base64 → 24k PCM → 48k → speaker |
-| Connecting | grey fill, `···` | "connecting…" | Wi-Fi → SNTP → WS → session.update |
-| Error | red fill, `!` | "error: \<type\> \<param\>" or "connection lost" | retries every 5 s |
+| Idle | **green fill/ring**, `HOLD TO TALK` | "ready (ptt) — hold to talk" | session open, mic closed |
+| Talking | **red fill/ring**, `TALK` | "listening…" + ring | 48k mic → 16k PCM → base64 → WS |
+| Waiting | **red fill/ring**, `WAIT` | "waiting…" | released, server processing |
+| Replying | **blue fill/ring**, `REPLY` | "replying… · mic off" + ring | WS → base64 → 24k PCM → 48k → speaker |
+| Connecting | grey fill/ring, `···` | "connecting…" | Wi-Fi → SNTP → WS → session.update |
+| Error | red fill/ring, `!` | "error: \<type\> \<param\>" or "connection lost" | retries every 5 s |
 
 ## Why WebSocket?
 
@@ -39,14 +46,14 @@ realtime API — the only realtime transport that works on a UDP-blocked network
   persistent TCP socket. The only ESP-IDF dependency beyond the baseline is
   `esp_websocket_client`.
 - **Three turn-taking modes:** server_vad, smart_turn_v2, and push-to-talk.
-  Push-to-talk is the default; all three are selectable in the settings panel.
+  Push-to-talk is the default; all three are selectable on the Set screen.
 
 ## Architecture
 
 ```
 touch ──► LVGL task ──► 10_qianwen_ws_voice_chat
                           │  PRESSED / RELEASED → flags + worker
-                          │  long-press title   → settings panel
+                          │  ≡ / ⚙ → screen switch
                           │  ui_*() → RING_UI_LOCKED
                           ▼
                      ring_ws  (components/ringkit)
@@ -61,7 +68,7 @@ touch ──► LVGL task ──► 10_qianwen_ws_voice_chat
 
 | File | Role |
 |---|---|
-| `qianwen_ws_voice_chat.c` | UI, button state machine, stereo↔mono, talk turn, settings |
+| `qianwen_ws_voice_chat.c` | Three screens, orb, chat log, talk turn, settings |
 | `components/ringkit/src/ring_ws.c` | Public API, state machine, event task |
 | `components/ringkit/src/ring_ws_transport.c` | WS lifecycle, reassembly, base64, playback |
 | `components/ringkit/src/ring_ws_protocol.c` | Session/turn JSON, uplink |
@@ -87,22 +94,21 @@ applies (NVS key `qianwen`/`api_key`, seeded from build-time `QIANWEN_API_KEY`).
 `ring_example_start()` calls `ring_nvs_init()` before reading the key, so a
 value already persisted in NVS is honoured rather than overwritten.
 
-## Transcript & stats
+## Transcript, chat and stats
 
-- **Transcript.** The user's utterance and the model's reply are shown on
-  separate lines (user orange, model white), so a conversation stays readable.
-  Both are capped to the round panel's width and truncate with an ellipsis;
-  the full text is also logged (`heard: …`, `reply: …`).
-- **Stats.** A 1 Hz timer refreshes a line with the wire rate
-  (`↑… ↓… B/s`, computed over the last second), the turn count, the negotiated
-  turn mode, and the battery percentage.
+- **Talk screen.** The last exchange: the user's utterance (orange) above the
+  model's reply (white), each wrapped to two lines.
+- **Chat screen.** The full conversation as a scrolling log (user orange,
+  model blue), auto-scrolled to the latest message, plus:
+  - a 1 Hz wire line — `↑… ↓… B/s` (computed over the last second), the turn
+    count, the negotiated turn mode and the battery percentage;
+  - the Wi-Fi/WS state line (`ssid · ip │ WS state`).
 - **Errors.** A protocol `error` event's `type` and `param` are shown in the
-  status line instead of a generic "connection lost".
+  state line instead of a generic "connection lost".
 
 ## Settings
 
-**Long-press the title** to open the settings panel. Each row cycles through
-its values on tap:
+Open the **Set** screen (`⚙`). Each row cycles through its values on tap:
 
 | Row | Values | Default |
 |---|---|---|
@@ -157,10 +163,10 @@ Two failure modes produced "session lost" and are now handled:
   during playback (the half-duplex gate) and for 500 ms after. A loud utterance
   during playback triggers a client-side barge-in (cancels the current response).
 - **Bandwidth ~120 KB/s** (16 kHz PCM + 33% base64 overhead) vs ~32 kbps for
-  Opus. The stats line makes the cost visible.
+  Opus. The Chat screen makes the cost visible.
 - **No function calling yet** (planned for a later phase).
-- **Transcript is single-line per speaker.** Long utterances truncate with an
-  ellipsis; the full text is in the log.
+- **Transcript buffers are 256 B.** Longer replies are truncated on screen;
+  the full text is in the log.
 
 ## Verification checklist
 
@@ -168,9 +174,10 @@ Two failure modes produced "session lost" and are now handled:
 2. Vendored overrides still win (`espressif__esp_codec_dev`,
    `viewesmart__smartring_plus`).
 3. Boot log: `ring_ws: session.updated`, `state -> ready`, no panic/assert.
-4. One PTT turn works: press-and-hold → TALK → release → WAIT → REPLY → audio.
+4. The orb shows a ring; it fills green while talking, blue while replying.
+5. `≡` opens the Chat screen (scrolling transcript + stats); `⚙` opens Set.
+6. One PTT turn works: press-and-hold → TALK → release → WAIT → REPLY → audio.
    (Or enable the bench self-test and check the boot log for a full turn.)
-5. The transcript shows both the user utterance and the model reply.
-6. The stats line shows a non-zero wire rate during a turn.
-7. Long-press the title → settings panel opens; changing Mode reconnects.
-8. Touch and voice need a human — no host-side way to synthesise.
+7. The last exchange stays on the Talk screen after the reply.
+8. Changing Mode on the Set screen reconnects (`session.update` in the log).
+9. Touch and voice need a human — no host-side way to synthesise.
