@@ -64,6 +64,8 @@ typedef struct {
     uint32_t    dropped_down;
     uint32_t    ring_high_ms;
     const char *turn_mode;
+    const char *last_error_type;   /**< last "error" event's type, or "" */
+    const char *last_error_param;  /**< last "error" event's param, or "" */
 } ring_ws_stats_t;
 
 /** State change notification, delivered on the ring-ws-event task. */
@@ -125,7 +127,8 @@ ring_ws_state_t ring_ws_state(void);
 /** Static name for a state, for logging/UI. */
 const char *ring_ws_state_name(ring_ws_state_t state);
 
-/** The turn mode actually negotiated (after fallback), or NULL if PTT. */
+/** The turn mode actually negotiated (after fallback): "ptt",
+ *  "server_vad", "smart_turn_v2", ... */
 const char *ring_ws_turn_mode(void);
 
 /** Copy the stats structure. */
@@ -186,6 +189,16 @@ esp_err_t ring_ws_cancel(void);
 
 /** Send an arbitrary JSON event over the WebSocket. */
 esp_err_t ring_ws_send_json(const char *json);
+
+/**
+ * @brief Keep an idle session alive.
+ *
+ * The Qianwen realtime server closes a session that has not generated a
+ * response for 180 s ("response_idle_timeout"). Re-sending session.update
+ * resets that timer without producing a reply. No-op unless READY, so it is
+ * safe to call on a timer.
+ */
+esp_err_t ring_ws_keepalive(void);
 
 /** Trust anchors for the Qianwen WS endpoint (same host as ring_net). */
 const char *ring_ws_ca_pem(void);

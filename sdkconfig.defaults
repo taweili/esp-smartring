@@ -82,3 +82,10 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 #     Separate TX lock avoids contention: the WS task reads downlink while the
 #     app task sends uplink audio frames every 20 ms.
 CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
+#
+#     The default 5.7 KB TCP send buffer is smaller than the uplink
+#     bandwidth-delay product (~45 KB/s to the cloud), so it fills and the WS
+#     client's poll_write times out, aborting the connection mid-turn
+#     ("transport_poll_write(0)" -> abort_connection). 16 KB gives the stack
+#     room to smooth the bursts. Applies to every TCP connection.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384

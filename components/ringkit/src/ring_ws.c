@@ -217,6 +217,8 @@ esp_err_t ring_ws_start(const char *model, const char *api_key,
     ring_ws_s.dropped_up = ring_ws_s.dropped_down = 0;
     ring_ws_s.ring_high_samples = 0;
     ring_ws_s.buffered_high_ms = 0;
+    ring_ws_s.last_error_type[0] = '\0';
+    ring_ws_s.last_error_param[0] = '\0';
     ring_ws_s.responding = false;
     ring_ws_s.speaking = false;
     ring_ws_s.last_playback_ms = 0;
@@ -369,7 +371,17 @@ esp_err_t ring_ws_get_stats(ring_ws_stats_t *out)
     out->dropped_down = ring_ws_s.dropped_down;
     out->ring_high_ms = ring_ws_s.buffered_high_ms;
     out->turn_mode = ring_ws_s.turn_mode;
+    out->last_error_type = ring_ws_s.last_error_type;
+    out->last_error_param = ring_ws_s.last_error_param;
     return ESP_OK;
+}
+
+esp_err_t ring_ws_keepalive(void)
+{
+    if (ring_ws_state() != RING_WS_READY) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return ring_ws_send_session_update(NULL);
 }
 
 esp_err_t ring_ws_set_listening(bool on)

@@ -61,8 +61,14 @@
 #define RING_WS_UP_B64_MAX   (RING_WS_UP16_SAMPLES * 2 * 4 / 3 + 8)
 #define RING_WS_UP_JSON_MAX  (RING_WS_UP_B64_MAX + 80)
 
-/* Send timeout: short so the audio task never stalls the WS read loop. */
-#define RING_WS_SEND_TIMEOUT_MS  20
+/* Send timeout. This is also the poll_write timeout inside
+ * esp_websocket_client: if the TCP send buffer is full, a short timeout makes
+ * the client abort the whole connection (transport_poll_write ->
+ * abort_connection(TCP_TRANSPORT)). The default 5.7 KB send buffer drains at
+ * (buffer / RTT); at ~45 KB/s uplink that needs tens of ms, so 20 ms was
+ * aborting mid-turn. 100 ms lets the buffer drain instead of killing the
+ * session; a blocked frame costs a little audio, not the connection. */
+#define RING_WS_SEND_TIMEOUT_MS  100
 /* Session setup timeout. */
 #define RING_WS_SESSION_TIMEOUT_MS 20000
 /* SNTP sync timeout (TLS needs a plausible clock). */
@@ -157,6 +163,10 @@ typedef struct {
     uint32_t                 dropped_down;
     uint32_t                 ring_high_samples;  /* at 24 kHz */
     uint32_t                 buffered_high_ms;
+
+    /* Last protocol error, for the UI (logged in all cases). */
+    char                     last_error_type[64];
+    char                     last_error_param[128];
 
     /* Event marshalling: a single-slot queue of state values. */
     QueueHandle_t            event_queue;

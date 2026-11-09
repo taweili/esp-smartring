@@ -269,15 +269,20 @@ void ring_ws_worker_handle_text(const char *json, int len)
         return;
     }
     if (ring_json_type_is(json, "response.function_call_arguments.done")) {
+        char name[64] = {0};
+        char args[512] = {0};
+        size_t nl = 0, al = 0;
+        ring_json_get_str(json, "name", name, sizeof(name), &nl);
+        ring_json_get_str(json, "arguments", args, sizeof(args), &al);
         if (ring_ws_s.tool_cb) {
-            char name[64] = {0};
-            char args[512] = {0};
-            size_t nl = 0, al = 0;
-            ring_json_get_str(json, "name", name, sizeof(name), &nl);
-            ring_json_get_str(json, "arguments", args, sizeof(args), &al);
             if (nl > 0) {
                 ring_ws_s.tool_cb(name, args, ring_ws_s.user);
             }
+        } else if (nl > 0) {
+            /* Without a handler the model waits forever for a
+             * function_call_output; say so instead of failing silently. */
+            ESP_LOGW(TAG, "function call '%s' (%u B args) but no tool_cb registered",
+                     name, (unsigned)al);
         }
         return;
     }
@@ -292,7 +297,14 @@ void ring_ws_worker_handle_text(const char *json, int len)
             ring_json_get_str(ep, "type", etype, sizeof(etype), &el);
             ring_json_get_str(ep, "param", eparam, sizeof(eparam), &el);
         }
+        /* Log the full event: the nested error block is where the useful
+         * detail lives, and a bare type/param line is often ambiguous. */
+        ESP_LOGW(TAG, "error event: %.*s", len > 512 ? 512 : len, json);
         ESP_LOGW(TAG, "error: type=%s param=%s", etype, eparam);
+        snprintf(ring_ws_s.last_error_type, sizeof(ring_ws_s.last_error_type),
+                 "%s", etype);
+        snprintf(ring_ws_s.last_error_param, sizeof(ring_ws_s.last_error_param),
+                 "%s", eparam);
         /* smart_turn_v2 -> server_vad fallback on a turn_detection error,
          * only before any audio was sent (still IDLE/CONNECTING/READY). */
         ring_ws_state_t st = ring_ws_state();
