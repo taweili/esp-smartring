@@ -219,7 +219,7 @@ changes the memory story completely from 07:
 | | 07 (`ring_net`) | `ring_ws` |
 |---|---|---|
 | Audio task stack | **64 KB**, PSRAM (`xTaskCreateWithCaps`) — stereo Opus | **~8 KB**, internal RAM — no codec |
-| Downlink ring | 4 s / 384 KB PSRAM (`RING_NET_DL_BYTES`), newest-wins | 4 s / 384 KB PSRAM, newest-wins (**same shape**) |
+| Downlink ring | 4 s / 384 KB PSRAM (`RING_NET_DL_BYTES`), newest-wins | 4 s / 192 KB PSRAM (24 kHz mono), newest-wins |
 | Uplink scratch | 20 ms mono→stereo up-mix | 20 ms 48k→16k decimate |
 
 FreeRTOS stacks come from internal RAM only, which is why 07 needs
@@ -228,10 +228,10 @@ FreeRTOS stacks come from internal RAM only, which is why 07 needs
 PSRAM-stack workaround either.
 
 **Downlink jitter ring.** At 24 kHz mono the model streams ~48 KB/s, so a 4 s
-ring is 384 KB — the same order as `ring_net`'s. Keep an explicit equivalent
-with the same **newest-wins** overflow policy; a reply arriving faster than
-playback must drop old audio, never grow unbounded. Without this the reply
-stutters on a slow link.
+ring is **192 KB** — half `ring_net`'s 384 KB, because the WS endpoint is mono
+(not stereo Opus). Keep the same **newest-wins** overflow policy; a reply
+arriving faster than playback must drop old audio, never grow unbounded.
+Without this the reply stutters on a slow link.
 
 **JSON helpers — copy for v1, dedupe separately.** `ring_net.c`'s
 `json_get_str`/`json_type_is` are the only working JSON path in the repo and
@@ -355,7 +355,7 @@ build actually exceeds it.
 | 2 | `smart_turn_v2` rejected by the model/account | One-shot fallback to `server_vad` on `param == session.turn_detection.type`; show the downgrade. |
 | 3 | Server sends text frames (JSON) — confirm `op_code == 1`; handle binary gracefully. | Log the first event's opcode; reassemble by `payload_offset`. |
 | 4 | No AEC → the ring answers itself | Half-duplex with the documented predicate incl. the 500 ms tail (§6); loud-speech barge-in. |
-| 5 | Downlink ring unbounded / stutter | 4 s / 384 KB PSRAM ring, newest-wins, same as `ring_net`. |
+| 5 | Downlink ring unbounded / stutter | 4 s / 192 KB PSRAM ring (24 kHz mono), newest-wins. |
 | 6 | Stack copied from 06 (64 KB) unnecessarily | No codec → ~8 KB internal; do **not** use `xTaskCreateWithCaps`. |
 | 7 | Resampler quality / CPU | Exact integer ratios; ~150 lines; profile the audio task. |
 | 8 | ~120 KB/s bandwidth | Show the rate; keep sessions short; note the Opus alternative. |

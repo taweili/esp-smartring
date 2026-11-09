@@ -227,7 +227,7 @@ but never states it.
 | D4 | Turn-mode fallback | At first `session.update`, on `error.param` containing `turn_detection`; retry once with `server_vad`; log the negotiated mode (C1, G5). |
 | D5 | PTT toggle | Requires reconnect. Expose it as a settings option that restarts the session, not a runtime switch (C1). |
 | D6 | `buffer_size` | 4 KB, measured; enable `SEPARATE_TX_LOCK` (C3, C4). |
-| D7 | Resampler coefficient generation | `tools/gen_ws_resampler.py` (Kaiser sinc), commit the table in `ring_ws_resample.c`. |
+| D7 | Resampler coefficient generation | `tools/gen_ws_resampler.py` (Kaiser sinc), commit the tables in `ring_resample.c` / `ring_resample_coeffs.c` (moved there by the ringkit refactor). |
 | D8 | Host probe language | Python + `aiohttp` (already in `scripts/.venv`); no new dependency. |
 
 ---

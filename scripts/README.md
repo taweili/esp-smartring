@@ -164,3 +164,20 @@ espeak -v en -s 150 -w /tmp/capital.wav "the capital of China"
 ffmpeg -y -i /tmp/capital.wav -ar 48000 -ac 1 -f s16le -acodec pcm_s16le \
        scripts/assets/test_clip.pcm
 ```
+
+## test_qianwen_ws_keepalive.py
+
+Probes the Qianwen realtime **WebSocket** session lifetime and the keep-alive
+strategy used by `examples/10_qianwen_ws_voice_chat`. The server closes a
+session that has not generated a response for 180 s
+(`response_idle_timeout`), so the app re-sends `session.update` every 60 s.
+
+```bash
+scripts/.venv/bin/python scripts/test_qianwen_ws_keepalive.py --strategy none
+scripts/.venv/bin/python scripts/test_qianwen_ws_keepalive.py --strategy session_update
+scripts/.venv/bin/python scripts/test_qianwen_ws_keepalive.py --strategy response_create
+scripts/.venv/bin/python scripts/test_qianwen_ws_keepalive.py --strategy silence
+```
+
+`none` shows the 180 s timeout; `session_update` is the strategy the app uses
+(resets the timer, produces no reply). `--duration` defaults to 210 s.
