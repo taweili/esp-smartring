@@ -78,10 +78,13 @@ typedef void (*ring_ws_state_cb_t)(ring_ws_state_t state, void *user);
  *                @p is_user is true it is the complete recognised utterance.
  * @param len     Bytes in @p text (never includes the terminator).
  * @param is_user true for the transcribed user utterance, false for model.
+ * @param final   true when @p text is the complete utterance/reply (the
+ *                `.done` / `.completed` events); false for a streaming delta,
+ *                which is incremental and should be appended.
  * @param user    Opaque pointer passed to ring_ws_init().
  */
 typedef void (*ring_ws_transcript_cb_t)(const char *text, size_t len,
-                                        bool is_user, void *user);
+                                        bool is_user, bool final, void *user);
 
 /**
  * @brief Function-calling callback, invoked on the ring-ws-event task.

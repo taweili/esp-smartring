@@ -238,7 +238,7 @@ void ring_ws_worker_handle_text(const char *json, int len)
             char text[256];
             size_t tlen = 0;
             if (ring_json_get_str(json, "delta", text, sizeof(text), &tlen)) {
-                ring_ws_s.text_cb(text, tlen, false, ring_ws_s.user);
+                ring_ws_s.text_cb(text, tlen, false, false, ring_ws_s.user);
             }
         }
         return;
@@ -252,7 +252,7 @@ void ring_ws_worker_handle_text(const char *json, int len)
             ring_json_get_str(json, "text", text, sizeof(text), &tlen)) {
             ESP_LOGI(TAG, "reply: %s", text);
             if (ring_ws_s.text_cb) {
-                ring_ws_s.text_cb(text, tlen, false, ring_ws_s.user);
+                ring_ws_s.text_cb(text, tlen, false, true, ring_ws_s.user);
             }
         }
         return;
@@ -263,7 +263,7 @@ void ring_ws_worker_handle_text(const char *json, int len)
         if (ring_json_get_str(json, "transcript", text, sizeof(text), &tlen)) {
             ESP_LOGI(TAG, "heard: %s", text);
             if (ring_ws_s.text_cb) {
-                ring_ws_s.text_cb(text, tlen, true, ring_ws_s.user);
+                ring_ws_s.text_cb(text, tlen, true, true, ring_ws_s.user);
             }
         }
         return;
