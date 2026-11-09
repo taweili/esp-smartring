@@ -134,37 +134,61 @@ esp_err_t ring_chat_llm_complete(char *reply, size_t cap)
     esp_http_client_set_method(c, HTTP_METHOD_POST);
     esp_http_client_set_header(c, "Content-Type", "application/json");
     ring_http_set_bearer(c, ring_chat_s.api_key);
-    esp_http_client_set_post_field(c, body, body_len);
 
-    esp_err_t err = esp_http_client_perform(c);
-    free(body);
-
+    /* Stream instead of perform(): perform() swallows the response body (it
+     * resets raw_len at the end), and the reply *is* the body. */
+    esp_err_t err = esp_http_client_open(c, body_len);
     if (err == ESP_OK) {
-        int status = esp_http_client_get_status_code(c);
-        if (status == 200) {
-            char *resp = malloc(RING_CHAT_JSON_CAP);
-            if (!resp) { esp_http_client_cleanup(c); return ESP_ERR_NO_MEM; }
-            int rlen = 0;
-            if (ring_http_read_body(c, resp, RING_CHAT_JSON_CAP, &rlen) == ESP_OK) {
-                if (!ring_chat_json_get_str(resp, "content", reply, cap)) {
-                    ESP_LOGW(TAG, "llm: could not extract content from: %.200s", resp);
-                    err = ESP_ERR_INVALID_RESPONSE;
-                } else {
-                    ESP_LOGI(TAG, "llm: \"%s\"", reply);
-                    ring_chat_add_assistant(reply);
-                }
-            }
-            free(resp);
-        } else {
-            ESP_LOGW(TAG, "llm: HTTP %d", status);
-            err = ESP_ERR_INVALID_RESPONSE;
+        if (esp_http_client_write(c, body, body_len) < 0) {
+            err = ESP_FAIL;
         }
-    } else {
-        ESP_LOGW(TAG, "llm: %s", esp_err_to_name(err));
+    }
+    free(body);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "llm: open/write failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(c);
+        return err;
     }
 
+    esp_http_client_fetch_headers(c);
+    int status = esp_http_client_get_status_code(c);
+    if (status != 200) {
+        char ebuf[257];
+        int n = esp_http_client_read_response(c, ebuf, sizeof(ebuf) - 1);
+        if (n > 0) {
+            ebuf[n] = '\0';
+            ESP_LOGW(TAG, "llm: HTTP %d: %s", status, ebuf);
+        } else {
+            ESP_LOGW(TAG, "llm: HTTP %d", status);
+        }
+        esp_http_client_cleanup(c);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    char *resp = malloc(RING_CHAT_JSON_CAP);
+    if (!resp) {
+        esp_http_client_cleanup(c);
+        return ESP_ERR_NO_MEM;
+    }
+    int rlen = 0;
+    esp_err_t rerr = ring_http_read_body(c, resp, RING_CHAT_JSON_CAP, &rlen);
+    if (rerr != ESP_OK) {
+        ESP_LOGW(TAG, "llm: read body: %s", esp_err_to_name(rerr));
+        free(resp);
+        esp_http_client_cleanup(c);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (!ring_chat_json_get_str(resp, "content", reply, cap)) {
+        ESP_LOGW(TAG, "llm: could not extract content from: %.200s", resp);
+        free(resp);
+        esp_http_client_cleanup(c);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    ESP_LOGI(TAG, "llm: \"%s\"", reply);
+    ring_chat_add_assistant(reply);
+    free(resp);
     esp_http_client_cleanup(c);
-    return err;
+    return ESP_OK;
 }
 
 esp_err_t ring_chat_llm_stream(ring_chat_text_cb_t text_cb, void *user)

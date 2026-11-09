@@ -165,30 +165,31 @@ esp_err_t ring_chat_tts(const char *text, ring_chat_audio_cb_t cb, void *user)
         ctx.user = user;
         ctx.sentences = 0;
         ctx.chunks = 0;
-        ctx.pcm_cap = 8192;  /* 8192 samples = 170 ms @ 48 kHz, per chunk */
+        ctx.pcm_cap = RING_CHAT_TTS_PCM_SAMPLES;
         ctx.pcm = heap_caps_malloc(ctx.pcm_cap * 2, MALLOC_CAP_SPIRAM);
-        ctx.b64_cap = RING_CHAT_SSE_LINE_CAP;
-        ctx.b64 = malloc(ctx.b64_cap);
-        char *line = malloc(4096);
-        if (!ctx.pcm || !ctx.b64 || !line) {
+        ctx.b64_cap = RING_CHAT_TTS_B64_CAP;
+        ctx.b64 = heap_caps_malloc(ctx.b64_cap, MALLOC_CAP_SPIRAM);
+
+        ring_http_sse_t sse;
+        bool sse_ok = ring_http_sse_init(&sse, c);
+        if (!ctx.pcm || !ctx.b64 || !sse_ok) {
             free(ctx.pcm);
             free(ctx.b64);
-            free(line);
+            ring_http_sse_deinit(&sse);
             free(body);
             esp_http_client_cleanup(c);
             return ESP_ERR_NO_MEM;
         }
 
-        int line_pos = 0;
         bool done = false;
-        bool eof = false;
-
-        while (!done && !eof) {
-            line_pos = 0;
-            if (!ring_http_sse_line(c, line, &line_pos, 4096, &eof)) {
-                /* Buffer full — log and continue */
-                ESP_LOGW(TAG, "tts sse: long line truncated");
-                line[4096 - 1] = '\0';
+        while (!done) {
+            bool truncated = false;
+            const char *line = ring_http_sse_next(&sse, &truncated);
+            if (line == NULL) {
+                if (truncated) {
+                    ESP_LOGW(TAG, "tts sse: line too long — aborted");
+                }
+                break;
             }
 
             /* Skip empty lines, :keepalive, id:, event: markers. */
@@ -202,8 +203,10 @@ esp_err_t ring_chat_tts(const char *text, ring_chat_audio_cb_t cb, void *user)
                 if (json[0] == '\0') continue;
 
                 if (!tts_handle_event(&ctx, json)) {
-                    ESP_LOGW(TAG, "tts sse: event parse failed");
-                    break;
+                    /* Skip malformed/unknown events; one bad event must not
+                     * truncate the audio stream. */
+                    ESP_LOGW(TAG, "tts sse: event parse failed: %.200s", json);
+                    continue;
                 }
 
                 /* Check for finish_reason (sentence-end marks stop). */
@@ -217,10 +220,10 @@ esp_err_t ring_chat_tts(const char *text, ring_chat_audio_cb_t cb, void *user)
         }
 
         ESP_LOGI(TAG, "tts: %d sentences, %d chunks total%s",
-                 ctx.sentences, ctx.chunks, eof ? " (eof)" : "");
+                 ctx.sentences, ctx.chunks, sse.eof ? " (eof)" : "");
+        ring_http_sse_deinit(&sse);
         free(ctx.pcm);
         free(ctx.b64);
-        free(line);
         err = ESP_OK;
     } else {
         ESP_LOGW(TAG, "tts: open failed: %s", esp_err_to_name(err));

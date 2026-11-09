@@ -33,7 +33,12 @@
 #define RING_CHAT_MAX_HISTORY_TURNS  20     /* compile-time cap for safety */
 #define RING_CHAT_WAV_CAP            (512 * 1024)   /* ~16 s @ 16 kHz mono: 512 KB */
 #define RING_CHAT_B64_CAP            ((RING_CHAT_WAV_CAP + 2) / 3 * 4 + 256) /* base64 + Data URI prefix */
-#define RING_CHAT_SSE_LINE_CAP       8192
+/* TTS SSE: the server sends one base64 PCM blob per `sentence-synthesis`
+ * event, up to ~100 KB (1.6 s @ 48 kHz). The base64/PCM buffers must hold a
+ * whole blob or the chunk is silently truncated. The SSE line itself is read
+ * by a growable buffered reader (ring_http_sse_t). */
+#define RING_CHAT_TTS_B64_CAP        (128 * 1024)
+#define RING_CHAT_TTS_PCM_SAMPLES    ((RING_CHAT_TTS_B64_CAP / 4) * 3)
 #define RING_CHAT_LLM_REPLY_CAP      8192
 #define RING_CHAT_JSON_CAP           8192
 

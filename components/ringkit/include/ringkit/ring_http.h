@@ -46,20 +46,43 @@ esp_err_t ring_http_read_body(esp_http_client_handle_t c,
                               char *buf, size_t cap, int *out_len);
 
 /**
- * @brief Read one SSE line (up to '\n', CR skipped) into @p dst.
+ * @brief Buffered SSE reader.
  *
- * Unlike a naive loop, this reports end-of-stream: when the underlying read
- * returns 0 and no bytes were accumulated, @p eof is set and the caller must
- * stop instead of spinning.
- *
- * @param dst   Destination (NUL-terminated).
- * @param pos   In/out offset; reset to 0 before each call.
- * @param cap   Capacity of @p dst.
- * @param eof   Optional: set when the stream ended.
- * @return false when the line was truncated (buffer full).
+ * Reads the stream in blocks rather than a byte at a time: the TTS endpoint
+ * sends ~100 KB `data:` lines, and a per-byte `esp_http_client_read()` costs
+ * ~60 µs/byte on this stack (10 s for a 0.7 s reply).
  */
-bool ring_http_sse_line(esp_http_client_handle_t c,
-                        char *dst, int *pos, int cap, bool *eof);
+typedef struct {
+    esp_http_client_handle_t client;
+    char  *carry;        /**< bytes read past the last '\n' */
+    size_t carry_len;
+    size_t carry_cap;
+    char  *line;         /**< growable line buffer */
+    size_t line_cap;
+    bool   eof;
+} ring_http_sse_t;
+
+/**
+ * @brief Initialise the reader over an open HTTP client.
+ *
+ * @return false when the scratch buffers could not be allocated.
+ */
+bool ring_http_sse_init(ring_http_sse_t *s, esp_http_client_handle_t client);
+
+/** Release the scratch buffers. */
+void ring_http_sse_deinit(ring_http_sse_t *s);
+
+/**
+ * @brief Next SSE line, without the trailing newline.
+ *
+ * The returned pointer is valid until the next call. CR is stripped.
+ *
+ * @param s          Reader.
+ * @param truncated  Optional; set when the line had to be truncated.
+ * @return the line, or NULL at the end of the stream (or on allocation
+ *         failure, with @p truncated set).
+ */
+const char *ring_http_sse_next(ring_http_sse_t *s, bool *truncated);
 
 #ifdef __cplusplus
 }

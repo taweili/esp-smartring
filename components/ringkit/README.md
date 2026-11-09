@@ -40,9 +40,9 @@ the two-symbol example contract (see `examples/README.md`).
 
 | Header | Transport | Notes |
 |---|---|---|
-| `ring_chat.h` | HTTPS REST cascade (STT→LLM→TTS) | blocking, no realtime |
-| `ring_ws.h` | WebSocket, PCM in JSON | server_vad / smart_turn_v2 / PTT |
-| `ring_net.h` | WebRTC, Opus over RTP | lowest latency, needs UDP/DTLS |
+| `ring_chat.h` | HTTPS REST cascade (STT→LLM→TTS) | blocking, no realtime; `examples/06` |
+| `ring_ws.h` | WebSocket, PCM in JSON | server_vad / smart_turn_v2 / PTT; `examples/10` |
+| `ring_net.h` | WebRTC, Opus over RTP | lowest latency, needs UDP/DTLS; `examples/07` |
 
 ### Shared infrastructure
 
@@ -54,7 +54,7 @@ the two-symbol example contract (see `examples/README.md`).
 | `ring_json.h` | field extraction + overflow-checked append |
 | `ring_byte_ring.h` | newest-wins byte ring with a mutex |
 | `ring_resample.h` | 48k→16k decimator, 24k→48k interpolator |
-| `ring_http.h` | HTTPS client with the pinned CA + SSE line reader |
+| `ring_http.h` | HTTPS client with the pinned CA + buffered SSE reader |
 
 ## Board bring-up order
 
