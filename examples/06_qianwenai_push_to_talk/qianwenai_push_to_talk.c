@@ -15,7 +15,7 @@
  *
  * Tasks:
  *   qw-connect  8 KB internal — Wi-Fi + SNTP, retry loop
- *   qw-talk     ~14 KB internal — capture + cascade (no codec, no 64 KB PSRAM)
+ *   qw-talk     16 KB internal — capture + cascade (no codec, no PSRAM stack)
  */
 #include "ring_example.h"
 
@@ -66,10 +66,12 @@
 #define TALK_STACK         16384
 #define TALK_PRIO          5
 
+/* SNTP wait for the wall clock (TLS needs it). */
+#define CLOCK_TIMEOUT_MS   15000
+
 /* ------------------------------------------------------------- UI */
 
 #define TITLE_Y        28
-#define STATUS_Y       192
 #define STAGE_Y        224
 #define TRANSCRIPT_Y   250
 #define REPLY_Y        278
@@ -83,7 +85,6 @@
 
 static lv_obj_t *s_btn;
 static lv_obj_t *s_btn_label;
-static lv_obj_t *s_status;
 static lv_obj_t *s_stage;
 static lv_obj_t *s_transcript_label;
 static lv_obj_t *s_reply_label;
@@ -95,7 +96,6 @@ static volatile bool s_worker_busy;
 
 /* PSRAM capture buffer: 48 kHz / 16-bit / mono PCM (10 s max). */
 static int16_t *s_capture = NULL;
-static volatile size_t s_cap_samples;  /* written by capture loop, read by cascade */
 
 static char s_transcript[STT_TRANSCRIPT_SZ];
 static char s_reply[LLM_REPLY_SZ];
@@ -106,7 +106,7 @@ static const char *stage_name(int stage)
     switch (stage) {
     case 0: return "idle";
     case 1: return "listening…";
-    case 2: return "heard: ";
+    case 2: return "heard:";
     case 3: return "thinking…";
     case 4: return "replying…";
     case -1: return "error";
@@ -129,8 +129,10 @@ static void ui_button(const char *text, lv_color_t color)
 static void ui_stage(int stage, const char *detail)
 {
     char line[64];
-    if (stage == 2 && detail) {
-        snprintf(line, sizeof(line), "heard: %s", detail);
+    /* `detail` is a complete message at every call site (connecting…,
+     * Wi-Fi timed out…, syncing clock…); stage_name() is the fallback. */
+    if (detail != NULL) {
+        snprintf(line, sizeof(line), "%s", detail);
     } else {
         snprintf(line, sizeof(line), "%s", stage_name(stage));
     }
@@ -208,19 +210,31 @@ static uint8_t level_pct(const int16_t *pcm, size_t samples)
     return (uint8_t)(pct > 100 ? 100 : pct);
 }
 
-/* TTS audio callback: fold mono to stereo, mute-sequence, write to speaker. */
+/* TTS audio callback: fold mono to stereo and write to the speaker.
+ *
+ * The codec is unmuted once for the whole stream by talk_worker() — toggling
+ * it around every chunk is an I2C write per chunk and cuts the I2S DMA queue
+ * mid-buffer (clicks, dropped syllables). Chunks arrive up to 170 ms long, so
+ * split them into 20 ms frames; a single FRAME_SAMPLES buffer would truncate
+ * everything after the first 20 ms. */
 static void tts_play_cb(const int16_t *mono, size_t samples, void *user)
 {
-    /* A 20 ms frame at 48 kHz stereo = 3840 bytes. We use a small on-stack
-     * buffer; the TTS SSE callback fires on the worker task which has
-     * TALK_STACK = 16 KB, so ~4 KB of stack for this is fine. */
     uint8_t stereo[FRAME_SAMPLES * 4];  /* 3840 bytes (960 samples × 4) */
-    size_t out_s = samples > FRAME_SAMPLES ? FRAME_SAMPLES : samples;
-    ring_audio_mono_to_stereo(mono, (int16_t *)stereo, out_s);
-    ring_audio_set_mute(false);
-    ring_audio_write(stereo, out_s * 4);
-    ring_audio_set_mute(true);
+    size_t done = 0;
+    while (done < samples) {
+        size_t n = samples - done;
+        if (n > FRAME_SAMPLES) n = FRAME_SAMPLES;
+        ring_audio_mono_to_stereo(mono + done, (int16_t *)stereo, n);
+        ring_audio_write(stereo, n * 4);
+        done += n;
+    }
     (void)user;
+}
+
+/* FreeRTOS runs at 1 kHz (CONFIG_FREERTOS_HZ=1000), so a tick is 1 ms. */
+static uint32_t ticks_to_ms(TickType_t t)
+{
+    return (uint32_t)(t * portTICK_PERIOD_MS);
 }
 
 /* ------------------------------------------------------------- talk turn */
@@ -258,9 +272,9 @@ static void talk_worker(void *arg)
     }
 
     if (captured == 0) {
-        ui_error("empty capture");
+        ESP_LOGW(TAG, "capture: empty");
+        ui_error("empty capture — try again");
         s_worker_busy = false;
-        ui_idle();
         vTaskDelete(NULL);
         return;
     }
@@ -271,11 +285,14 @@ static void talk_worker(void *arg)
     /* Stage 2: STT. */
     ui_stage(2, NULL);
     ui_bar(0, lv_color_hex(0xFF9800));
+    TickType_t t0 = xTaskGetTickCount();
     err = ring_chat_stt(s_capture, captured, s_transcript, sizeof(s_transcript));
+    ESP_LOGI(TAG, "stt: %s in %u ms",
+             err == ESP_OK ? "ok" : esp_err_to_name(err),
+             ticks_to_ms(xTaskGetTickCount() - t0));
     if (err != ESP_OK) {
-        ui_error("STT failed");
+        ui_error("STT failed — tap to retry");
         s_worker_busy = false;
-        ui_idle();
         vTaskDelete(NULL);
         return;
     }
@@ -284,24 +301,34 @@ static void talk_worker(void *arg)
     /* Stage 3: LLM. */
     ui_stage(3, NULL);
     ring_chat_add_user(s_transcript);
+    t0 = xTaskGetTickCount();
     err = ring_chat_llm_complete(s_reply, sizeof(s_reply));
+    ESP_LOGI(TAG, "llm: %s in %u ms",
+             err == ESP_OK ? "ok" : esp_err_to_name(err),
+             ticks_to_ms(xTaskGetTickCount() - t0));
     if (err != ESP_OK) {
-        ui_error("LLM failed");
+        ui_error("LLM failed — tap to retry");
         s_worker_busy = false;
-        ui_idle();
         vTaskDelete(NULL);
         return;
     }
     ui_reply(s_reply);
 
-    /* Stage 4: TTS (SSE stream to speaker). */
+    /* Stage 4: TTS (SSE stream to speaker). Unmute once, stream, mute. */
     ui_stage(4, NULL);
     ui_button("REPLY", lv_color_hex(0x2196F3));
-    ring_audio_set_mute(true);
+    ring_audio_set_mute(false);
+    t0 = xTaskGetTickCount();
     err = ring_chat_tts(s_reply, tts_play_cb, NULL);
+    ESP_LOGI(TAG, "tts: %s in %u ms",
+             err == ESP_OK ? "ok" : esp_err_to_name(err),
+             ticks_to_ms(xTaskGetTickCount() - t0));
     ring_audio_set_mute(true);
     if (err != ESP_OK) {
-        ui_error("TTS failed");
+        ui_error("TTS failed — tap to retry");
+        s_worker_busy = false;
+        vTaskDelete(NULL);
+        return;
     }
 
     ESP_LOGI(TAG, "turn complete");
@@ -397,9 +424,10 @@ static void connect_task(void *arg)
         break;
     }
 
-    /* 2. SNTP clock (needed for TLS cert validation). */
+    /* 2. SNTP clock (needed for TLS cert validation). ring_time is the
+     * shared SNTP helper; 06 does not use ring_net. */
     ui_stage(-1, "syncing clock…");
-    err = ring_net_sync_clock();
+    err = ring_time_sync(CLOCK_TIMEOUT_MS);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "clock sync: %s", esp_err_to_name(err));
         /* Non-fatal — continue; HTTPS may or may not work without a clock. */
@@ -418,7 +446,7 @@ static void connect_task(void *arg)
     err = ring_chat_init(&cfg, s_api_key);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "ring_chat_init: %s", esp_err_to_name(err));
-        ui_stage(-1, "chat init failed");
+        ui_error("chat init failed");
         vTaskDelete(NULL);
         return;
     }
@@ -432,6 +460,14 @@ static void connect_task(void *arg)
 
 esp_err_t ring_example_start(void)
 {
+    /* NVS must be up before ring_secret_get() reads the persisted key.
+     * ring_wifi_init() would do it later, but the key is needed now. */
+    esp_err_t nvs_err = ring_nvs_init();
+    if (nvs_err != ESP_OK) {
+        ESP_LOGW(TAG, "ring_nvs_init: %s (build-time key still usable)",
+                 esp_err_to_name(nvs_err));
+    }
+
     load_api_key();
 
     /* Tune audio codec (same defaults as all other examples). */
@@ -470,14 +506,12 @@ esp_err_t ring_example_start(void)
                                         lv_color_white());
         lv_obj_center(s_btn_label);
 
-        s_status = ring_ui_add_label(scr, "connecting…",
-                                     &lv_font_montserrat_16,
-                                     lv_color_hex(0x9E9E9E));
-        ring_ui_place_centered(s_status, RING_CX, STATUS_Y);
-
         s_stage = ring_ui_add_label(scr, "connecting…",
                                     &lv_font_montserrat_16,
                                     lv_color_hex(0x9E9E9E));
+        lv_obj_set_width(s_stage, 320);
+        lv_obj_set_style_text_align(s_stage, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_label_set_long_mode(s_stage, LV_LABEL_LONG_DOT);
         ring_ui_place_centered(s_stage, RING_CX, STAGE_Y);
 
         s_transcript_label = ring_ui_add_label(scr, "",
