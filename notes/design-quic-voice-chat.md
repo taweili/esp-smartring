@@ -28,9 +28,9 @@ So there are exactly two honest options:
 | **A. Device speaks AOQ directly** | **No.** Undocumented MoQ profile, no C SDK, would require reverse-engineering + cert-fingerprint/token handling nobody publishes. Weeks-to-never, and it breaks the token-auth contract. |
 | **B. Device speaks our own QUIC to a local gateway (`ringgate`), gateway speaks WebRTC to Qianwen** | **Yes.** Everything QUIC is good for (0-RTT, datagram audio, per-track independence, migration) is preserved on the leg that actually suffers — Wi-Fi with a tiny antenna — while the cloud leg stays a transport the platform documents. |
 
-Important side effect of B: the portal-LAN problem from
-`examples/06_qianwenai_push_to_talk/README.md` §8 (all outbound UDP dropped on
-this network, DTLS times out at `47.117.13x.xxx:3478`) **disappears**. With
+Important side effect of B: the portal-LAN problem documented in
+`notes/networking-https-webrtc.md` §8 (all outbound UDP dropped on this
+network, DTLS times out at `47.117.13x.xxx:3478`) **disappears**. With
 `ringgate` on the LAN there is no NAT, no STUN, no TURN, and no reason for a
 router to drop UDP. The example becomes demoable on the bench.
 
@@ -147,7 +147,7 @@ WebTransport-over-HTTP/3 would add browser interop at the cost of nghttp3
 | 4 | **No AEC on the ring** | Unchanged from 06/07: ES8311 has no AEC, speaker sits next to the mic. Start **half-duplex** (energy/VAD gate closes the mic while the speaker is live) even though QUIC could do full duplex. Full duplex is the stretch goal and needs ESP-SR AFE (`notes/networking-https-webrtc.md` §5.2) — big, pulls `esp-sr`, do not put it on the critical path. |
 | 5 | **Flash** | 06 is 2.78 MB inside a 3000K partition (9 % free). wolfSSL + ngtcp2 do not fit in the slack → raise `partitions.csv` to **4000K** (it is shared by every app; that is fine, 16 MB part). |
 | 6 | **CPU** | Opus SILK encode already peaks ~20 KB stack and real time on the S3 while Wi-Fi runs. Add AES-GCM per QUIC packet (wolfSSL HW accel) — small, but profile the audio task before adding a second crypto stack's spin. |
-| 7 | **This network blocks UDP** | Already proven in 06 §8. `ringgate` on the LAN is the answer; document "phone hotspot or LAN gateway" as a prerequisite, and keep the 06-style explicit network gate (Wi-Fi → SNTP → probe → handshake) on screen. |
+| 7 | **This network blocks UDP** | Already proven (see `notes/networking-https-webrtc.md` §8). `ringgate` on the LAN is the answer; document "phone hotspot or LAN gateway" as a prerequisite, and keep the explicit network gate (Wi-Fi → SNTP → probe → handshake) on screen. |
 
 ---
 
@@ -246,7 +246,7 @@ whole estimate is hostage to M0.
 1. **WebSocket (TCP) + own AEC** (`notes/networking-https-webrtc.md` §5.x) — simplest, no new
    stack, but the head-of-line stall under 2.4 GHz loss is exactly what we are
    trying to remove. Keep as the baseline in the A/B build.
-2. **WebRTC (`esp_peer`, example 06)** — has built-in AEC and is already wired
+2. **WebRTC (`esp_peer`, example 07)** — has built-in AEC and is already wired
    up, but no 0-RTT, ICE/TURN machinery we don't need against a LAN gateway,
    and the platform's media endpoint was unreachable from here. Keep it as the
    other A/B backend.
@@ -265,7 +265,7 @@ whole estimate is hostage to M0.
 1. Boot log: `ringkit:` summary all `ok`, `ring_quic: handshake done
    rtt=12ms resumed=0`; **second** connect after reboot: `resumed=1`.
 2. From a clean `-B` dir: `00_glyph_grid_reveal`, `09_hello_smoke_test`,
-   `06_qianwenai_push_to_talk` (WebRTC backend) and
+   `07_qianwen_realtime_harness` (WebRTC backend) and
    `11_quic_voice_chat` both transports.
 3. Vendored overrides still win (`espressif__esp_codec_dev`,
    `viewesmart__smartring_plus`) + new: `components/ngtcp2/` wins over a

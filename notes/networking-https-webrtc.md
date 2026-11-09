@@ -1,10 +1,11 @@
 # Networking, HTTPS & WebRTC on the Smart Ring Plus
 
 **Status:** reference note — the **transport layer is now implemented**
-(`ring_net`, `examples/06_qianwenai_push_to_talk`, `examples/07_qianwen_realtime_harness`,
-`examples/05_wifi_https_demo`); the OpenAI REST (§5.1) and WebRTC (§5.3) paths remain
-unimplemented research. What ESP-IDF v6.1 offers, what fits this board, and what adding
-anything further would take.
+(`ring_chat`/`ring_net`/`ring_ws`, `examples/05_wifi_https_demo`,
+`examples/06_qianwenai_push_to_talk`, `examples/07_qianwen_realtime_harness`,
+`examples/10_qianwen_ws_voice_chat`); the OpenAI REST (§5.1) and WebRTC (§5.3) paths
+remain unimplemented research. What ESP-IDF v6.1 offers, what fits this board, and what
+adding anything further would take.
 
 **Scope:** the ring is an **ESP32-S3-N16R8** (8 MB octal PSRAM, 16 MB flash),
 Wi-Fi 2.4 GHz + BLE 5, **ES8311 audio codec + dual mic + speaker**, round
@@ -19,8 +20,9 @@ Wi-Fi 2.4 GHz + BLE 5, **ES8311 audio codec + dual mic + speaker**, round
 | Wi-Fi STA | `components/ringkit/src/ring_wifi.c` — NVS credentials, auto-reconnect, `ring_wifi_*` API |
 | BLE | `components/ringkit/src/ring_bt.c` + `ring_bt_gatt.c` + `ring_bt_gap.c` — NimBLE GATT server (`ring_bt_*`) |
 | HTTPS probe | `ring_net_probe()` — `examples/05_wifi_https_demo` |
-| WebRTC voice | `components/ringkit/src/ring_net.c` + `ring_net_signaling.c` + `ring_net_codec.c` + `ring_net_protocol.c` — `esp_peer` + Opus + Qianwen SDP exchange |
-| IP apps | `05_wifi_https_demo`, `06_qianwenai_push_to_talk`, `07_qianwen_realtime_harness` |
+| HTTPS cascade | `components/ringkit/src/ring_chat.c` + `ring_stt.c` + `ring_llm.c` + `ring_tts.c` — STT → LLM → TTS over `esp_http_client` (`examples/06_qianwenai_push_to_talk`) |
+| WebRTC voice | `components/ringkit/src/ring_net.c` + `ring_net_signaling.c` + `ring_net_codec.c` + `ring_net_protocol.c` — `esp_peer` + Opus + Qianwen SDP exchange (`examples/07_qianwen_realtime_harness`) |
+| IP apps | `05_wifi_https_demo`, `06_qianwenai_push_to_talk`, `07_qianwen_realtime_harness`, `10_qianwen_ws_voice_chat` |
 | Config | `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` and a 3000K app partition (`partitions.csv`) are already set for Wi-Fi + WebRTC headroom |
 
 Per the repo rule, apps talk to hardware **only** through `ringkit`. Any new
@@ -462,8 +464,8 @@ same pattern.
 * **No camera.** Video WebRTC is out of scope.
 * **API keys are secrets.** NVS, not source; the existing `ring_wifi.h`
   default credentials are a bad example to copy.
-* **Image size.** App partition is **3000K** (`partitions.csv`); 06 is 2718 KB,
-  07 is 2640 KB. Measure after adding any WebRTC/audio dependency.
+* **Image size.** App partition is **3000K** (`partitions.csv`); 07 is 2640 KB,
+  06 is 1495 KB, 05 is 1558 KB. Measure after adding any WebRTC/audio dependency.
 
 ---
 
@@ -474,8 +476,9 @@ same pattern.
    break the others.
 2. **HTTPS** (shipped): `ring_net_probe()` in `examples/05_wifi_https_demo`.
 3. **WebSocket** — still unexercised: connect to a `wss://` echo server, round-trip a message.
-4. **WebRTC** (shipped through the SDP + ICE stages): `examples/06`/`07` reach `ICE complete`,
-   but DTLS cannot complete on a network that drops outbound UDP (see 06 §8).
+4. **WebRTC** (shipped through the SDP + ICE stages): `examples/07` reaches `ICE complete`,
+   but DTLS cannot complete on a network that drops outbound UDP (the bench LAN drops all
+   outbound UDP; `06`/`10` stay on TCP/443 and are unaffected).
 5. **OpenAI**: one REST chat completion; one Realtime WebSocket PCM16 loopback — not started.
 6. **On-device**: mic/speaker echo, latency and UI behaviour need a human —
    there is no host-side way to synthesise a tap or a voice conversation.

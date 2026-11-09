@@ -21,11 +21,11 @@ bench network today.
 
 Three reasons, in order of weight:
 
-1. **This network blocks UDP.** `examples/06_qianwenai_push_to_talk/README.md`
-   §8: TCP/443 to the API works, but *all* outbound UDP is dropped, so the
-   DTLS handshake times out and 06/07 cannot complete a call here. WebSocket
-   is TCP/TLS 443 — it works on this LAN. This is the only way to demo a real
-   voice conversation on the bench.
+1. **This network blocks UDP.** `notes/networking-https-webrtc.md` §8: TCP/443
+   to the API works, but *all* outbound UDP is dropped, so the DTLS handshake
+   times out and 07 cannot complete a call here. WebSocket is TCP/TLS 443 — it
+   works on this LAN. This is the only way to demo a realtime voice
+   conversation on the bench.
 2. **It is the smallest realtime path.** `esp_websocket_client` + `esp-tls` +
    base64; no `esp_peer`, no DTLS-SRTP, no ICE/STUN/TURN, no signaling server,
    no codec. `notes/networking-https-webrtc.md` §5.4 recommends exactly this as the first
@@ -214,17 +214,17 @@ base64.
 ### Stack and buffer budget (state it, don't discover it)
 
 `ring_ws` has **no codec**, which is the whole point of this transport, and it
-changes the memory story completely from 06/07:
+changes the memory story completely from 07:
 
-| | 06/07 (`ring_net`) | `ring_ws` |
+| | 07 (`ring_net`) | `ring_ws` |
 |---|---|---|
 | Audio task stack | **64 KB**, PSRAM (`xTaskCreateWithCaps`) — stereo Opus | **~8 KB**, internal RAM — no codec |
 | Downlink ring | 4 s / 384 KB PSRAM (`RING_NET_DL_BYTES`), newest-wins | 4 s / 384 KB PSRAM, newest-wins (**same shape**) |
 | Uplink scratch | 20 ms mono→stereo up-mix | 20 ms 48k→16k decimate |
 
-FreeRTOS stacks come from internal RAM only, which is why 06/07 needed
+FreeRTOS stacks come from internal RAM only, which is why 07 needs
 `xTaskCreateWithCaps(..., MALLOC_CAP_SPIRAM)`. Without Opus, a plain ~8 KB
-`xTaskCreate` suffices — do not copy 06's 64 KB, and do not copy its
+`xTaskCreate` suffices — do not copy 07's 64 KB, and do not copy its
 PSRAM-stack workaround either.
 
 **Downlink jitter ring.** At 24 kHz mono the model streams ~48 KB/s, so a 4 s
@@ -337,11 +337,11 @@ and HTTPS are already set for `ring_net`. The WS client uses the embedded
 Qianwen CA via `cert_pem`, so the bundle is not needed for this endpoint.
 
 **Partition — verify, don't assume.** `partitions.csv` has a **3000K** app
-partition. Measured images: `06_qianwenai_push_to_talk` = **2718 KB** (only
-**282 KB** free), `07` = 2640 KB, `05_wifi_https_demo` = 1558 KB. This example
-drops `esp_peer` + libsrtp + Opus and adds the websocket client and a small
-resampler table, so it is *expected* to come in well under 06 — but that is an
-expectation, not a measurement. **Check the built binary against 06's 282 KB
+partition. Measured images: `07` = **2640 KB** (only **360 KB** free),
+`05_wifi_https_demo` = 1558 KB, `06_qianwenai_push_to_talk` = 1495 KB. This
+example drops `esp_peer` + libsrtp + Opus and adds the websocket client and a
+small resampler table, so it is *expected* to come in under 07 — but that is an
+expectation, not a measurement. **Check the built binary against 07's 360 KB
 of headroom before declaring the partition fine**, and raise it only if the
 build actually exceeds it.
 
@@ -389,7 +389,7 @@ ships before either optional subsystem.
 2. Vendored overrides still win (`espressif__esp_codec_dev`,
    `viewesmart__smartring_plus`); confirm `esp_websocket_client` resolved from
    `managed_components/`.
-3. New image size measured against 06's 282 KB of partition headroom.
+3. New image size measured against the 3000K partition (07 has ~360 KB free).
 4. Boot log: `ring_ws: session.updated`, `state -> ready`, no
    `panic`/`assert`; the turn mode actually negotiated is logged (`smart_turn_v2`
    or the fallback).
@@ -404,7 +404,7 @@ ships before either optional subsystem.
 
 ## 12. Alternatives considered
 
-1. **WebRTC (06/07)** — built-in AEC, but UDP-blocked here and heavier. Keep
+1. **WebRTC (07)** — built-in AEC, but UDP-blocked here and heavier. Keep
    as the other transport.
 2. **QUIC/AOQ** — best weak-network behaviour, but no C SDK; gateway project.
    `11_quic_voice_chat`.

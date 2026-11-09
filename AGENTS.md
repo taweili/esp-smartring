@@ -115,7 +115,7 @@ EOF
 │   ├── 03_gesture_probe/        # single-finger gesture probe (tap/hold/swipe, README)
 │   ├── 04_voice_loopback/       # mic+speaker loop-back (hold to record, README)
 │   ├── 05_wifi_https_demo/      # Wi-Fi STA + HTTPS probe (README)
-│   ├── 06_qianwenai_push_to_talk/   # hold-to-talk WebRTC voice (Qianwen, Opus; README)
+│   ├── 06_qianwenai_push_to_talk/   # hold-to-talk STT→LLM→TTS cascade (Qianwen, HTTPS; README)
 │   ├── 07_qianwen_realtime_harness/ # hands-free WebRTC voice loop (README)
 │   ├── 08_ble_peripheral/       # Bluetooth LE peripheral (README)
 │   ├── 09_hello_smoke_test/     # bring-up smoke test (white screen + label, README)
@@ -343,7 +343,8 @@ you touched CMake, `sdkconfig.defaults`, or `ringkit` headers:
    ```
    If you touched `ringkit`, `sdkconfig.defaults` or `main/idf_component.yml`, also build the
    apps that exercise the changed surface — `01_gbuddy_face` (LVGL assets/IMU),
-   `05_wifi_https_demo` (TLS), and `06`/`07` (the only `ring_net`/Opus consumers).
+   `05_wifi_https_demo` (TLS), `06` (the `ring_chat` HTTPS cascade), and `07`
+   (the only `ring_net`/Opus consumer).
    If you touched `ringkit`'s pure-logic modules, also run `cd tests && make check`.
 2. **Both vendored overrides still win** — `espressif__esp_codec_dev` and
    `viewesmart__smartring_plus` (see "Critical fixes").
@@ -353,9 +354,10 @@ you touched CMake, `sdkconfig.defaults`, or `ringkit` headers:
 4. **Touch paths need a human.** There is no way to synthesise a tap from the
    host: animations and gestures must be checked on the device. Do not report a
    UI interaction as verified from the log alone — say it needs a visual check.
-5. **Voice paths need a network.** `06`/`07` cannot complete a call where outbound UDP is
-   dropped (DTLS times out — see `06_qianwenai_push_to_talk/README.md` §8). TCP/443 working
-   is not sufficient evidence that a voice turn works.
+5. **Voice paths need a network.** `07` cannot complete a call where outbound UDP is
+   dropped (DTLS times out — see `notes/networking-https-webrtc.md` §8). `06`/`10` are
+   TCP/443-only and work on such a LAN, but TCP/443 working is not sufficient evidence
+   that a voice turn works.
 
 ## Repo hygiene
 
@@ -386,10 +388,10 @@ that must stay committed are the override *copies* in `components/`
 - **`09_hello_smoke_test` is bigger than `00_glyph_grid_reveal`** (~804 KB vs ~733 KB). Not a regression: it is
   the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables — but
   think before adding another large font.
-- **Image sizes are large and the partition is 3000K.** Measured: `12` 2638 KB, `06` 2718 KB,
-  `07` 2640 KB, `05` 1558 KB, `01` 1127 KB, `08` 1056 KB. `06` has only ~282 KB of headroom, so
-  check `idf.py -B build/<app> size` before adding a dependency that every app links (WebRTC,
-  Opus, a TLS stack).
+- **Image sizes are large and the partition is 3000K.** Measured: `12` 2638 KB, `07` 2640 KB,
+  `06` 1493 KB, `05` 1558 KB, `01` 1127 KB, `08` 1056 KB. `07`/`12` have only ~360 KB of
+  headroom, so check `idf.py -B build/<app> size` before adding a dependency that every app
+  links (WebRTC, Opus, a TLS stack).
 - **A `ringkit` change reaches every app.** `ringkit`'s `PRIV_REQUIRES` still links `esp_peer`,
   `esp_audio_codec`, `esp_http_client` and `esp-tls` into every app (phase 3 moved them out of
   `REQUIRES`, but they are still linked); adding to it grows every image.
@@ -420,8 +422,8 @@ that must stay committed are the override *copies* in `components/`
   over WebSocket, Realtime over WebRTC).
 - `notes/qianwen-ai-platform.md` — 千问 AI 平台 (qianwenai.com) reference: model catalog by category and the API surface
   (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async/batch).
-- `examples/06_qianwenai_push_to_talk/README.md` — hold-to-talk WebRTC voice button (`qwen-audio-3.1-realtime-flash`):
-  SDP exchange, Opus/48 kHz pipeline, `ring_net` module, stack/heap lessons.
+- `examples/06_qianwenai_push_to_talk/README.md` — hold-to-talk STT→LLM→TTS cascade (`ring_chat`):
+  the three HTTPS stages, audio pipeline, task/memory layout, latency tradeoffs.
 - `notes/design-ws-voice-chat.md` — WebSocket voice-chat design brainstorm for `examples/10_qianwen_ws_voice_chat`:
   PCM 16 kHz in / 24 kHz out resampler, `ring_ws` module, manual PTT / `smart_turn_v2` turn-taking, barge-in,
   function calling, stack + jitter-ring budget. The only realtime path that works on UDP-blocked networks.

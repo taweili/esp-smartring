@@ -77,7 +77,7 @@ plain `xTaskCreate` of that size fails outright.
 
 The key is read from NVS (`qianwen`/`api_key`); if absent, the build-time
 `QIANWEN_API_KEY` (from `secrets.local` via `tools/dev.sh`) is used and
-persisted. See `examples/06_qianwenai_push_to_talk/README.md` §3.
+persisted. See `examples/06_qianwenai_push_to_talk/README.md` §7.
 
 ## Build & run
 

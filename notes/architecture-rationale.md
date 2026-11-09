@@ -47,7 +47,7 @@ never touches `main/` or `components/`.
 │   ├── 03_gesture_probe/            # single-finger gesture probe
 │   ├── 04_voice_loopback/           # mic+speaker loop-back (hold to record)
 │   ├── 05_wifi_https_demo/          # Wi-Fi STA + HTTPS probe
-│   ├── 06_qianwenai_push_to_talk/   # hold-to-talk WebRTC voice (Qianwen, Opus)
+│   ├── 06_qianwenai_push_to_talk/   # hold-to-talk STT→LLM→TTS cascade (Qianwen, HTTPS)
 │   ├── 07_qianwen_realtime_harness/ # hands-free WebRTC test harness
 │   ├── 08_ble_peripheral/           # Bluetooth LE peripheral
 │   └── 09_hello_smoke_test/         # bring-up smoke test
@@ -152,7 +152,7 @@ const char *ring_example_name(void);
 | `03_gesture_probe` | Single-finger gesture probe: tap / hold / swipe / press / release. |
 | `04_voice_loopback` | Mic + speaker loop-back: hold to record, release to play back. |
 | `05_wifi_https_demo` | Wi-Fi station bring-up + HTTPS connectivity probe. |
-| `06_qianwenai_push_to_talk` | Push-to-talk WebRTC voice assistant (Qianwen, Opus 48 kHz). |
+| `06_qianwenai_push_to_talk` | Push-to-talk voice assistant: hold to talk, STT → LLM → TTS over HTTPS. |
 | `07_qianwen_realtime_harness` | Hands-free WebRTC test harness driven by an embedded clip. |
 | `08_ble_peripheral` | Bluetooth LE peripheral (advertise + GATT server). |
 | `09_hello_smoke_test` | Bring-up smoke test: white screen + one `Montserrat 48` label. |

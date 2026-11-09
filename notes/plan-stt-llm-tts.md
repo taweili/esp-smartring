@@ -1,7 +1,8 @@
 # STT → LLM → TTS rewrite of `examples/06_qianwenai_push_to_talk` — implementation plan
 
-**Status:** design / plan (no code yet). **Decisions locked:** Option A (Qianwen
-for all three stages); keep the `06_qianwenai_push_to_talk` name/directory.
+**Status:** implemented (`ring_chat` + the rewritten `06_qianwenai_push_to_talk`).
+**Decisions locked:** Option A (Qianwen for all three stages); keep the
+`06_qianwenai_push_to_talk` name/directory.
 **Companion to:** `notes/qianwen-ai-platform.md` (§1 protocols, §2.7 TTS, §2.9 ASR, §3 transports),
 `notes/networking-https-webrtc.md` §5.1 (OpenAI REST on ESP-IDF).
 **Goal:** replace 06's WebRTC speech-to-speech session with the classic cascade

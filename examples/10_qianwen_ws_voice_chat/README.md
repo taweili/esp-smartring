@@ -29,7 +29,7 @@ realtime API — the only realtime transport that works on a UDP-blocked network
 
 ## Why WebSocket?
 
-- **UDP is blocked on this bench.** The WebRTC path (06/07) fails here because
+- **UDP is blocked on this bench.** The WebRTC path (07) fails here because
   DTLS handshake packets cannot leave the LAN. WebSocket uses TCP/TLS 443 which
   works.
 - **No Opus, no esp_peer, no DTLS/SRTP.** Raw PCM in JSON over a single
@@ -75,7 +75,7 @@ Use the **same `-B`** for build/flash/monitor.
 
 ## Configuration
 
-See `examples/06_qianwenai_push_to_talk/README.md` §6 — the same mechanism
+See `examples/06_qianwenai_push_to_talk/README.md` §7 — the same mechanism
 applies (NVS key `qianwen`/`api_key`, seeded from build-time `QIANWEN_API_KEY`).
 
 ## Limitations

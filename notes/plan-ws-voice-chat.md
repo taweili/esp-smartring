@@ -472,7 +472,7 @@ is a different task topology and lands in P3.
 | Level | Check |
 |---|---|
 | Build | Clean `-B` dirs for `00`, `06`, `07`, `09`, `10`; vendored overrides win; `esp_websocket_client` resolves from `managed_components/` |
-| Size | `idf.py -B build/10_qianwen_ws_voice_chat size` vs 06's 282 KB headroom; **also measure app 00's delta** from adding the WS client to ringkit (see B-6) |
+| Size | `idf.py -B build/10_qianwen_ws_voice_chat size` vs 07's 360 KB headroom; **also measure app 00's delta** from adding the WS client to ringkit (see B-6) |
 | Boot | `ring_ws: session.updated`, `state -> ready`, negotiated mode logged, no panic |
 | Network | Full turn on the UDP-blocked bench (the key advantage) |
 | Wire | On-screen up/down bytes/s ≈ 32/48 KB/s + base64 |

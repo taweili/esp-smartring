@@ -3,7 +3,7 @@
 ## test_qianwen_realtime.py
 
 Tests the Qianwen realtime WebRTC API from the host, using the same flow as
-`examples/06_qianwenai_push_to_talk` (SDP POST → ICE/DTLS/SRTP → session.update →
+`examples/07_qianwen_realtime_harness` (SDP POST → ICE/DTLS/SRTP → session.update →
 Opus uplink → data-channel events → spoken reply), with verbose logging.
 
 By default it uses the **real microphone and speaker**: speak to the model and
