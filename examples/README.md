@@ -19,6 +19,9 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `10_qianwen_ws_voice_chat` | **WebSocket voice chat** with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, push-to-talk / `server_vad` / `smart_turn_v2` turn-taking (Set screen, NVS-persisted), barge-in, orb with radial level ring, Talk/Chat/Set screens, wire/battery stats. The only realtime transport that works where UDP is blocked. |
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. See `12_ringkit_selftest/README.md`. |
 
+> `11_quic_voice_chat/` is **planned** (design only, no buildable app yet) —
+> see `11_quic_voice_chat/README.md`.
+
 ## Building an app
 
 ```bash

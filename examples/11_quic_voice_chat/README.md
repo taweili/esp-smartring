@@ -1,9 +1,10 @@
-# QUIC voice chat — design brainstorm for `examples/11_quic_voice_chat`
+# 11_quic_voice_chat — QUIC voice chat (planned)
 
 **Status:** research / design only (no code yet). Companion to
 `notes/qianwen-ai-platform.md` (§1 protocols, §2.10 S2S models, §3 transports,
-§3.4 token auth, §3.5 QUIC/AOQ internals) and `notes/design-ws-voice-chat.md`
-(the TCP/WebSocket baseline this example is the A/B counterpart to).
+§3.4 token auth, §3.5 QUIC/AOQ internals) and
+`examples/10_qianwen_ws_voice_chat/README.md` (the TCP/WebSocket baseline this
+example is the A/B counterpart to).
 
 **Goal.** A hands-free voice conversation with
 `qwen-audio-3.1-realtime-flash` where the ring↔cloud audio leg runs over
@@ -151,7 +152,7 @@ WebTransport-over-HTTP/3 would add browser interop at the cost of nghttp3
 
 ---
 
-## 6. The app: `examples/11_quic_voice_chat`
+## 6. The app
 
 Deliberately different from its neighbours: 06 is push-to-talk (button gates
 the mic), 07 is a headless-ish harness. This one is **an always-on

@@ -122,7 +122,7 @@ EOF
 │   ├── 10_qianwen_ws_voice_chat/ # WebSocket voice chat: PCM 16k in / 24k out,
 │   │                            #   esp_websocket_client, PTT + hands-free modes,
 │   │                            #   orb + chat/settings screens (README)
-│   ├── 11_quic_voice_chat/      # PLANNED (design only) — notes/design-quic-voice-chat.md
+│   ├── 11_quic_voice_chat/      # PLANNED (design only) — README.md (QUIC/AOQ via ringgate)
 │   └── 12_ringkit_selftest/     # subsystem diagnostic: probe + voice init/stop (README)
 ├── scripts/
 │   ├── test_qianwen_realtime.py # host-side Qianwen WebRTC test client
@@ -136,8 +136,6 @@ EOF
     ├── architecture-rationale.md     # architecture rationale (§6 = the two IDF traps)
     ├── networking-https-webrtc.md    # ESP-IDF v6.1 networking/HTTPS/WebRTC reference
     ├── qianwen-ai-platform.md        # 千问 AI platform model catalog + API surface
-    ├── design-ws-voice-chat.md       # design: examples/10_qianwen_ws_voice_chat (no code yet)
-    ├── design-quic-voice-chat.md     # design: examples/11_quic_voice_chat (no code yet)
     ├── research-meta-muse.md         # research: Meta Muse gadget path (no code yet)
     ├── research-xiaozhi.md           # research: open-source Xiaozhi assistant (no code yet)
     └── plan-ringkit-refactor.md      # ringkit refactor plan + progress log (phases 1–4)
@@ -443,11 +441,10 @@ that must stay committed are the override *copies* in `components/`
   (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async/batch).
 - `examples/06_qianwenai_push_to_talk/README.md` — hold-to-talk STT→LLM→TTS cascade (`ring_chat`):
   the three HTTPS stages, audio pipeline, task/memory layout, latency tradeoffs.
-- `notes/design-ws-voice-chat.md` — WebSocket voice-chat design brainstorm for `examples/10_qianwen_ws_voice_chat`:
-  PCM 16 kHz in / 24 kHz out resampler, `ring_ws` module, manual PTT / `smart_turn_v2` turn-taking, barge-in,
-  function calling, stack + jitter-ring budget. The only realtime path that works on UDP-blocked networks.
-- `notes/design-quic-voice-chat.md` — QUIC/AOQ research and the `ringgate` design for `examples/11_quic_voice_chat`;
-  no code yet.
+- `examples/10_qianwen_ws_voice_chat/README.md` — WebSocket voice chat: the PCM 16 kHz in / 24 kHz out
+  resampler, `ring_ws` module, manual PTT / `smart_turn_v2` turn-taking, barge-in, transport internals,
+  stack + jitter-ring budget. The only realtime path that works on UDP-blocked networks.
+- `examples/11_quic_voice_chat/README.md` — planned QUIC/AOQ voice chat: the `ringgate` design; no code yet.
 - `notes/research-meta-muse.md`, `notes/research-xiaozhi.md` — assistant feasibility research; no code yet.
 - `examples/01_gbuddy_face/README.md` — the sprite-asset app: moods, blink, gaze, sleep, the
   on-device findings (flat background, feather, LVGL snapshot debugging) and how to regenerate

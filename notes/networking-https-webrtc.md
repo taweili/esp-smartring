@@ -394,8 +394,8 @@ P2P media or the WebRTC transport.
 `espressif/esp_audio_codec` (Opus), plus `esp-tls`/`esp_http_client`/`mbedtls` via
 `ringkit`'s `REQUIRES` and the shared `sdkconfig.defaults` block below. Still
 **unimplemented** and therefore still optional here: `espressif/openai` (REST),
-`espressif/mqtt`, `espressif/mdns`, and `esp_websocket_client` (needed only by the
-planned `examples/10_qianwen_ws_voice_chat` — see `notes/design-ws-voice-chat.md`).
+`espressif/mqtt`, `espressif/mdns`. The WebSocket realtime path is shipped in
+`examples/10_qianwen_ws_voice_chat` — see its README.
 
 ```yaml
 dependencies:

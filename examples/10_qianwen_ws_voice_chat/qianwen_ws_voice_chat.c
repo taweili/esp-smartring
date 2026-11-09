@@ -124,7 +124,7 @@
  *
  * Session settings that survive a reboot via NVS. The Qianwen API only
  * accepts turn_detection / voice while IDLE, so changing them reconnects the
- * session (see plan-ws-voice-chat.md C1). */
+ * session (see README.md "Implementation notes"). */
 
 static const char *const kTurnModes[] = { "ptt", "server_vad", "smart_turn_v2" };
 static const char *const kVoices[] = {
