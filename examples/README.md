@@ -18,6 +18,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `09_hello_smoke_test` | Bring-up smoke test: white screen, one large "Hello" glyph. See `09_hello_smoke_test/README.md`. |
 | `10_qianwen_ws_voice_chat` | **WebSocket voice chat** with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, push-to-talk / `server_vad` / `smart_turn_v2` turn-taking (Set screen, NVS-persisted), barge-in, orb with radial level ring, Talk/Chat/Set screens, wire/battery stats. The only realtime transport that works where UDP is blocked. |
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. See `12_ringkit_selftest/README.md`. |
+| `13_button_probe` | BOOT-button (GPIO0) probe: shows `press` / `long press` / `click` / `dbl click` on screen the moment each fires, with a live held-time line and per-event counters. See `13_button_probe/README.md`. |
 
 > `11_quic_voice_chat/` is **planned** (design only, no buildable app yet) —
 > see `11_quic_voice_chat/README.md`.
@@ -59,7 +60,7 @@ so every example can use the same `ring_example.h` name.
 > *after* `main`, and `__component_set_dependencies()` silently drops a
 > `REQUIRES` entry whose component isn't registered yet — losing both the
 > include path and the link, with a misleading error. Detail in
-> `notes/architecture-rationale.md` §6.1.
+> `README.md` § Architecture ("The two ESP-IDF traps that shaped the layout").
 
 ## Adding an example
 
@@ -104,8 +105,8 @@ Rules:
 ## Skeleton
 
 `components/ringkit/` wraps the whole BSP: `ring_board`, `ring_display`,
-`ring_touch`, `ring_battery`, `ring_power`, `ring_audio`, `ring_imu`,
-`ring_sd`, `ring_wifi`, `ring_bt`, the three voice transports (`ring_chat`
-HTTPS cascade, `ring_ws` WebSocket, `ring_net` WebRTC), `ring_secret`, plus
-`ring_ui` (lock/helpers), `ring_theme` (colours, geometry, timings) and
-`ring_rand` (deterministic xorshift32).
+`ring_touch`, `ring_battery`, `ring_power`, `ring_button`, `ring_audio`,
+`ring_imu`, `ring_sd`, `ring_wifi`, `ring_bt`, the three voice transports
+(`ring_chat` HTTPS cascade, `ring_ws` WebSocket, `ring_net` WebRTC),
+`ring_secret`, plus `ring_ui` (lock/helpers), `ring_theme` (colours, geometry,
+timings) and `ring_rand` (deterministic xorshift32).

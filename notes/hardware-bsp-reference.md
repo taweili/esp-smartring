@@ -349,7 +349,15 @@ the app past 1 MB) and benefits from `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`.
 | Codec ES8311 | Addr `0x18` on shared I2C |
 | IMU INT1 | **42** (reserved; driver currently polls) |
 
-**Reserved / do not reuse as GPIO:** BOOT (0), USB (19/20), UART0 (43/44), Octal PSRAM (33–37, SiP-internal).
+**Reserved / do not reuse as GPIO:** USB (19/20), UART0 (43/44), Octal PSRAM (33–37, SiP-internal).
+
+**GPIO0 (BOOT)** is a strapping pin: the ROM bootloader samples it at reset,
+but after reset it is a normal input. `ring_button` (`components/ringkit`)
+reads the BOOT button on it — active-low, 10 kΩ pull-up (R11) to 3V3, button
+to GND. Holding it at power-up/reset still enters download mode. The other
+tactile switch (SW1) is the power key on the EC190707 PMIC `KEY` pin, not a
+GPIO; firmware can only simulate its long press via GPIO47
+(`ring_power_shutdown()`).
 
 ---
 

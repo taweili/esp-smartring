@@ -1,134 +1,252 @@
 # Meta Muse on the Smart Ring Plus — Feasibility Research
 
-**Date:** 2026-10-30
+**Date:** 2026-10-30 · **Updated:** 2026-11-10
 **Goal:** What is **Meta Muse**, and how can it be used with the **VIEWE Smart Ring Plus** (ESP32-S3-N16R8, 1.8" ST77916 360×360 round)?
+
+> **Headline change (2026-11-10):** the Muse Gadget SDK now ships an **official
+> SmartRing Plus board** (`board_viewe_smartring_plus.c` +
+> `sdkconfig.muse-viewe-smartring-plus`). The ring is no longer a "would-be"
+> port — it is a supported device, with a setup doc, a direct-driver board
+> file, and a verified-compiles status. See §4–§5.
 
 ---
 
 ## 1. What is Meta Muse?
 
-**Muse** is **Meta's personal AI agent**, launched **8 September 2026**. It's not just a chatbot — it *acts*: it can send email, book tables, fill forms, make purchases, and talk to you, running on a Meta cloud computer on your behalf. It connects to Facebook/Instagram and third-party apps (Spotify, OpenTable), and is reachable via an app, WhatsApp, and (rolling out) voice calling + shareable avatars.
+**Muse** is **Meta's personal AI agent**, launched **8 September 2026** in the US
+(iOS, Android, muse.ai). It doesn't just answer questions — it *acts*: sends
+email, books travel, fills forms, negotiates, and checks out purchases (Link by
+Stripe, with Shop Pay and 1Password support coming). It runs on **Muse Secure
+VM**, a dedicated cloud computer per user, with a separate **Sentinel** agent
+that approves every internet action; Meta says Muse never sees passwords or
+payment details, asks before sensitive actions, and shows a full audit trail.
+A **Confidential VM** (user-held encryption key) is promised later. Muse
+remembers context across conversations and can proactively suggest actions.
 
-Underlying Meta stack:
-- **Muse Spark 1.1** — Meta Superintelligence Labs' multimodal reasoning model (agentic, tool/computer use, coding).
-- **Muse Voice Transcribe** — streaming STT on **Meta Model API** (~$0.18/hour, `PCM_16KHZ`/`PCM_24KHZ` mono, realtime WebSocket handshake).
-- **Muse Realtime Voice / Realtime Avatar** — real-time streaming conversation + expressive avatars (embodiment for live voice).
+**Pricing:** free tier with a weekly usage limit (~100M "Muse tokens"/week),
+**Power $20/mo** (500M/week) and **Max $100/mo** (3B/week). Availability varies
+by region/account.
 
-## 2. Meta Muse Gadgets — the open-source hardware SDK
+**New since the last revision:**
+- **Voice + expressive avatars** (5 Nov 2026, US; mobile/web/Mac): tap the phone
+  icon to talk; the avatar reacts while listening/speaking; interruptible;
+  audio-only, avatar-beside-chat, or full-screen; hundreds of voices. Meta
+  reports ~870 ms from end-of-speech to first video frame + audio, 25 fps.
+  Coming to AI Glasses and "Muse Charm".
+- **Spaces** (6 Nov 2026): describe it and Muse builds a custom app-like
+  experience (shopping hub, school dashboard, music tracker, trivia game) that
+  pulls live data from connected apps (Gmail, Google Calendar, OpenTable,
+  Notion, …).
 
-**Muse Gadgets** (`gadgets.muse.ai`, repo **`facebookincubator/muse-gadget-sdk`**, **Apache-2.0**) lets you turn an ESP32 board (or Raspberry Pi) into a body for the Muse agent. Two SDKs:
+## 2. The model stack
 
-- **ESP32 Device SDK** (`esp32/`) — flash an ESP32 board so it connects to Muse over home Wi-Fi: screen (images, status, avatar), mic in, speaker out, buttons, sensors, and a **home-network tunnel** so Muse can reach your local devices/HTTP APIs.
-- **Linux Device SDK** (`linux/`) — Raspberry Pi / Linux box; sysadmin & Home Assistant commands.
+| Model | Role | Notes |
+|---|---|---|
+| **Muse Spark 1.3** (current) | Powers the Muse app; agentic/coding | Multimodal reasoning; tool + computer use; 1M context. Successor to 1.1 (Jul 2026) and 1.2. Standard **$1.25 / $4.25 per Mtok** (in/out), cached in $0.15; **Contributor mode** $0.10 / $0.20 (data may train Meta models) |
+| **Muse Wonder 1.0** (12 Oct 2026) | Higher-capability tier | **$4 / $20 per Mtok** |
+| **Muse Voice Transcribe** | Streaming STT | **$0.18/hour**; 25 languages; punctuation, speech-turn detection, speaker labels (20+ speakers), vocabulary biasing. Realtime endpoint `wss://api.meta.ai/v1/asr/realtime` (handshake frame carries the credential; `PCM_16KHZ`/`PCM_24KHZ` signed 16-bit LE mono) plus a file endpoint |
+| **Muse Realtime Voice / Realtime Avatar** | In-app voice + embodiment | **No public API yet** — US Muse app only (as of Nov 2026) |
 
-**Flow:** get an **SDK token** (`gadgets.muse.ai/settings/sdk-tokens`) → flash the board → **pair with the Muse app** (Settings > Devices, enable Developer mode, devices appear as "MuseGadget…"). Built with **ESP-IDF 6.0.1** and **LVGL 9.5**. Each board is one `.c` file in `esp32/components/muse/boards/` + one `sdkconfig.muse-<board>` in `esp32/devices/`, selected by `CONFIG_MUSE_BOARD_<NAME>=y`.
+All are on the **Meta Model API** (`https://api.meta.ai/v1`, OpenAI-SDK
+compatible, `MODEL_API_KEY`). That matters for Option C below: the ring's
+existing `ring_ws` / `ring_chat` transports could target Muse Spark and Muse
+Voice Transcribe directly.
 
-### Already-supported boards (the important ones)
+## 3. Muse Gadgets — the open-source hardware SDK
+
+**Muse Gadgets** (`gadgets.muse.ai`, repo **`facebookincubator/muse-gadget-sdk`**,
+**Apache-2.0**, released **2 Oct 2026**) turns an ESP32 board or a Raspberry Pi
+into a body for the Muse agent: screen (images, status, avatar), mic in,
+speaker out, buttons, sensors, actuators, and a **home-network tunnel** so Muse
+can reach local devices/HTTP APIs.
+
+- **ESP32 Device SDK** (`esp32/`) — built with **ESP-IDF v6.0.3 exactly** (other
+  versions unsupported) and **LVGL 9.5**. Each board is one `.c` file in
+  `esp32/components/muse/boards/` plus one `sdkconfig.muse-<board>` overlay in
+  `esp32/devices/`; `tools/muse/board.sh build <alias>` builds it.
+- **Linux Device SDK** (`linux/`) — Raspberry Pi / Linux box; sysadmin & Home
+  Assistant commands.
+- **Muse Gadgets Test** app (Android + iOS) — streams the phone camera or a
+  clip to a gadget's screen over Wi-Fi: **H.264 or VP8 decoded on-board, 30 fps
+  on the round 466 px boards** (`protocols/VIDEO.md`).
+- **Web flasher** (`facebookincubator.github.io/muse-gadget-sdk`) — flash from
+  Chrome/Edge; the SDK token is pushed over USB and kept through updates.
+- **Muse Code** — Meta's coding agent (`curl -fsSL https://dev.meta.ai/install.sh
+  | sh`, then `muse --disable-sandbox`) reads the SDK's `AGENTS.md` and can
+  build/flash/talk to the board.
+- **Pairing:** SDK token from gadgets.muse.ai → flash → Muse app **Settings >
+  Devices** (enable Developer mode; devices appear as "MuseGadget…").
+- **Community:** Discord (`discord.gg/3bhjCkZdd6`); repo at ~2.7k stars /
+  ~600 forks, actively maintained (pushes and PRs through 9 Nov 2026).
+- **Power profiling:** `esp32/docs/power/` porting recipe + `power_sweep.py`
+  (PPK2-based, USB-free battery-input sweeps); board-neutral diagnostic core.
+- **Simulator:** `esp32/simulator/` runs the UI on the host (LVGL + SDL).
+
+## 4. Supported boards — the ring is officially one of them
+
+The SDK has grown well past the launch set (~37 boards). The relevant ones:
 
 | Muse SDK board | Hardware | Relation to Smart Ring Plus |
 |---|---|---|
-| **`board_waveshare_s3_185c.c`** (sdkconfig.muse-waveshare-s3-185c) | ST77916 QSPI **360×360 round**, CST816, ES8311 DAC + ES7210 mic, TCA9554 expander, ADC battery, 16 MB/8 MB PSRAM | **Same silicon stack as the ring** (ST77916 + CST816 + ES8311 + round 360px). Near-identical port template. |
-| **`board_waveshare_s3_175c.c`** (featured on gadgets.muse.ai) | round 1.75" AMOLED 466×466, PTT, speaker+mic, **battery** | Same *form factor* as the ring (round, battery). |
-| **`board_ostb_echoear_2st.c`** | VIEWE-family **EchoEar** round 360px, ES8311(0x18)+ES7210(0x40), touch 0x15 | **VIEWE (OSTB) device already ported** — closest vendor precedent. |
-| `board_sensecap_watcher.c` | ESP32-S3 round display, ES8311-only audio, knob | Used by the esp32-thinks example (below); ES8311-only mic+spk. |
-| `board_aipi.c`, `board_m5stack_sticks3.c`, `board_m5stack_stopwatch.c`, `board_esp_mosaico.c`, … | various | Confirms ES8311-only audio + round screens are well-trodden. |
+| **`board_viewe_smartring_plus.c`** (`sdkconfig.muse-viewe-smartring-plus`, alias `smartring-plus`) | ESP32-S3-N16R8, 360×360 round ST77916 + CST816, ES8311, 16 MB / 8 MB octal | **The ring itself — official support.** Setup doc `esp32/devices/viewe-smartring-plus.md` |
+| `board_waveshare_s3_185c.c` | ST77916 QSPI 360×360 round, CST816, ES8311 DAC + ES7210 mic, 16 MB/8 MB | Same panel/touch/codec stack; the original near-identical template |
+| `board_ostb_echoear_2st.c` (experimental) | VIEWE-family EchoEar round 360 px, ES8311(0x18) + ES7210(0x40), touch 0x15 | VIEWE (OSTB) device already ported — closest vendor precedent |
+| `board_waveshare_s3_175c.c` | Round 1.75" AMOLED 466×466, PTT, speaker+mic, battery | Same form factor; featured on gadgets.muse.ai |
+| `board_sensecap_watcher.c` | ESP32-S3 round 412×412, ES8311 + ES7243E, PTT knob | Base board for the esp32-thinks multi-model fork (§6, Option B) |
+| `board_ai_passport.c`, `board_m5stack_*`, `board_seeed_xiao_s3_147.c`, `board_espressif_box_3.c`, `board_esp_mosaico.c`, `board_deotaland_rorolee.c`, `board_waveshare_s3_*`, … | various | Confirms ES8311-only audio + round screens are well-trodden |
 
-> `MUSE_AUDIO_RATE = 16000` (mono 16 kHz) — the SDK's voice pipeline matches the Muse Model API's `PCM_16KHZ` realtime handshake.
+> `MUSE_AUDIO_RATE = 16000` (mono 16 kHz) — the SDK's voice pipeline matches the
+> Muse Model API's `PCM_16KHZ` realtime handshake.
 
-## 3. Can it be used with the Smart Ring Plus? — **Yes**
+## 5. The official SmartRing Plus port — what's there and what isn't
 
-The ring is hardware-wise an ideal Muse gadget. **Every needed block is already proven in the SDK** — you only add a new board file with the ring's pin map (same effort as the Xiaozhi port, but within Meta's SDK).
+The board file (`esp32/components/muse/boards/board_viewe_smartring_plus.c`,
+424 lines) **drives the hardware directly** — it does not link the BSP. It
+follows VIEWE's `viewesmart/smartring_plus` **BSP 1.1.2** for pins and behaviour:
 
-| Ring feature | Muse SDK support |
-|---|---|
-| ESP32-S3 (16 MB flash / 8 MB octal PSRAM) | ✅ Core; `CONFIG_SPIRAM_MODE_OCT`, `FLASHSIZE_16MB` (as in the 185c config) |
-| ST77916 QSPI **360×360 round** | ✅ `board_waveshare_s3_185c.c` + `muse_lcd_bands.c` (banded round-screen drawing) |
-| CST816 touch (0x15) | ✅ `esp_lcd_touch_cst816s` + direct GPIO or expander reset |
-| **ES8311** speaker+mic (0x18) | ✅ ES8311-only boards (SenseCAP Watcher, AiPi, M5Stack); `esp_codec_dev` drives spk+mic from one codec |
-| QMI8658A IMU | ⚠️ Not used by Muse firmware (optional; can add gesture/tap-to-talk) |
-| SD card | ✅ (file/asset support in several boards) |
-| Wi-Fi / BLE | ✅ Core requirement |
-| **Battery (AXP2101 / ADC)** | ⚠️ Not modeled in the SDK — boards use an ADC reading only (e.g. 185c `BATT_ADC`). Add your own AXP2101 task. |
-| Button for PTT/pairing | ⚠️ SDK uses a button (hold 5 s to pair, status LED). Ring has **only BOOT (GPIO0)** and no RGB LED — map BOOT as the button and show Muse status on the display instead. |
+- **Panel:** ST77916 B-panel init table from the BSP's `lcd_init_seq.h`
+  (`viewe_smartring_display_init.h`); CST816S touch (reset pulsed on GPIO40).
+- **Display:** **two 10-line buffers in internal RAM** (as EchoEar-2ST does with
+  the same panel), *not* the BSP's 40-line PSRAM buffers — those need a fresh
+  28.8 KB internal DMA buffer per flush, which may not exist once Wi-Fi, BLE
+  and the Muse session are up.
+- **Audio:** builds a **16 kHz duplex I2S** itself and returns separate speaker
+  and mic handles (`mic_slot` 0). It deliberately does **not** use
+  `bsp_audio_init()`, which opens the codec and leaves the speaker muted — Muse
+  never unmutes a handle it did not open.
+- **Battery:** V2 **AXP2101** (ALDO3 rail on, 300 mA charge to 4.2 V, gauge
+  percent/voltage/charging/USB) or V1 **GPIO1 ADC** (voltage curve + 4.25 V
+  charging threshold), with the same register values as `bsp_battery.c` /
+  `bsp_axp2101.c` (`viewe_smartring_power.h`).
+- **Talk:** the **on-screen mic icon** is the talk button (`touch_talk` on
+  `muse_board_t`) — hold to talk, release to send; a tap confirms pairing.
+  **BOOT (GPIO0)** still produces talk events but is inside the case.
+- **Deliberately absent:** `power_off` (the GPIO47 soft power-off is unverified
+  with this port — use the switch) and `display_pause` (pausing LVGL would stop
+  touch, the only way to wake the screen).
+- **Reset pairing:** Settings → MUSE → **Reset pairing** (tap again within 5 s).
 
-## 4. Two ways to use it
+**Build** (from `esp32/`): `tools/muse/board.sh build smartring-plus`, with the
+SDK token set via menuconfig (`CONFIG_GADGET_SDK_TOKEN`). Uses
+`partitions_muse.csv` (16 MB flash). ESP-IDF **v6.0.3**.
+
+**Verification status (be precise about this):** the checks were made with an
+**earlier BSP-based port** built locally with ESP-IDF v6.0.3 and no warnings:
+screen powers on after Wi-Fi, touch orientation is correct, slot 0 carries the
+live microphone. The **direct driver** keeps the BSP's pins, panel table, touch
+driver and battery settings but **hasn't been rechecked on the board**, and
+**Muse app pairing / app connection were not tested** (region/app
+availability). So: *compiles and partly verified* — not a confirmed
+end-to-end working gadget.
+
+## 6. Three ways to put Muse on the ring
 
 ### Option A — Official Meta path (Muse app + SDK token)
 
-Flash the **stock Muse Gadget firmware** (with a new `viewe-smartring` board) and pair it with the **Muse app** using an **SDK token**. Muse then runs on the ring: press-to-talk (or wake word), stream mic up / TTS down, show Muse's **status + avatar + images** on the round display, and (on round 466 px boards) **video streaming** (H.264/VP8). Requires a Meta account, the Muse app, and an SDK token; the "brain" is Meta's.
+Build the **stock Muse Gadget firmware** with the official ring board, flash it,
+pair with the **Muse app** using an **SDK token**. Muse then runs on the ring:
+hold the on-screen mic to talk, stream mic up / TTS down, show Muse's status +
+avatar + images on the round display, and (via Muse Gadgets Test) receive video.
+Requires a Meta account, the Muse app (US availability), and an SDK token; the
+"brain" is Meta's. **This is now the lowest-effort path** — no porting needed.
 
 ### Option B — esp32-thinks / openmuse (bring your own model, no Meta account)
 
-**`raullenchai/esp32-thinks`** is a reviewable patch on the Muse Gadget SDK (built on it, ESP-IDF v6.0.x, **SenseCAP Watcher** board) that makes a **multi-model Muse**:
-- **Three independent OpenAI-compatible endpoints** (STT / chat / TTS) — pick any provider per task (OpenAI, QuickSilver, local, custom); presets `openai`, `quicksilver`, `openmuse`, `custom`.
-- **Wake word "Hi, ESP"** (esp-sr WakeNet10, on-chip) **or button**; **barge-in**, streaming sentence-by-sentence replies, language following (EN/CN/KO), silence guard, stall recovery.
-- **Headless provisioning** — Wi-Fi in config, self-provisions on boot; no app/BLE.
-- Optional **openmuse** agent adds location, clock, weather, persistent memory, web search, and proxies STT+chat over one TLS session.
+**`raullenchai/esp32-thinks`** is a reviewable patch on the Muse Gadget SDK
+(**v0.2.12**, 19 Oct 2026; pinned SDK commit `812c46f`, 9 Oct 2026; **SenseCAP
+Watcher** board; ESP-IDF v6.0.x, CI pins v6.0.3; MIT) that makes a
+**multi-model Muse**:
 
-This is a great fit for the ring, which has **no knob** — you'd use the wake word (or map BOOT as the button), and the round display shows the conversation.
+- **Three independent OpenAI-compatible endpoints** (STT / chat / TTS) — pick
+  any provider per task; presets `openai`, `quicksilver`, `openmuse`, `custom`.
+- **Wake word "Hi, ESP"** (esp-sr WakeNet10, on-chip) **or button**; barge-in;
+  streaming sentence-by-sentence replies (ASCII + CJK boundaries); silence
+  guard; automatic stall recovery (20 s I2S/LCD deadline, wedged-I2C reboot).
+- **Language following** (EN/CN/KO tested) and **language-aware voice**
+  (qwen3-tts for CN/KO, chatterbox-turbo for EN with the QuickSilver preset).
+- **Headless provisioning** — Wi-Fi in config, self-provisions on boot; no
+  app/BLE/vendor account.
+- Optional **openmuse** agent (in-repo, Docker/Node) adds location, clock,
+  weather, persistent memory and web search, and proxies STT so STT + chat
+  share one TLS session.
+- **Measured on device:** typed warm turns 2.2–2.5 s (EN/KO), ~6.8 s (CN);
+  voice turns ~3–5 s from end of speech to first sound; ~3.9/4.7 s with
+  openmuse.
 
-## 5. Porting the Smart Ring Plus to the Muse Gadget SDK
+For the ring: no knob → use the wake word (or map BOOT). **esp32-thinks does
+not yet support the ring** — it's Watcher-only today, though "more boards the
+SDK supports are candidates". Porting it is a patch-scale job now that the SDK
+has a ring board.
 
-Create two things (copy from `board_waveshare_s3_185c.c`, which is the same panel stack):
+### Option C — Meta Model API in the ring's own firmware (no SDK)
 
-1. **`esp32/components/muse/boards/board_viewesmart_smartring.c`** — implement the board API (`muse_board.h`: `init`, `display_start`, `audio_init`, `button`, `battery`…) with the ring's pins.
+Muse Spark (chat) and Muse Voice Transcribe (STT) are ordinary **Meta Model
+API** endpoints (`https://api.meta.ai/v1`, OpenAI-SDK compatible), and Muse
+Spark is the model that powers Muse itself. The ring's existing `ring_ws`
+(WebSocket) / `ring_chat` (HTTPS cascade) transports in `components/ringkit/`
+could target them directly — a "Muse brain, our body" path with no SDK token,
+no Muse app, and no US-only dependency. TTS would need a separate model (the
+Model API's speech endpoints are STT-only; Muse's realtime voice/avatar has no
+public API yet). This is the most flexible option for this repo, but it means
+reimplementing the agent loop that the SDK/Muse app otherwise provides.
 
-2. **`esp32/devices/sdkconfig.muse-smartring`** — device config:
-```ini
-CONFIG_IDF_TARGET="esp32s3"
-CONFIG_MUSE_BOARD_VIEWESMART_SMARTRING=y
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-...  (octal-PSRAM settings, same as sdkconfig.muse-waveshare-s3-185c)
-```
-Then add the board to `esp32/components/muse/CMakeLists.txt` (the `CONFIG_MUSE_BOARD_*` → `.c` mapping) and build with the SDK's `AGENTS.md` instructions / `idf.py` (ESP-IDF **6.0.1**).
+## 7. Gotchas
 
-### Pin map: Smart Ring Plus → Muse board file
+- **ESP-IDF must be v6.0.3** for the Muse SDK firmware (the ring's own project
+  uses 6.1 — keep them separate).
+- **SDK token + Muse app** required for the official path (or use esp32-thinks'
+  headless path).
+- **Muse app availability is US-only** so far; pairing/connection is untested
+  outside it.
+- **No user button / no RGB LED** on the ring → the on-screen mic is the talk
+  button; BOOT (GPIO0) works but is inside the case; show status on the display.
+- **Battery (AXP2101)** is now handled by the official board file (V2 gauge +
+  V1 ADC fallback) — the earlier "not modeled" caveat is resolved.
+- **Audio:** ES8311 alone (mic+spk, no ES7210) is supported; the marketing
+  "dual MIC" likely refers to a second mic — verify before wiring dual-mic.
+- **Round screen:** use small internal-RAM buffers / banded drawing
+  (`muse_lcd_bands`); full-screen LVGL flush exhausts internal RAM.
+- **Flash/partition:** 16 MB flash + 8 MB octal PSRAM, `partitions_muse.csv`.
+- License: SDK is Apache-2.0; `viewe_smartring_display_init.h` is Apache-2.0
+  under VIEWE's copyright; the EchoEar display-init header is from
+  `78/xiaozhi-esp32` (MIT).
 
-| Ring function | Ring GPIO | Muse board macro/note |
-|---|---|---|
-| LCD QSPI SCLK / CS / D0–D3 | **10 / 11 / 12-13-15-14** | `LCD_SCLK/LCD_CS/LCD_D0..D3` |
-| LCD RST / TE / BL | **39 / 38 / 46** | `LCD_RST/LCD_TE/LCD_BL` (direct GPIO — **no TCA9554 expander** on the ring) |
-| I2C SDA / SCL (touch+codec) | **8 / 9** | `I2C_SDA/I2C_SCL` |
-| Touch CST816 (0x15) RST / INT | **40 / 41** | `TOUCH_RST/TOUCH_INT` |
-| I2S MCLK / BCLK / WS / DOUT / DIN | **48 / 21 / 17 / 16 / 18** | `I2S_MCLK/I2S_BCLK/I2S_WS/I2S_DOUT/I2S_DIN` |
-| PA enable | **45** | `PA_EN` |
-| ES8311 addr | **0x18** | single codec for **both** mic+spk (unlike the 185c's ES8311+ES7210) |
-| BOOT (button) | **0** | `BOOT_BUTTON_GPIO` / `muse_gpio_button_init` |
-| IMU INT1 | **42** | optional gesture |
-| Battery | AXP2101 (V2) / ADC1_CH0 (V1) | add own task (SDK only does ADC) |
-| Round UI | 360×360 | `muse_lcd_bands.c` (e.g. `DRAW_BUF_LINES=72`) |
+## 8. Verdict
 
-## 6. Gotchas
+- **Meta Muse is a first-class fit for the Smart Ring Plus — and now an
+  official one.** The ring is a supported Muse gadget board with a direct
+  driver, a setup doc, and a build path.
+- **Effort:** Option A is a build-and-pair away (with the verification caveats
+  in §5); Option B is a patch-scale port now; Option C is a ringkit-scale
+  integration for full independence.
+- **Recommendation:** try **Option A** first (it exercises Meta's agent and the
+  tunnel end-to-end); if the US-only/Meta-account dependency is a problem,
+  **Option B** gives the same hardware experience with your own models, and
+  **Option C** is the long-term fit for this repo.
 
-- **SDK token + Muse app** required for the official path (or use esp32-thinks' headless path).
-- **ESP-IDF must be 6.0.1** for the Muse SDK firmware (the ring's own project uses 6.1 — keep them separate).
-- **No user button / no RGB LED** on the ring → use the **wake word** and/or map **BOOT (GPIO0)** as the push-to-talk/pairing button; show pairing/listening/speaking status on the round display.
-- **Battery (AXP2101)** isn't modeled by the SDK — add a low-battery/charging task (the ring's own BSP already has `bsp_battery_*`).
-- **Audio:** ES8311 alone (mic+spk, no ES7210) is supported (`muse_audio.c` uses `esp_codec_dev` with separate spk/mic handles). The marketing "dual MIC" likely refers to an ES7210 second mic — verify before wiring dual-mic.
-- **Round screen:** use `muse_lcd_bands` banded drawing (full-screen LVGL flush exhausts internal RAM) and the ST77916 vendor init table from `waveshare_s3_185c/st77916_init_185c.h` (or the ring BSP's `lcd_init_seq.h`).
-- **Flash/partition:** 16 MB flash + 8 MB octal PSRAM as in `sdkconfig.muse-waveshare-s3-185c`.
-- License: SDK is Apache-2.0; the EchoEar display-init header is from `78/xiaozhi-esp32` (MIT).
-
-## 7. Verdict
-
-- **Meta Muse is a first-class fit for the Smart Ring Plus.** The ring is essentially a **Muse gadget**: round touch display, mic, speaker, ESP32-S3, Wi-Fi/BLE, battery. The SDK even ships **the same ST77916/CST816/ES8311 stack** (Waveshare 1.85C) and a **VIEWE-family EchoEar** board.
-- **Effort:** low-to-moderate — one board `.c` + one `sdkconfig` + a CMake line, modeled on `board_waveshare_s3_185c.c`.
-- **Choice:** Option A (Meta app, agentic Muse, needs Meta account + token) vs **Option B** (esp32-thinks: your own OpenAI-compatible models, wake word, self-hosted — best for a button-less ring).
-
----
-
-## 8. References
+## 9. References
 
 - Muse Gadgets: https://gadgets.muse.ai/ · SDK repo: https://github.com/facebookincubator/muse-gadget-sdk
-- ESP32 Device SDK: `esp32/README.md`, `esp32/AGENTS.md`, boards in `esp32/components/muse/boards/`
+- **Ring board + setup:** `esp32/components/muse/boards/board_viewe_smartring_plus.c`,
+  `esp32/devices/sdkconfig.muse-viewe-smartring-plus`,
+  `esp32/devices/viewe-smartring-plus.md`
 - Same-silicon template: `boards/board_waveshare_s3_185c.c` + `devices/sdkconfig.muse-waveshare-s3-185c`
-- VIEWE-family precedent: `boards/board_ostb_echoear_2st.c`
-- Multi-model example: https://github.com/raullenchai/esp32-thinks (patch on the Muse Gadget SDK)
-- Meta Muse launch: NYT 2026-09-08 · Muse Spark 1.1: ai.meta.com · Muse Voice Transcribe: dev.meta.ai · Muse Realtime Voice/Avatar: research.meta.ai
+- VIEWE-family precedent: `boards/board_ostb_echoear_2st.c` + `devices/ostb-echoear-2st.md`
+- ESP32 SDK overview: `esp32/README.md`, `esp32/AGENTS.md`, `esp32/devices/README.md`
+- Multi-model fork: https://github.com/raullenchai/esp32-thinks (v0.2.12) · openmuse: `openmuse/README.md`
+- Meta Muse launch (8 Sep 2026): https://about.fb.com/news/2026/09/introducing-muse-personal-ai-agent/
+- Muse voice + avatars (5 Nov 2026): https://about.fb.com/news/2026/11/introducing-muse-ai-voice-expressive-avatars/
+- Muse spaces (6 Nov 2026): https://www.theverge.com/tech/1028871/meta-muse-ai-spaces
+- Muse subscriptions: https://www.meta.com/help/subscriptions/1021145227643680/
+- Muse Spark 1.3: https://dev.meta.ai/models/muse-spark · docs: https://dev.meta.ai/docs/muse-spark
+- Muse Voice Transcribe: https://dev.meta.ai/models/muse-voice-transcribe · realtime API: https://dev.meta.ai/docs/api-reference/voice/realtime
+- Meta Model API pricing: https://dev.meta.ai/docs/pricing-rate-limits
+- Web flasher: https://facebookincubator.github.io/muse-gadget-sdk/
+- Muse Code: https://developer.meta.com/ai/lp/muse-code/
 - Espressif note (ESP32 powers Muse Gadgets): https://www.espressif.com/en/news/Meta_Muse_ESP32
 - Smart Ring Plus BSP (pins): `VIEWESMART/smartring_plus` `include/bsp/board_config.h`
 
-*Source basis: direct inspection of the `facebookincubator/muse-gadget-sdk` ESP32 SDK (boards, devices, `muse_audio.c`, CMake wiring), the `raullenchai/esp32-thinks` repo, the gadgets.muse.ai site, and Meta's Muse launch/model docs.*
+*Source basis: direct inspection of the `facebookincubator/muse-gadget-sdk` ESP32
+SDK (README, devices list, the ring board file and setup doc, sdkconfig), the
+`raullenchai/esp32-thinks` repo and releases, Meta's Muse launch/voice posts,
+dev.meta.ai model + pricing docs, and gadgets.muse.ai.*

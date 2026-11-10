@@ -21,6 +21,7 @@ the two-symbol example contract (see `examples/README.md`).
 | `ring_touch.h` | CST816 capacitive touch | already wired to LVGL as an indev |
 | `ring_battery.h` | AXP2101 (V2) / GPIO1 ADC (V1) | thread-safe getters |
 | `ring_power.h` | soft power-off GPIO47 | `ring_power_shutdown()` normally does not return |
+| `ring_button.h` | BOOT button on GPIO0 | press / long-press / click / double-click (`ring_button_*`) |
 | `ring_audio.h` | ES8311 + I2S 48 kHz / 16-bit / stereo | read/write/mute + stereo↔mono |
 | `ring_imu.h` | QMI8658A accel + gyro + temp | thread-safe getters, level calibration |
 | `ring_sd.h` | SDMMC + FAT `/sdcard` | no card-detect pin: "no card" == "mount failed" |
@@ -85,6 +86,7 @@ Tasks created by ringkit:
 |---|---|---|---|---|
 | `lvgl_adapter` | BSP | — | BSP | LVGL timerhandler + flush |
 | BSP IMU sampler | BSP | — | BSP | 250 Hz accel/gyro/temp |
+| `ring-button` | 3 KB | 5 | `ring_button` | 10 ms BOOT-button sample + event decode |
 | `ring-net-signal` | 4 KB | 4 | `ring_net` | SDP exchange / peer bring-up |
 | `ring-net-event` | 6 KB | 4 | `ring_net` | state + transcript callbacks |
 | `ring-net-peer` | 16 KB | 5 | `ring_net` | `esp_peer` main loop |
@@ -116,6 +118,16 @@ ring_imu_calib: IDLE ──start()──▶ RUNNING ──stable──▶ PASSED
                                           └──30 s──▶ FAILED
 ```
 
+ring_button is a small state machine fed by its poll task:
+
+```
+ring_button: IDLE ──press──▶ PRESSED ──hold──▶ LONG_PRESS
+                      │          └──release──▶ WAIT_DOUBLE ──timeout──▶ (CLICK)
+                      │                                   └──press──▶ PRESSED2
+                      │                                                   └──release──▶ DOUBLE_CLICK
+                      └──release──▶ CLICK (immediate)
+```
+
 All state getters are thread safe. `ring_net`/`ring_ws` guard their state with
 a mutex; `ring_wifi`/`ring_bt` do the same.
 
@@ -130,14 +142,17 @@ a mutex; `ring_wifi`/`ring_bt` do the same.
   the lock on an early exit. Do not "simplify" the macro: the unlock lives in
   the loop **increment**, and setting `.ok = false` there instead leaks the
   mutex on the normal path, which freezes the `lvgl_adapter` worker task and
-  stops all repaints without any error (see `notes/architecture-rationale.md`
-  §3 "Lock discipline").
+  stops all repaints without any error (see `README.md` § Architecture —
+  "Lock discipline").
 - Mandatory init uses `ESP_ERROR_CHECK`; optional peripherals (SD, IMU) fail
   soft and are reported in `ring_board_t`.
 - Log with `ESP_LOGI/LOGW/LOGE` and a `TAG`.
 - Use `ring_rand_*`, not `esp_random()` — the deterministic RNG is the point.
 - Use `ring_secret_get()` for credentials; NVS wins, else the build-time value
   from `ring_secrets.h` (which is then persisted).
+- `ring_button` callbacks run on the `ring-button` task, never the LVGL task.
+  Take `RING_UI_LOCKED(-1)` before touching LVGL; `ring_button_is_pressed()` /
+  `ring_button_held_ms()` are lock-free snapshots for a UI timer.
 
 ## Voice transport decision guide
 
@@ -186,8 +201,5 @@ Covers `ring_json`, `ring_resample`, `ring_byte_ring` and the
 
 ## Related docs
 
-- `notes/architecture-rationale.md` — why the layout is `ringkit` + fragments,
-  and the two ESP-IDF traps.
 - `notes/hardware-bsp-reference.md` — hardware + BSP reference, pin map.
-- `notes/plan-ringkit-refactor.md` — the refactor plan and progress log.
 - `examples/README.md` — the example contract and app table.

@@ -18,6 +18,7 @@
 #include "ringkit/ring_touch.h"
 #include "ringkit/ring_battery.h"
 #include "ringkit/ring_power.h"
+#include "ringkit/ring_button.h"
 #include "ringkit/ring_audio.h"
 #include "ringkit/ring_imu.h"
 #include "ringkit/ring_sd.h"

@@ -286,7 +286,7 @@ whole estimate is hostage to M0.
 * `notes/networking-https-webrtc.md` needs a **§6 QUIC** section: wolfSSL-vs-mbedTLS,
   ngtcp2 timer model, the emqx ESP32 port as prior art, flash/RAM budget.
 * `partitions.csv` comment (1500K → 3000K → 4000K) gets a third reason.
-* `notes/architecture-rationale.md` §6 gains a trap: *"mbedTLS has no QUIC interface —
+* `README.md` § Architecture ("The two ESP-IDF traps") gains a trap: *"mbedTLS has no QUIC interface —
   adding QUIC means adding wolfSSL, and two TLS stacks is a flash decision,
   not a library decision."*
 

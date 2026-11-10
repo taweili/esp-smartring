@@ -123,7 +123,8 @@ EOF
 │   │                            #   esp_websocket_client, PTT + hands-free modes,
 │   │                            #   orb + chat/settings screens (README)
 │   ├── 11_quic_voice_chat/      # PLANNED (design only) — README.md (QUIC/AOQ via ringgate)
-│   └── 12_ringkit_selftest/     # subsystem diagnostic: probe + voice init/stop (README)
+│   ├── 12_ringkit_selftest/     # subsystem diagnostic: probe + voice init/stop (README)
+│   └── 13_button_probe/         # BOOT-button (GPIO0) event probe: press/long/click/double (README)
 ├── scripts/
 │   ├── test_qianwen_realtime.py # host-side Qianwen WebRTC test client
 │   └── assets/test_clip.pcm     # clip for its --clip mode (no mic needed)
@@ -133,12 +134,10 @@ EOF
 │   └── lvgl_img_pack.py         # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
 └── notes/
     ├── hardware-bsp-reference.md     # hardware + BSP reference (product, BSP API, pin map)
-    ├── architecture-rationale.md     # architecture rationale (§6 = the two IDF traps)
     ├── networking-https-webrtc.md    # ESP-IDF v6.1 networking/HTTPS/WebRTC reference
     ├── qianwen-ai-platform.md        # 千问 AI platform model catalog + API surface
     ├── research-meta-muse.md         # research: Meta Muse gadget path (no code yet)
-    ├── research-xiaozhi.md           # research: open-source Xiaozhi assistant (no code yet)
-    └── plan-ringkit-refactor.md      # ringkit refactor plan + progress log (phases 1–4)
+    └── research-xiaozhi.md           # research: open-source Xiaozhi assistant (no code yet)
 ```
 
 ### Skeleton (`components/ringkit/`)
@@ -149,6 +148,7 @@ Everything goes through `ringkit/ringkit.h`:
 - `ring_board_*` — bring-up in the required order + a `ring_board_t` summary
 - `ring_display_*`, `ring_touch_*`, `ring_battery_*`, `ring_power_*`,
   `ring_audio_*`, `ring_imu_*`, `ring_sd_*` — one-to-one BSP wrappers
+- `ring_button_*` — BOOT button on GPIO0: press / long-press / click / double-click
 - `ring_wifi_*` — Wi-Fi STA with NVS-persisted credentials
 - `ring_bt_*` — NimBLE BLE peripheral (declarative GATT DB, GAP state, notify)
 - `ring_chat_*` / `ring_ws_*` / `ring_net_*` — the three voice transports
@@ -227,6 +227,8 @@ visible. UI design must account for this:
 - Touch: `ring_touch_handle()`
 - Battery: `ring_battery_get()`, `ring_battery_percent()`, `ring_battery_voltage()`, `ring_battery_is_charging()`, `ring_battery_pmic_type()`
 - Power: `ring_power_shutdown()` (holds GPIO47 ~3.5 s; normally doesn't return)
+- Button: `ring_button_init()`, `ring_button_deinit()`, `ring_button_is_pressed()`,
+  `ring_button_held_ms()` (BOOT button on GPIO0; press / long-press / click / double-click)
 - Audio: `ring_audio_codec()`, `ring_audio_read()`, `ring_audio_write()`, `ring_audio_set_mute()`,
   `ring_audio_stereo_to_mono()`, `ring_audio_mono_to_stereo()` (the codec is stereo; voice work is mono)
 - IMU: `ring_imu_accel()`, `ring_imu_tilt()`, `ring_imu_calib_start/poll/info()`,
@@ -339,6 +341,9 @@ grep -oE "(components|managed_components)/viewesmart__smartring_plus" \
   keep critical content inside `RING_SAFE_RADIUS` (see "Display geometry").
 - **Do not** add an `idf_component.yml` under `examples/`; the single manifest is
   `main/idf_component.yml`.
+- Use `ring_button` for the BOOT button (GPIO0); do **not** call `gpio_*` directly
+  from app code. Its callback runs on ring_button's task — take
+  `RING_UI_LOCKED(-1)` before touching LVGL.
 - Host-side unit tests for the pure-logic modules live in `tests/`; run `make check`
   after changing `ring_json`, `ring_resample`, `ring_byte_ring` or the `ring_chat`
   message builder.
@@ -401,7 +406,10 @@ that must stay committed are the override *copies* in `components/`
 - **Audio pop/click:** always mute after playback (`set_mute(true)`); `esp_codec_dev_write()` returns `0` on success (inverted `esp_err_t`).
 - **Panel revision:** the BSP uses the vendor "B" init table (`BOARD_LCD_VERSION_A`); a mismatch gives vertical stripes.
 - **SD "no card" vs "mount failure"** can't be distinguished in software.
-- **Reserved GPIOs:** 0 (BOOT), 19/20 (USB), 43/44 (UART0), 33–37 (PSRAM). Never reconfigure.
+- **Reserved GPIOs:** 19/20 (USB), 43/44 (UART0), 33–37 (PSRAM). Never reconfigure.
+  **GPIO0 (BOOT)** is reserved by the ROM bootloader but usable as a normal input
+  after reset — `ring_button` reads the BOOT button on it (active-low). Holding it
+  at power-up/reset still enters download mode.
 - **`09_hello_smoke_test` is bigger than `00_glyph_grid_reveal`** (~804 KB vs ~733 KB). Not a regression: it is
   the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables — but
   think before adding another large font.
@@ -429,11 +437,10 @@ that must stay committed are the override *copies* in `components/`
   contract and the voice-transport decision guide.
 - `tests/README.md` — host-side unit tests: what they cover and how to add one.
 - `examples/12_ringkit_selftest/README.md` — the subsystem diagnostic app.
-- `notes/plan-ringkit-refactor.md` — the ringkit refactor plan and progress log (phases 1–4).
+- `examples/13_button_probe/README.md` — the BOOT-button (GPIO0) probe: events,
+  timings, and the strapping-pin caveat.
 - `notes/hardware-bsp-reference.md` — hardware + BSP reference: product overview, BSP API, pin map, pitfalls.
 - `examples/00_glyph_grid_reveal/README.md` — 00_glyph_grid_reveal design & build spec: layered reveal maths, layer timeline, risks.
-- `notes/architecture-rationale.md` — architecture rationale: why the layout is `ringkit` + fragments; §6 has the two
-  ESP-IDF traps (EXTRA_COMPONENT_DIRS ordering, double CMake evaluation).
 - `notes/networking-https-webrtc.md` — networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/
   cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and OpenAI API paths (REST, Realtime
   over WebSocket, Realtime over WebRTC).

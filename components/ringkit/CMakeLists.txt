@@ -18,6 +18,8 @@ set(RINGKIT_SRCS
     "src/ring_touch.c"
     "src/ring_battery.c"
     "src/ring_power.c"
+    "src/ring_button.c"
+    "src/ring_button_sm.c"
     "src/ring_audio.c"
     "src/ring_imu.c"
     "src/ring_sd.c"
@@ -68,7 +70,7 @@ endif()
 idf_component_register(
     SRCS ${RINGKIT_SRCS}
     INCLUDE_DIRS "include"
-    REQUIRES smartring_plus lvgl esp_http_client
+    REQUIRES smartring_plus lvgl esp_http_client esp_driver_gpio
     PRIV_REQUIRES esp_lvgl_adapter esp_wifi esp_netif esp_event nvs_flash bt
                   esp_peer esp-tls lwip mbedtls esp_audio_codec esp_websocket_client
     EMBED_TXTFILES "assets/qianwen_ca.pem"

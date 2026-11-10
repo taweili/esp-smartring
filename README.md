@@ -79,6 +79,8 @@ tools/dev.sh monitor
 | `09_hello_smoke_test` | Bring-up smoke test: white screen + one large label. |
 | `10_qianwen_ws_voice_chat` | WebSocket voice chat with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, push-to-talk / `server_vad` / `smart_turn_v2` turn-taking, orb + chat/settings screens. The only realtime transport that works where UDP is blocked. See `examples/10_qianwen_ws_voice_chat/README.md`. |
 | `11_quic_voice_chat` | *Planned (design only).* QUIC/AOQ voice chat via a LAN `ringgate`. See `examples/11_quic_voice_chat/README.md`. |
+| `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. |
+| `13_button_probe` | BOOT-button (GPIO0) probe: shows `press` / `long press` / `click` / `dbl click` the moment each fires, with a live held-time line and per-event counters. See `examples/13_button_probe/README.md`. |
 
 > `07` needs a network that allows **outbound UDP** for DTLS; on a
 > UDP-filtered LAN it connects as far as ICE and then times out. See
@@ -96,15 +98,87 @@ tools/                    dev.sh (build/flash wrapper), lvgl_img_pack.py (sprite
 notes/                    research + design notes
 ```
 
+The repo used to be a single app: `main/main.c` did BSP bring-up *and* the UI,
+and nothing was reusable — the bring-up order, LVGL lock discipline, theme
+constants and the deterministic RNG were all trapped in one launcher. The
+split makes `components/ringkit/` the only place that talks to the BSP, so
+every app gets the correct bring-up order, a leak-proof LVGL lock, the shared
+look and the deterministic RNG for free. **Adding an app is one directory**
+and never touches `main/` or `components/`.
+
 Applications **never** include `bsp/smartring_plus.h` and never call `bsp_*`
 directly — everything goes through `ringkit/ringkit.h`. Board bring-up order
 lives in `ring_board_init()`: **display first** (it creates the shared I2C bus
 and starts the LVGL task), then battery → power → audio (mandatory), then
 SD → IMU (fail soft). All LVGL work happens under `RING_UI_LOCKED(-1) { ... }`.
 
-Three things are **required** and must not be reverted (vendored `esp_codec_dev`
-and `smartring_plus` overrides for ESP-IDF v6, and `CONFIG_FREERTOS_HZ=1000`) —
-see `AGENTS.md` § "Critical fixes already applied".
+### How exactly one app is selected
+
+The project `CMakeLists.txt` is evaluated before `sdkconfig` exists, so a
+**CMake cache variable** (`RING_APP`, default `00_glyph_grid_reveal`) is the
+only viable selector there — a Kconfig `choice` would compile the selection
+into `sdkconfig`, which is harder to script and invites "I flashed the wrong
+app". `main/CMakeLists.txt` `include()`s `examples/${RING_APP}/CMakeLists.txt`
+— a three-line fragment that sets `RING_EXAMPLE_SRCS` / `_INCLUDE_DIRS` /
+`_REQUIRES` — and folds those into its own `idf_component_register()`. An
+invalid `RING_APP` fails fast at configure time with the list of valid choices.
+
+### The two ESP-IDF traps that shaped the layout
+
+**Examples are CMake fragments, not components.** The obvious design — every
+example a component registered via `EXTRA_COMPONENT_DIRS`, all named the same
+so `main` could always `REQUIRES ring_example` — **does not work in
+ESP-IDF**:
+
+1. Component registration order puts `main` **before** `EXTRA_COMPONENT_DIRS`
+   components.
+2. `__component_set_dependencies()` only links a requirement if the required
+   component's target is *already* registered — otherwise it is silently
+   dropped.
+
+So a `REQUIRES` entry pointing at an example vanishes with no diagnostic, and
+the build fails later on `#include "ring_example.h"` with no hint about the
+cause. `include()`-ing the selected example's `CMakeLists.txt` from `main`
+avoids the whole class of ordering bugs. Cost: examples are not standalone
+components, so they cannot be unit-tested or depended on independently.
+
+**`main/CMakeLists.txt` is evaluated twice.** ESP-IDF also runs a
+requirements-gathering pass in a separate CMake process where cache variables
+are not set (`RING_APP` is empty) and `CMAKE_SOURCE_DIR` is the **build
+directory**, not the project. Hence the root is resolved via
+`${CMAKE_CURRENT_LIST_DIR}/..` and `00_glyph_grid_reveal` is used when
+`RING_APP` is empty. Getting this wrong produces `include could not find
+requested file: …/build/…/examples//CMakeLists.txt`.
+
+### Lock discipline
+
+`RING_UI_LOCKED(-1) { ... }` is a double `for` loop with a `cleanup` handler,
+so it unlocks on every exit path (`return`, `break`, `goto`) — a hand-written
+`ring_ui_lock()`/`ring_ui_unlock()` pair leaks the lock on early return. The
+order of its parts is load-bearing: the unlock must happen in the loop
+**increment**; setting `.ok = false` there instead looks equivalent but is not
+— the increment runs before the `cleanup` handler, so the handler sees
+`.ok == false`, skips the unlock, and leaks the mutex on the normal path. That
+bug shipped in the phase-1 refactor and cost a long debugging session. Because
+`esp_lv_adapter_lock()` is recursive, the leaking task keeps working, and the
+symptom is the **LVGL worker task** starving forever in
+`esp_lv_adapter_lock(-1)` — the screen keeps whatever was flushed during
+bring-up and nothing the app draws afterwards ever appears, with no panic,
+assert or error log.
+
+### What must not change
+
+- The vendored overrides `components/espressif__esp_codec_dev/` and
+  `components/viewesmart__smartring_plus/` (project `components/` outrank
+  `managed_components/`, so they win even if the component manager
+  re-downloads the originals), and `CONFIG_FREERTOS_HZ=1000` in
+  `sdkconfig.defaults` (the IMU sampler's `pdMS_TO_TICKS(4)` rounds to 0 at
+  the default 100 Hz tick and asserts `xTaskDelayUntil`). See
+  `AGENTS.md` § "Critical fixes already applied".
+- The 40-line LVGL draw buffer (full-panel buffering exhausts internal RAM).
+- Init order: `bsp_display_init()` first.
+- `main/idf_component.yml` as the single dependency manifest — no per-example
+  manifests.
 
 ## Documentation
 
@@ -113,7 +187,6 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `AGENTS.md` | Developer guidance: build/flash commands, verification bar, critical fixes, gotchas. **Start here before changing code.** |
 | `examples/README.md` | App contract, how apps are selected and added. |
 | `notes/hardware-bsp-reference.md` | Hardware + BSP reference: product overview, full `bsp_*` API, pin map, gotchas. |
-| `notes/architecture-rationale.md` | Architecture rationale: why the layout is `ringkit` + fragments; the two ESP-IDF traps. |
 | `examples/00_glyph_grid_reveal/README.md` | Default app design & build spec (layered reveal maths, risks). |
 | `examples/01_gbuddy_face/README.md` | The sprite-asset app: moods, blink/gaze/sleep, sprite geometry and flash budget, on-device findings (flat background, feathered matte, LVGL snapshot debugging), asset regeneration. |
 | `examples/02_imu_dashboard/README.md` | The IMU dashboard: every QMI8658A channel, the bubble level, and the tap-to-calibrate flow. |
@@ -127,6 +200,8 @@ see `AGENTS.md` § "Critical fixes already applied".
 | `notes/qianwen-ai-platform.md` | 千问 AI 平台 (qianwenai.com) reference: model catalog by category (LLM, vision, image/video/3D generation, speech, omni, embeddings) and the API surface (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async task/batch APIs). |
 | `examples/10_qianwen_ws_voice_chat/README.md` | WebSocket voice chat: PCM 16 kHz in / 24 kHz out resampler, the `ring_ws` module, turn-taking, barge-in, transport internals, and the stack + jitter-ring budget. |
 | `examples/11_quic_voice_chat/README.md` | Planned QUIC/AOQ voice chat: the `ringgate` gateway design (no code yet). |
+| `examples/12_ringkit_selftest/README.md` | The subsystem diagnostic app. |
+| `examples/13_button_probe/README.md` | The BOOT-button (GPIO0) probe: events, timings, and the strapping-pin caveat. |
 | `notes/research-meta-muse.md`, `notes/research-xiaozhi.md` | Assistant feasibility research (no code yet). |
 | `scripts/README.md` | Host-side Qianwen WebRTC test client (`test_qianwen_realtime.py`): same flow as `07`, logs every event, saves the reply as WAV. |
 | BSP upstream | `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus`). |
