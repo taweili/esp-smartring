@@ -20,8 +20,8 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. See `12_ringkit_selftest/README.md`. |
 | `13_button_probe` | BOOT-button (GPIO0) probe: shows `press` / `long press` / `click` / `dbl click` on screen the moment each fires, with a live held-time line and per-event counters. See `13_button_probe/README.md`. |
 
-> `11_quic_voice_chat/` is **planned** (design only, no buildable app yet) —
-> see `11_quic_voice_chat/README.md`.
+> `11_quic_voice_chat/` and `14_geodis_voice_chat/` are **planned** (design
+> only, no buildable app yet) — see their READMEs.
 
 ## Building an app
 

@@ -181,3 +181,50 @@ scripts/.venv/bin/python scripts/test_qianwen_ws_keepalive.py --strategy silence
 
 `none` shows the 180 s timeout; `session_update` is the strategy the app uses
 (resets the timer, produces no reply). `--duration` defaults to 210 s.
+
+## test_geodis_api.py
+
+Verifies the **GEODIS Voice Agent** API from the host — the M0 spike behind
+`examples/14_geodis_voice_chat/README.md`. The agent is Azure OpenAI Realtime
+(`gpt-realtime-2.1`) over WebRTC, fronted by an unauthenticated gateway; there
+is no REST chat API, so the script checks both the HTTP surface and a real
+WebRTC session (SDP → `session.update` → STT opt-in → text/voice turn →
+client-executed RAG tool call → spoken reply).
+
+```bash
+# HTTP surface only (stdlib only — no venv needed)
+python3 scripts/test_geodis_api.py
+python3 scripts/test_geodis_api.py --mode http
+
+# full WebRTC session, deterministic text turn (needs scripts/.venv)
+scripts/.venv/bin/python scripts/test_geodis_api.py --mode webrtc
+
+# WebRTC session with a spoken question (espeak clip, no microphone)
+scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice
+scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice --clip /tmp/q.wav
+
+# everything
+scripts/.venv/bin/python scripts/test_geodis_api.py --mode all -v
+```
+
+`--mode http` checks `/api/v1/info`, `/token` (empty body and with
+`system_prompt`/`chat_session_id`), `/tool-call` (string arguments → RAG
+chunks; object arguments → HTTP 500), the `save-message`/`transcripts`
+round-trip, the **absence of a WebSocket route** (404) and the presence of the
+SDP route (bogus offer → 400). `--mode webrtc` / `voice` run a real session and
+check the SDP exchange, the `session.created` defaults (STT off, server_vad
+preset), the `session.update` STT opt-in, the assistant transcript, the tool
+call, and the saved reply (`scripts/geodis_reply.wav`).
+
+The spoken question is generated with `espeak` at runtime; pass `--clip` with
+a WAV or raw 48 kHz mono s16le PCM to use your own. `--no-stt` skips the
+whisper-1 opt-in, `--no-stun` skips ICE gathering, `--system-prompt` overrides
+the persona, `--question` changes the text turn, `--timeout` bounds the wait.
+
+> **The endpoint is unauthenticated and metered.** Every `--mode webrtc` /
+> `voice` run starts a real Azure Realtime session against GEODIS's UAT budget.
+> Do not run it in a loop.
+
+Exit code is the test result: `0` all checks passed, `1` one or more failed,
+`2` setup error (aiortc missing, clip unreadable). The reply audio is written to
+`--out` (default `scripts/geodis_reply.wav`, git-ignored).

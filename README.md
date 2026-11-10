@@ -81,6 +81,7 @@ tools/dev.sh monitor
 | `11_quic_voice_chat` | *Planned (design only).* QUIC/AOQ voice chat via a LAN `ringgate`. See `examples/11_quic_voice_chat/README.md`. |
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. |
 | `13_button_probe` | BOOT-button (GPIO0) probe: shows `press` / `long press` / `click` / `dbl click` the moment each fires, with a live held-time line and per-event counters. See `examples/13_button_probe/README.md`. |
+| `14_geodis_voice_chat` | *Planned (design only).* Speech-to-speech conversation with the GEODIS Voice Agent (Azure OpenAI Realtime `gpt-realtime-2.1` over WebRTC): `/token` → SDP → Opus → RAG tool call. See `examples/14_geodis_voice_chat/README.md`. |
 
 > `07` needs a network that allows **outbound UDP** for DTLS; on a
 > UDP-filtered LAN it connects as far as ICE and then times out. See
