@@ -203,7 +203,13 @@ scripts/.venv/bin/python scripts/test_geodis_api.py --mode webrtc
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice --clip /tmp/q.wav
 
-# everything
+# live microphone -> agent -> speaker (interactive, multiple turns)
+scripts/.venv/bin/python scripts/test_geodis_api.py --mode live
+scripts/.venv/bin/python scripts/test_geodis_api.py --mode live --list-devices
+scripts/.venv/bin/python scripts/test_geodis_api.py --mode live --turns 5 \
+    --mic-device 5 --speaker-device 0 --playback adaptive
+
+# everything (HTTP + WebRTC text turn)
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode all -v
 ```
 
@@ -220,6 +226,24 @@ The spoken question is generated with `espeak` at runtime; pass `--clip` with
 a WAV or raw 48 kHz mono s16le PCM to use your own. `--no-stt` skips the
 whisper-1 opt-in, `--no-stun` skips ICE gathering, `--system-prompt` overrides
 the persona, `--question` changes the text turn, `--timeout` bounds the wait.
+
+### Live microphone / speaker mode
+
+`--mode live` is the interactive path: it captures the host microphone, streams
+it to the agent, and plays the reply through the host speaker. It is
+half-duplex — the uplink is paused as soon as the assistant's first non-silent
+audio frame arrives and re-opened after the reply has been played — because
+the model would otherwise hear itself through the speaker. The server sends
+digital-silence keep-alive frames before `session.created`; those are ignored,
+so the mic stays live. `--turns` (default 3) sets how many turns to run, and an
+uplink watchdog prints the captured frame count and peak level every 5 s so a
+silent run is diagnosable (`--list-devices`, `--mic-device`, `--speaker-device`).
+`--no-play` mutes the speaker, `--playback` selects `buffer` (default), `live`
+or `adaptive`, and `--drain` / `--silence` bound the reply wait.
+
+> The live path needs a real person at the microphone. The script verifies the
+> devices open, the mic captures frames and the session connects, but the
+> conversation itself cannot be automated on a host without acoustic loopback.
 
 > **The endpoint is unauthenticated and metered.** Every `--mode webrtc` /
 > `voice` run starts a real Azure Realtime session against GEODIS's UAT budget.

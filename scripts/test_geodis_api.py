@@ -28,7 +28,11 @@ Usage:
     scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice
     scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice --clip /tmp/q.wav
 
-    # everything
+    # live microphone -> agent -> speaker (interactive, multiple turns)
+    scripts/.venv/bin/python scripts/test_geodis_api.py --mode live
+    scripts/.venv/bin/python scripts/test_geodis_api.py --mode live --list-devices
+
+    # everything (HTTP + WebRTC text turn)
     scripts/.venv/bin/python scripts/test_geodis_api.py --mode all -v
 
 Exit codes:
@@ -36,22 +40,50 @@ Exit codes:
     1  one or more checks failed
     2  setup error (aiortc missing, clip unreadable, …)
 
-The endpoint is unauthenticated and metered: every `--mode webrtc` / `voice`
-run starts a real Azure Realtime session. Do not run it in a loop.
+The endpoint is unauthenticated and metered: every `--mode webrtc` /
+`voice` / `live` run starts a real Azure Realtime session. Do not run it in a
+loop.
 """
 import argparse
 import asyncio
+import contextlib
+import ctypes
+import fractions
 import json
+import math
 import os
 import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
 import wave
+from array import array
+
+# The HTTP mode is stdlib-only; the audio/WebRTC modes need these. Import
+# them lazily so `--mode http` still runs where aiortc/av/sounddevice are
+# absent, and the live/webrtc entry points report the missing dependency.
+try:
+    import sounddevice as sd
+    _SD_IMPORT_ERROR = None
+except Exception as e:  # noqa: BLE001
+    sd = None
+    _SD_IMPORT_ERROR = e
+
+try:
+    from aiortc import AudioStreamTrack
+    from aiortc.mediastreams import MediaStreamError
+    from av import AudioFrame, AudioResampler
+    _AV_IMPORT_ERROR = None
+except Exception as e:  # noqa: BLE001
+    AudioStreamTrack = object
+    AudioFrame = None
+    MediaStreamError = Exception
+    _AV_IMPORT_ERROR = e
 
 BASE = os.environ.get(
     "GEODIS_BASE", "https://connect-weu-uat.api.geodis.com/corp/voice-agent/v1"
@@ -65,6 +97,29 @@ AZURE_WS = (
 )
 MODEL = "gpt-realtime-2.1"
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def log(msg):
+    print(f"  {msg}", flush=True)
+
+
+def cue(msg):
+    print(f"\n{'─' * 72}\n  {msg}\n{'─' * 72}\n", flush=True)
+
+
+def device_arg(value):
+    """argparse type for --mic-device / --speaker-device.
+
+    sounddevice treats a *string* as a space-separated substring query over
+    device names, not as an index, so `--mic-device 0` matched every device
+    whose name contains a "0". A numeric value is an index; anything else
+    is passed through as a name substring.
+    """
+    text = value.strip()
+    try:
+        return int(text)
+    except ValueError:
+        return text
 
 
 # ------------------------------------------------------------------ report
@@ -281,6 +336,420 @@ def run_http_checks(r, args):
         status == 400,
         f"HTTP {status}: {body[:100]}",
     )
+
+
+# ------------------------------------------------------------------ audio I/O
+
+SAMPLE_RATE = 48000
+FRAME_SAMPLES = 960          # 20 ms at 48 kHz
+PLAYBACK_MODES = ("buffer", "live", "adaptive")
+
+
+class GatedAudioTrack(AudioStreamTrack):
+    """Base for audio tracks that produce no frames until the session is ready.
+
+    The server rejects a `session.update` that changes `turn_detection` once
+    it has started processing audio, so no frame may be produced until the
+    session has been configured.
+    """
+
+    kind = "audio"
+
+    def __init__(self):
+        super().__init__()
+        self._enabled = asyncio.Event()
+        self.frames_sent = 0
+        self.peak = 0
+
+    def enable(self):
+        """Start producing frames (call after session.updated)."""
+        self._enabled.set()
+
+    async def _wait_enabled(self):
+        if self.readyState != "live":
+            raise MediaStreamError
+        await self._enabled.wait()
+        if self.readyState != "live":
+            raise MediaStreamError
+
+    def note_frame(self, pcm):
+        """Record what was actually put on the wire (frames + peak level)."""
+        self.frames_sent += 1
+        peak = max((abs(v) for v in array("h", pcm)), default=0)
+        if peak > self.peak:
+            self.peak = peak
+
+    def stats(self):
+        return (self.frames_sent,
+                self.frames_sent * FRAME_SAMPLES / SAMPLE_RATE,
+                self.peak)
+
+    def stop(self):
+        self._enabled.set()
+        super().stop()
+
+
+class MicTrack(GatedAudioTrack):
+    """An audio track that streams a live input device (the microphone).
+
+    Half-duplex: `pause()` / `resume()` gate the uplink while the assistant
+    is speaking, so the model does not hear itself through the speaker.
+    """
+
+    def __init__(self, sample_rate=SAMPLE_RATE, frame_samples=FRAME_SAMPLES,
+                 device=None):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.frame_samples = frame_samples
+        self._frame_bytes = frame_samples * 2
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+        self._start = None
+        self._timestamp = 0
+        self._closed = False
+        self._gate = asyncio.Event()
+        self._gate.set()
+        self._stream = sd.RawInputStream(
+            samplerate=sample_rate,
+            channels=1,
+            dtype="int16",
+            blocksize=frame_samples,
+            device=device,
+            callback=self._callback,
+        )
+        self._stream.start()
+
+    def _callback(self, indata, frames, time_info, status):
+        if status:
+            log(f"mic status: {status}")
+        with self._lock:
+            self._buf.extend(bytes(indata))
+            # If the event loop falls behind, drop the oldest audio rather
+            # than growing without bound.
+            max_bytes = self._frame_bytes * 10
+            if len(self._buf) > max_bytes:
+                del self._buf[:len(self._buf) - max_bytes]
+
+    def _take_frame(self):
+        with self._lock:
+            if len(self._buf) < self._frame_bytes:
+                data = bytes(self._buf) + b"\x00" * (self._frame_bytes - len(self._buf))
+                self._buf.clear()
+            else:
+                data = bytes(self._buf[:self._frame_bytes])
+                del self._buf[:self._frame_bytes]
+            return data
+
+    def pause(self):
+        """Mute the uplink (called when the assistant starts replying)."""
+        self._gate.clear()
+
+    def resume(self):
+        """Re-open the uplink, re-basing the real-time schedule so the paused
+        interval does not become a burst of catch-up frames."""
+        self._gate.set()
+        self._start = time.monotonic() - self._timestamp / self.sample_rate
+
+    async def recv(self):
+        await self._wait_enabled()
+        await self._gate.wait()
+        if self.readyState != "live":
+            raise MediaStreamError
+
+        # Pace the frames to real time, like a live microphone.
+        if self._start is None:
+            self._start = time.monotonic()
+        else:
+            wait = self._start + (self._timestamp / self.sample_rate) - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+        data = self._take_frame()
+        frame = AudioFrame(format="s16", layout="mono", samples=self.frame_samples)
+        frame.planes[0].update(data)
+        frame.pts = self._timestamp
+        frame.sample_rate = self.sample_rate
+        frame.time_base = fractions.Fraction(1, self.sample_rate)
+        self._timestamp += self.frame_samples
+        self.note_frame(data)
+        return frame
+
+    def stop(self):
+        if not self._closed:
+            self._closed = True
+            self._gate.set()
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                log(f"mic close error: {e}")
+        super().stop()
+
+
+class Speaker:
+    """Plays 48 kHz / 16-bit mono PCM through an output device.
+
+    `mode="buffer"` waits for the whole reply, then plays it back-to-back at
+    the card's rate (a raw player fed as the frames arrive plays at the
+    *delivery* rate and stretches the speech); `live` streams as the frames
+    arrive; `adaptive` starts once `cushion` seconds are queued.
+    """
+
+    def __init__(self, sample_rate=SAMPLE_RATE, frame_samples=FRAME_SAMPLES,
+                 device=None, mode="buffer", cushion=0.6):
+        self.sample_rate = sample_rate
+        self.frame_samples = frame_samples
+        self._frame_bytes = frame_samples * 2
+        self.mode = mode
+        self.cushion = max(0.0, float(cushion or 0.0))
+        self._cushion_bytes = int(self.cushion * sample_rate * 2)
+        self._buf = bytearray()
+        self._pos = 0
+        self._lock = threading.Lock()
+        self._max_bytes = self._frame_bytes * 200
+        self._go = threading.Event()
+        self._finished = False
+        self._closed = False
+        self._stream = sd.RawOutputStream(
+            samplerate=sample_rate,
+            channels=1,
+            dtype="int16",
+            blocksize=frame_samples,
+            device=device,
+            callback=self._callback,
+        )
+        self._stream.start()
+
+    def _callback(self, outdata, frames, time_info, status):
+        if status:
+            log(f"speaker status: {status}")
+        need = len(outdata)
+        silence = b"\x00" * need
+        if self._closed:
+            outdata[:] = silence
+            return
+        if self.mode == "buffer" and not self._go.is_set():
+            outdata[:] = silence
+            return
+        if self.mode == "adaptive" and not self._finished:
+            with self._lock:
+                pending = len(self._buf) - self._pos
+            if pending < self._cushion_bytes:
+                outdata[:] = silence
+                return
+        with self._lock:
+            avail = len(self._buf) - self._pos
+            if avail >= need:
+                outdata[:] = self._buf[self._pos:self._pos + need]
+                self._pos += need
+            elif avail > 0:
+                outdata[:avail] = self._buf[self._pos:]
+                outdata[avail:] = b"\x00" * (need - avail)
+                self._pos = len(self._buf)
+            else:
+                outdata[:] = silence
+            if self._pos == len(self._buf):
+                self._buf.clear()
+                self._pos = 0
+            elif self._pos > 1 << 16:
+                del self._buf[:self._pos]
+                self._pos = 0
+
+    def play(self, pcm):
+        if self._closed or not pcm:
+            return
+        with self._lock:
+            self._buf.extend(pcm)
+            if self.mode != "buffer":
+                if len(self._buf) - self._pos > self._max_bytes:
+                    del self._buf[:self._pos]
+                    self._pos = 0
+                    if len(self._buf) > self._max_bytes:
+                        del self._buf[:len(self._buf) - self._max_bytes]
+
+    def finish(self):
+        if self._closed:
+            return
+        self._finished = True
+        self._go.set()
+
+    def empty(self):
+        if self.mode == "buffer":
+            if not self._go.is_set():
+                return True
+            with self._lock:
+                return not self._buf and self._pos == 0
+        with self._lock:
+            return len(self._buf) == self._pos
+
+    async def drain(self, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while not self.empty() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+
+    def close(self):
+        self._closed = True
+        self._finished = True
+        self._go.set()
+        try:
+            self._stream.stop()
+            self._stream.close()
+        except Exception as e:
+            log(f"speaker close error: {e}")
+
+
+def frame_to_pcm(frame):
+    """Packed mono s16 PCM of an av.AudioFrame, without numpy.
+
+    PyAV's AudioPlane has no `to_bytes()` in the wheels it uses, so read the
+    plane buffer through ctypes and average the channels by hand. The Opus
+    decoder outputs interleaved stereo, which must be deinterleaved rather
+    than written out as-is.
+    """
+    channels = len(frame.layout.channels)
+    if channels == 1:
+        return ctypes.string_at(frame.planes[0].buffer_ptr,
+                                frame.samples * 2)
+    if len(frame.planes) == channels:  # planar: one plane per channel
+        planes = [array("h", ctypes.string_at(p.buffer_ptr, frame.samples * 2))
+                  for p in frame.planes]
+        if sys.byteorder == "big":
+            for plane in planes:
+                plane.byteswap()
+        out = array("h", bytes(frame.samples * 2))
+        for i in range(frame.samples):
+            out[i] = sum(plane[i] for plane in planes) // channels
+        return out.tobytes()
+    values = array("h", ctypes.string_at(
+        frame.planes[0].buffer_ptr, frame.samples * channels * 2))
+    if sys.byteorder == "big":
+        values.byteswap()
+    out = array("h", bytes(frame.samples * 2))
+    for i in range(0, len(values), channels):
+        out[i // channels] = sum(values[i:i + channels]) // channels
+    return out.tobytes()
+
+
+def save_wav(frames, path, sample_rate=SAMPLE_RATE):
+    """Write a list of av.AudioFrame to a 16-bit mono WAV at `sample_rate`."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    resampler = None
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        for frame in frames:
+            if frame.sample_rate != sample_rate:
+                if resampler is None:
+                    resampler = AudioResampler(format="s16", layout="mono",
+                                               rate=sample_rate)
+                resampled = resampler.resample(frame)
+                if resampled is None:
+                    continue
+                for out in resampled:
+                    w.writeframes(frame_to_pcm(out))
+            else:
+                w.writeframes(frame_to_pcm(frame))
+        if resampler is not None:
+            for out in resampler.resample(None) or []:
+                w.writeframes(frame_to_pcm(out))
+
+
+async def collect_audio(track, speaker, mic, state, frames):
+    """Play the assistant's audio and mute the mic while it is speaking.
+
+    The server sends digital-silence keep-alive frames as soon as the media
+    path is up (before `session.created`). Those must be ignored: they are not
+    the reply, and treating them as one would pause the mic before the user has
+    spoken and reset the reply-drain timer forever.
+    """
+    logged = False
+    while True:
+        try:
+            frame = await track.recv()
+        except (MediaStreamError, asyncio.TimeoutError):
+            break
+        except Exception as e:  # noqa: BLE001
+            log(f"audio collect error: {e}")
+            break
+        pcm = frame_to_pcm(frame)
+        peak = max((abs(v) for v in array("h", pcm)), default=0)
+        if peak == 0:
+            continue
+        if not logged:
+            logged = True
+            log(f"audio frame: format={frame.format.name} "
+                f"layout={frame.layout.name} rate={frame.sample_rate}")
+            if mic is not None:
+                mic.pause()
+                cue("REPLY — microphone muted; just listen")
+        state["count"] += 1
+        state["last"] = time.monotonic()
+        if speaker is not None:
+            speaker.play(pcm)
+        frames.append(frame)
+
+
+async def drain_reply(state, speaker, max_seconds, silence_seconds=2.0):
+    """Wait for the reply to stop arriving and finish playing.
+
+    `response.done` can arrive before the first audio frame (the data channel
+    and RTP are separate), so when no frame has arrived yet we give the audio
+    a grace period instead of returning immediately.
+    """
+    if state["count"] == 0:
+        grace = time.monotonic() + min(max_seconds, 5.0)
+        while state["count"] == 0 and time.monotonic() < grace:
+            await asyncio.sleep(0.05)
+        if state["count"] == 0:
+            return
+    deadline = time.monotonic() + max_seconds
+    while time.monotonic() < deadline:
+        quiet = time.monotonic() - state["last"] >= silence_seconds
+        if quiet and speaker is not None:
+            speaker.finish()
+        playing = speaker is not None and not speaker.empty()
+        if quiet and not playing:
+            return
+        await asyncio.sleep(0.1)
+    log(f"reply still arriving after {max_seconds:.0f} s — cutting off")
+
+
+async def uplink_watch(track, interval=5.0, stall_after=15.0):
+    """Narrate the uplink while the user is expected to be talking.
+
+    "The model never answers" has two very different causes: the audio never
+    reached it (muted/wrong microphone) or the audio arrived and the server
+    VAD rejected it. The peak level separates them.
+    """
+    silence_polls = 0
+    heard = None
+    elapsed = 0.0
+    while True:
+        await asyncio.sleep(interval)
+        elapsed += interval
+        frames, seconds, peak = track.stats()
+        if peak == 0:
+            silence_polls += 1
+            if silence_polls == 1 or silence_polls % 2 == 1:
+                log(f"uplink: {frames} frames ({seconds:.0f} s) sent, all "
+                    f"digital silence — the model cannot hear anything. Wrong "
+                    f"or muted capture device? (check --list-devices / "
+                    f"--mic-device)")
+            continue
+        dbfs = 20 * math.log10(peak / 32768)
+        if heard is None:
+            heard = elapsed
+            if dbfs < -40:
+                log(f"uplink: peak {dbfs:.0f} dBFS — very quiet, the VAD will "
+                    f"probably miss it. Speak up, or move closer to the mic")
+            else:
+                log(f"uplink: peak {dbfs:.0f} dBFS — the model has audio; "
+                    f"waiting for your turn to end")
+        elif elapsed - heard >= stall_after:
+            heard = elapsed
+            log(f"uplink: still no reply after audio was heard — the turn may "
+                f"have been dropped; speak again")
 
 
 # ------------------------------------------------------------------ WebRTC
@@ -635,6 +1104,289 @@ async def run_webrtc(r, args, voice):
     return 0
 
 
+# ------------------------------------------------------------------ live mic/speaker
+
+async def run_live(r, args):
+    """Interactive session: host microphone -> GEODIS -> host speaker.
+
+    Half-duplex: the uplink is paused as soon as the assistant's first audio
+    frame arrives, and re-opened after the reply has been played. Runs
+    `--turns` turns (Ctrl+C stops early).
+    """
+    if sd is None:
+        print(f"\n  sounddevice is required for --mode live: {_SD_IMPORT_ERROR}")
+        print("  scripts/.venv/bin/pip install sounddevice")
+        return 2
+    if _AV_IMPORT_ERROR is not None:
+        print(f"\n  aiortc/av are required for --mode live: {_AV_IMPORT_ERROR}")
+        return 2
+
+    from aiortc import (
+        RTCConfiguration, RTCIceServer, RTCPeerConnection,
+        RTCSessionDescription,
+    )
+
+    r.section("WebRTC live session (mic + speaker)")
+
+    token, session_id, status, body = get_token(
+        {"chat_session_id": args.session}, insecure=args.insecure
+    )
+    if not token:
+        r.check("POST /token", False, f"HTTP {status}: {body[:200]}")
+        return 1
+    r.check("POST /token", True, f"session_id={session_id}")
+
+    mic = speaker = pc = None
+    collect_tasks = []
+    try:
+        mic = MicTrack(device=args.mic_device)
+        r.check("open microphone", True,
+                f"device={args.mic_device if args.mic_device is not None else 'default'}")
+        if not args.no_play:
+            speaker = Speaker(device=args.speaker_device, mode=args.playback,
+                              cushion=args.cushion)
+            r.check("open speaker", True,
+                    f"device={args.speaker_device if args.speaker_device is not None else 'default'} "
+                    f"mode={args.playback}")
+        else:
+            log("speaker: muted (--no-play)")
+
+        ice = [] if args.no_stun else [RTCIceServer(urls=args.stun)]
+        pc = RTCPeerConnection(RTCConfiguration(iceServers=ice))
+        pc.addTrack(mic)
+
+        dc = pc.createDataChannel("realtime-channel")
+        loop = asyncio.get_event_loop()
+        st = {
+            "created": asyncio.Event(), "updated": asyncio.Event(),
+            "response_done": asyncio.Event(), "transcript_done": asyncio.Event(),
+            "speech_stopped": asyncio.Event(),
+            "default_stt": None, "stt": None, "default_turn": None,
+            "user_text": "", "assistant_text": "", "last_transcript": "",
+            "fn_calls": 0, "responses_done": 0, "pending_fn": False,
+            "errors": [], "tool_status": None, "tool_chunks": 0,
+        }
+        audio_state = {"count": 0, "last": 0.0}
+        received_frames = []
+
+        async def handle_tool_call(ev):
+            call_id = ev.get("call_id")
+            name = ev.get("name", "rechercher_base_geodis")
+            arguments = ev.get("arguments", "{}")
+            status, body, _ = await loop.run_in_executor(
+                None, lambda: http_request(
+                    "POST", f"{BASE}/tool-call",
+                    body={"name": name, "arguments": arguments,
+                          "session_id": session_id},
+                    headers={"Content-Type": "application/json"},
+                    insecure=args.insecure,
+                )
+            )
+            st["tool_status"] = status
+            try:
+                inner = parse_tool_call(body)
+                st["tool_chunks"] = len(inner.get("retrievedChunks") or [])
+                output = json.dumps(inner, ensure_ascii=False)
+            except Exception as e:  # noqa: BLE001
+                output = json.dumps({"error": f"{type(e).__name__}: {e}"})
+            send_json(dc, {
+                "type": "conversation.item.create",
+                "item": {"type": "function_call_output",
+                         "call_id": call_id, "output": output},
+            })
+            send_json(dc, {"type": "response.create"})
+            st["pending_fn"] = False
+
+        @dc.on("message")
+        def on_message(msg):
+            try:
+                ev = json.loads(msg)
+            except Exception:  # noqa: BLE001
+                return
+            if args.verbose:
+                print("    dc:", json.dumps(ev, ensure_ascii=False)[:300])
+            t = ev.get("type", "?")
+            if t == "session.created":
+                sess = ev.get("session", {})
+                st["default_stt"] = (
+                    sess.get("audio", {}).get("input", {}).get("transcription")
+                )
+                st["default_turn"] = (
+                    sess.get("audio", {}).get("input", {}).get("turn_detection")
+                )
+                st["created"].set()
+            elif t == "session.updated":
+                sess = ev.get("session", {})
+                st["stt"] = (
+                    sess.get("audio", {}).get("input", {}).get("transcription")
+                )
+                st["updated"].set()
+            elif t == "conversation.item.input_audio_transcription.completed":
+                st["user_text"] = ev.get("transcript", "")
+            elif t == "response.output_audio_transcript.delta":
+                st["assistant_text"] += ev.get("delta", "")
+            elif t == "response.output_audio_transcript.done":
+                st["last_transcript"] = ev.get("transcript", "")
+                st["transcript_done"].set()
+            elif t == "response.function_call_arguments.done":
+                st["fn_calls"] += 1
+                st["pending_fn"] = True
+                asyncio.ensure_future(handle_tool_call(ev))
+            elif t == "response.done":
+                st["responses_done"] += 1
+                st["response_done"].set()
+            elif t == "input_audio_buffer.speech_stopped":
+                st["speech_stopped"].set()
+            elif t == "error":
+                st["errors"].append(ev)
+
+        @pc.on("track")
+        def on_track(track):
+            if track.kind == "audio":
+                log("remote audio track received")
+                collect_tasks.append(asyncio.ensure_future(
+                    collect_audio(track, speaker, mic, audio_state, received_frames)))
+
+        offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        status, answer, _ = await loop.run_in_executor(
+            None, lambda: http_request(
+                "POST", AZURE_SDP,
+                body=pc.localDescription.sdp.encode(),
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/sdp"},
+                timeout=40, insecure=args.insecure,
+            )
+        )
+        r.check("SDP exchange -> HTTP 201", status == 201,
+                f"HTTP {status}: {answer[:120]}")
+        if status != 201:
+            return 1
+        await pc.setRemoteDescription(
+            RTCSessionDescription(sdp=answer, type="answer"))
+
+        try:
+            await asyncio.wait_for(st["created"].wait(), timeout=30)
+        except asyncio.TimeoutError:
+            r.check("session.created received", False, "timeout")
+            return 1
+        r.check(
+            "session.created received (STT off by default, server_vad preset)",
+            st["default_stt"] is None and
+            (isinstance(st["default_turn"], dict)
+             and st["default_turn"].get("type") == "server_vad"),
+            f"transcription={st['default_stt']} turn_detection={st['default_turn']}",
+        )
+
+        send_session_update(dc, enable_stt=not args.no_stt,
+                            voice=args.voice, instructions=args.system_prompt)
+        try:
+            await asyncio.wait_for(st["updated"].wait(), timeout=15)
+        except asyncio.TimeoutError:
+            r.check("session.updated received", False, "timeout")
+            return 1
+        r.check(
+            "session.updated received (STT opt-in applied)",
+            isinstance(st["stt"], dict) and st["stt"].get("model") == "whisper-1",
+            f"transcription={st['stt']}",
+        )
+
+        mic.enable()
+        for turn in range(1, args.turns + 1):
+            cue(f"TURN {turn}/{args.turns} — SPEAK NOW "
+                f"(the mic is live; your turn ends after 500 ms of silence)")
+            # Reset the per-turn counters; the final response is one more
+            # than the number of function-call turns in this turn.
+            st["responses_done"] = 0
+            st["fn_calls"] = 0
+            st["pending_fn"] = False
+            st["user_text"] = ""
+            st["assistant_text"] = ""
+            st["last_transcript"] = ""
+            st["transcript_done"] = asyncio.Event()
+            deadline = time.time() + args.timeout
+            timed_out = True
+            watch = asyncio.ensure_future(uplink_watch(mic))
+            while time.time() < deadline:
+                if (st["responses_done"] >= st["fn_calls"] + 1
+                        and not st["pending_fn"]):
+                    timed_out = False
+                    break
+                await asyncio.sleep(0.2)
+            watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watch
+            frames, seconds, peak = mic.stats()
+            log(f"uplink total: {frames} frames ({seconds:.1f} s), peak "
+                f"{peak}/32768" + (" — the uplink was silent" if peak == 0 else ""))
+            if timed_out:
+                r.check(f"turn {turn}: response.done", False,
+                        f"timeout; errors={st['errors'][:2]}")
+                break
+            # response.done can overtake the transcript/audio events; give
+            # them a moment before deciding the reply is empty.
+            try:
+                await asyncio.wait_for(st["transcript_done"].wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            if speaker is not None:
+                await drain_reply(audio_state, speaker, args.drain,
+                                  args.silence)
+                speaker.finish()
+                await speaker.drain(args.drain)
+            r.check(f"turn {turn}: STT transcript", bool(st["user_text"]),
+                    f"“{st['user_text'][:120]}”")
+            r.check(
+                f"turn {turn}: assistant reply",
+                bool(st["last_transcript"] or st["assistant_text"]),
+                f"“{(st['last_transcript'] or st['assistant_text'])[:120]}”",
+            )
+            if st["fn_calls"]:
+                r.check(
+                    f"turn {turn}: RAG tool call",
+                    st["tool_status"] == 200 and st["tool_chunks"] > 0,
+                    f"fn_calls={st['fn_calls']} HTTP {st['tool_status']} "
+                    f"chunks={st['tool_chunks']}",
+                )
+            if st["errors"]:
+                r.check(f"turn {turn}: no session errors", False,
+                        json.dumps(st["errors"][:2])[:200])
+            if turn < args.turns:
+                mic.resume()
+                await asyncio.sleep(0.2)
+
+        r.check("spoken reply captured", audio_state["count"] > 0,
+                f"{audio_state['count']} frames")
+        if received_frames:
+            save_wav(received_frames, args.out)
+            r.check("reply saved", True,
+                    f"{args.out} ({os.path.getsize(args.out)} B)")
+        if st["errors"]:
+            r.check("no session errors overall", False,
+                    json.dumps(st["errors"][:2])[:200])
+        else:
+            r.check("no session errors overall", True)
+        return 0
+    except Exception as e:  # noqa: BLE001
+        r.check("live session", False, f"{type(e).__name__}: {e}")
+        return 1
+    finally:
+        for task in list(collect_tasks):
+            task.cancel()
+        for task in list(collect_tasks):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if mic is not None:
+            mic.stop()
+        if speaker is not None:
+            speaker.close()
+        if pc is not None:
+            try:
+                await pc.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 # ------------------------------------------------------------------ main
 
 def main():
@@ -642,11 +1394,13 @@ def main():
     ap = argparse.ArgumentParser(
         description="Verify the GEODIS Voice Agent API (HTTP + WebRTC)."
     )
-    ap.add_argument("--mode", choices=["http", "webrtc", "voice", "all"],
+    ap.add_argument("--mode", choices=["http", "webrtc", "voice", "live", "all"],
                     default="http",
                     help="http = HTTP surface only (default); "
                          "webrtc = WebRTC text turn; "
-                         "voice = WebRTC spoken turn; all = everything")
+                         "voice = WebRTC spoken turn from a clip; "
+                         "live = interactive mic -> agent -> speaker; "
+                         "all = HTTP + WebRTC text turn")
     ap.add_argument("--base", default=BASE, help="GEODIS gateway base URL")
     ap.add_argument("--sdp-url", default=AZURE_SDP, help="Azure SDP exchange URL")
     ap.add_argument("--session", default=f"hermes-test-{uuid.uuid4().hex[:8]}",
@@ -670,10 +1424,39 @@ def main():
                     help="disable TLS verification (debugging only)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="print every DataChannel event")
+
+    # live mic/speaker options
+    ap.add_argument("--list-devices", action="store_true",
+                    help="list sounddevice input/output devices and exit")
+    ap.add_argument("--mic-device", type=device_arg, default=None,
+                    help="microphone device index or name substring")
+    ap.add_argument("--speaker-device", type=device_arg, default=None,
+                    help="speaker device index or name substring")
+    ap.add_argument("--no-play", action="store_true",
+                    help="do not play the reply through the speaker")
+    ap.add_argument("--playback", choices=PLAYBACK_MODES, default="buffer",
+                    help="speaker playback mode (default: buffer)")
+    ap.add_argument("--cushion", type=float, default=0.6,
+                    help="seconds to buffer before adaptive playback (default 0.6)")
+    ap.add_argument("--drain", type=float, default=15.0,
+                    help="hard cap on seconds to wait for the reply (default 15)")
+    ap.add_argument("--silence", type=float, default=2.0,
+                    help="seconds of silence before the reply is done (default 2)")
+    ap.add_argument("--turns", type=int, default=3,
+                    help="number of live turns (default 3; Ctrl+C stops early)")
     args = ap.parse_args()
 
     BASE = args.base
     AZURE_SDP = args.sdp_url
+
+    if args.list_devices:
+        if sd is None:
+            print(f"sounddevice is not installed ({_SD_IMPORT_ERROR})")
+            return 2
+        print(sd.query_devices())
+        print(f"default input device:  {sd.default.device[0]}")
+        print(f"default output device: {sd.default.device[1]}")
+        return 0
 
     print("GEODIS Voice Agent API test")
     print(f"  base:   {BASE}")
@@ -687,6 +1470,10 @@ def main():
             run_http_checks(r, args)
         if args.mode in ("webrtc", "voice", "all"):
             rc = asyncio.run(run_webrtc(r, args, voice=(args.mode == "voice")))
+            if rc == 2:
+                return 2
+        if args.mode == "live":
+            rc = asyncio.run(run_live(r, args))
             if rc == 2:
                 return 2
     except KeyboardInterrupt:
