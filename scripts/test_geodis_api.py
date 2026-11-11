@@ -13,8 +13,8 @@ so "verifying the API" means two things:
      a text or voice turn, the client-executed RAG tool call, and the spoken
      reply.
 
-This is the M0 spike from `examples/14_geodis_voice_chat/README.md`: it
-captures the exact event shapes the ring's `ring_geodis` module has to parse.
+This is an M0 spike for the GEODIS voice work: it captures the exact event
+shapes a ring `ring_geodis` module has to parse.
 
 Usage:
     # HTTP surface only (stdlib only — no venv needed)

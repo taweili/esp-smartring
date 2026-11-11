@@ -122,7 +122,6 @@ EOF
 │   ├── 10_qianwen_ws_voice_chat/ # WebSocket voice chat: PCM 16k in / 24k out,
 │   │                            #   esp_websocket_client, PTT + hands-free modes,
 │   │                            #   orb + chat/settings screens (README)
-│   ├── 11_quic_voice_chat/      # PLANNED (design only) — README.md (QUIC/AOQ via ringgate)
 │   ├── 12_ringkit_selftest/     # subsystem diagnostic: probe + voice init/stop (README)
 │   └── 13_button_probe/         # BOOT-button (GPIO0) event probe: press/long/click/double (README)
 ├── scripts/
@@ -451,7 +450,6 @@ that must stay committed are the override *copies* in `components/`
 - `examples/10_qianwen_ws_voice_chat/README.md` — WebSocket voice chat: the PCM 16 kHz in / 24 kHz out
   resampler, `ring_ws` module, manual PTT / `smart_turn_v2` turn-taking, barge-in, transport internals,
   stack + jitter-ring budget. The only realtime path that works on UDP-blocked networks.
-- `examples/11_quic_voice_chat/README.md` — planned QUIC/AOQ voice chat: the `ringgate` design; no code yet.
 - `notes/research-meta-muse.md`, `notes/research-xiaozhi.md` — assistant feasibility research; no code yet.
 - `examples/01_gbuddy_face/README.md` — the sprite-asset app: moods, blink, gaze, sleep, the
   on-device findings (flat background, feather, LVGL snapshot debugging) and how to regenerate

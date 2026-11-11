@@ -78,10 +78,8 @@ tools/dev.sh monitor
 | `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing` and exposes a GATT server. |
 | `09_hello_smoke_test` | Bring-up smoke test: white screen + one large label. |
 | `10_qianwen_ws_voice_chat` | WebSocket voice chat with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, push-to-talk / `server_vad` / `smart_turn_v2` turn-taking, orb + chat/settings screens. The only realtime transport that works where UDP is blocked. See `examples/10_qianwen_ws_voice_chat/README.md`. |
-| `11_quic_voice_chat` | *Planned (design only).* QUIC/AOQ voice chat via a LAN `ringgate`. See `examples/11_quic_voice_chat/README.md`. |
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. |
 | `13_button_probe` | BOOT-button (GPIO0) probe: shows `press` / `long press` / `click` / `dbl click` the moment each fires, with a live held-time line and per-event counters. See `examples/13_button_probe/README.md`. |
-| `14_geodis_voice_chat` | *Planned (design only).* Speech-to-speech conversation with the GEODIS Voice Agent (Azure OpenAI Realtime `gpt-realtime-2.1` over WebRTC): `/token` → SDP → Opus → RAG tool call. See `examples/14_geodis_voice_chat/README.md`. |
 
 > `07` needs a network that allows **outbound UDP** for DTLS; on a
 > UDP-filtered LAN it connects as far as ICE and then times out. See
@@ -200,7 +198,6 @@ assert or error log.
 | `notes/networking-https-webrtc.md` | Networking, HTTPS & WebRTC reference: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and the three OpenAI API paths (REST, Realtime-over-WebSocket, Realtime-over-WebRTC). |
 | `notes/qianwen-ai-platform.md` | 千问 AI 平台 (qianwenai.com) reference: model catalog by category (LLM, vision, image/video/3D generation, speech, omni, embeddings) and the API surface (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async task/batch APIs). |
 | `examples/10_qianwen_ws_voice_chat/README.md` | WebSocket voice chat: PCM 16 kHz in / 24 kHz out resampler, the `ring_ws` module, turn-taking, barge-in, transport internals, and the stack + jitter-ring budget. |
-| `examples/11_quic_voice_chat/README.md` | Planned QUIC/AOQ voice chat: the `ringgate` gateway design (no code yet). |
 | `examples/12_ringkit_selftest/README.md` | The subsystem diagnostic app. |
 | `examples/13_button_probe/README.md` | The BOOT-button (GPIO0) probe: events, timings, and the strapping-pin caveat. |
 | `notes/research-meta-muse.md`, `notes/research-xiaozhi.md` | Assistant feasibility research (no code yet). |

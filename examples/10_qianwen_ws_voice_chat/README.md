@@ -55,7 +55,7 @@ Three screens, switched from the top bar:
 
 Non-goals: acoustic echo cancellation (the ring has none and the WS transport
 has none — half-duplex), bandwidth efficiency (~120 KB/s vs ~32 kbps Opus),
-and the QUIC comparison (that is the planned `11_quic_voice_chat`).
+and the QUIC comparison.
 
 ## Protocol
 
@@ -387,7 +387,6 @@ Decisions that are easy to get wrong when modifying this path:
 1. **WebRTC (07)** — built-in AEC, but UDP-blocked here and heavier. Keep as
    the other transport.
 2. **QUIC/AOQ** — best weak-network behaviour, but no C SDK; gateway project.
-   See `examples/11_quic_voice_chat/README.md`.
 3. **HTTP chunked PCM** — no full-duplex, no turn events. No.
 4. **Opus over WS** — the endpoint only accepts PCM; not possible.
 5. **Reuse `ring_net` with a WS backend** — a facade is the end state, but a

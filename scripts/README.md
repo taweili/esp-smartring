@@ -184,8 +184,8 @@ scripts/.venv/bin/python scripts/test_qianwen_ws_keepalive.py --strategy silence
 
 ## test_geodis_api.py
 
-Verifies the **GEODIS Voice Agent** API from the host — the M0 spike behind
-`examples/14_geodis_voice_chat/README.md`. The agent is Azure OpenAI Realtime
+Verifies the **GEODIS Voice Agent** API from the host — an M0 spike for a
+future ring `ring_geodis` module. The agent is Azure OpenAI Realtime
 (`gpt-realtime-2.1`) over WebRTC, fronted by an unauthenticated gateway; there
 is no REST chat API, so the script checks both the HTTP surface and a real
 WebRTC session (SDP → `session.update` → STT opt-in → text/voice turn →
