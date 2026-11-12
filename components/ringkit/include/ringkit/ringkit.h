@@ -27,6 +27,7 @@
 #include "ringkit/ring_net.h"
 #include "ringkit/ring_ws.h"
 #include "ringkit/ring_chat.h"
+#include "ringkit/ring_geodis.h"
 
 #include "ringkit/ring_ui.h"
 #include "ringkit/ring_rand.h"

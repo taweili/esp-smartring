@@ -21,6 +21,12 @@ Usage:
     python3 scripts/test_geodis_api.py
     python3 scripts/test_geodis_api.py --mode http
 
+    # TLS trust for both hosts (stdlib only)
+    python3 scripts/test_geodis_api.py --mode tls
+
+    # token lifetime probe (stdlib only; waits --token-wait seconds)
+    python3 scripts/test_geodis_api.py --mode token --token-wait 60
+
     # full WebRTC session, deterministic text turn (needs scripts/.venv)
     scripts/.venv/bin/python scripts/test_geodis_api.py --mode webrtc
 
@@ -28,11 +34,15 @@ Usage:
     scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice
     scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice --clip /tmp/q.wav
 
+    # push-to-talk: turn_detection=null, stream a clip, commit + response.create
+    scripts/.venv/bin/python scripts/test_geodis_api.py --mode ptt
+    scripts/.venv/bin/python scripts/test_geodis_api.py --mode ptt --clip /tmp/q.wav
+
     # live microphone -> agent -> speaker (interactive, multiple turns)
     scripts/.venv/bin/python scripts/test_geodis_api.py --mode live
     scripts/.venv/bin/python scripts/test_geodis_api.py --mode live --list-devices
 
-    # everything (HTTP + WebRTC text turn)
+    # everything (HTTP + TLS + WebRTC text turn)
     scripts/.venv/bin/python scripts/test_geodis_api.py --mode all -v
 
 Exit codes:
@@ -62,6 +72,7 @@ import urllib.error
 import urllib.request
 import uuid
 import wave
+from urllib.parse import urlparse
 from array import array
 
 # The HTTP mode is stdlib-only; the audio/WebRTC modes need these. Import
@@ -153,35 +164,57 @@ class Report:
 
 # ------------------------------------------------------------------ HTTP
 
-def http_request(method, url, body=None, headers=None, timeout=30, insecure=False):
-    """Return (status, body_text, headers). status is -1 on transport error."""
+def http_request(method, url, body=None, headers=None, timeout=30, insecure=False,
+                 retries=3):
+    """Return (status, body_text, headers). status is -1 on transport error.
+
+    Transport errors are retried (default 3 attempts): the GEODIS gateway
+    intermittently resets TLS connections (~1 in 12 from the bench). HTTPError
+    is a real response and is never retried.
+    """
     ctx = ssl._create_unverified_context() if insecure else ssl.create_default_context()
     data = None
     if body is not None:
         data = bytes(body) if isinstance(body, (bytes, bytearray)) else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-            return r.status, r.read().decode("utf-8", "replace"), dict(r.headers)
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", "replace"), dict(e.headers)
-    except Exception as e:  # noqa: BLE001 - report the transport error verbatim
-        return -1, f"{type(e).__name__}: {e}", {}
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                return r.status, r.read().decode("utf-8", "replace"), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode("utf-8", "replace"), dict(e.headers)
+        except Exception as e:  # noqa: BLE001 - report the transport error verbatim
+            if attempt + 1 >= retries:
+                return -1, f"{type(e).__name__}: {e}", {}
+            time.sleep(0.5 * (attempt + 1))
+    return -1, "unreachable", {}
 
 
-def get_token(body=None, timeout=30, insecure=False):
-    status, text, _ = http_request(
-        "POST", f"{BASE}/token", body=body if body is not None else {},
-        headers={"Content-Type": "application/json"}, timeout=timeout,
-        insecure=insecure,
-    )
-    if status != 200:
-        return None, None, status, text
-    try:
-        d = json.loads(text)
-        return d.get("token"), d.get("session_id"), status, text
-    except Exception as e:  # noqa: BLE001
-        return None, None, status, f"parse error: {e}: {text[:200]}"
+def get_token(body=None, timeout=30, insecure=False, retries=3):
+    """Fetch an ephemeral token, retrying transport errors.
+
+    The GEODIS gateway intermittently resets TLS connections (~1 in 12 from
+    the bench), so a single attempt is not reliable. The POST is safe to retry:
+    each attempt mints a fresh token.
+    """
+    last = (None, None, -1, "no attempt")
+    for attempt in range(retries):
+        status, text, _ = http_request(
+            "POST", f"{BASE}/token", body=body if body is not None else {},
+            headers={"Content-Type": "application/json"}, timeout=timeout,
+            insecure=insecure,
+        )
+        if status == 200:
+            try:
+                d = json.loads(text)
+                return d.get("token"), d.get("session_id"), status, text
+            except Exception as e:  # noqa: BLE001
+                last = (None, None, status, f"parse error: {e}: {text[:200]}")
+        else:
+            last = (None, None, status, text)
+        if attempt + 1 < retries:
+            time.sleep(0.5 * (attempt + 1))
+    return last
 
 
 def parse_tool_call(text):
@@ -336,6 +369,89 @@ def run_http_checks(r, args):
         status == 400,
         f"HTTP {status}: {body[:100]}",
     )
+
+
+# ------------------------------------------------------------------ TLS / token
+
+def run_tls_checks(r, args):
+    """Verify both hosts against the Mozilla bundle (certifi) or the system store.
+
+    The firmware uses esp_crt_bundle_attach (a Mozilla-derived bundle), so a
+    host that validates here is very likely to validate on the ring. This is a
+    proxy, not a guarantee: the ESP bundle is a subset of Mozilla's roots.
+    """
+    import socket
+
+    r.section("TLS trust")
+    try:
+        import certifi
+        cafile = certifi.where()
+        store = "certifi (Mozilla)"
+    except ImportError:
+        cafile = None
+        store = "system"
+
+    hosts = []
+    for url in (BASE, AZURE_SDP):
+        host = urlparse(url).hostname
+        if host and host not in hosts:
+            hosts.append(host)
+
+    def common_name(cert, field):
+        for rdn in cert.get(field, []):
+            for key, value in rdn:
+                if key == "commonName":
+                    return value
+        return "?"
+
+    for host in hosts:
+        try:
+            ctx = ssl.create_default_context(cafile=cafile)
+            with socket.create_connection((host, 443), timeout=10) as sock:
+                with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                    cert = ssock.getpeercert() or {}
+                    version = ssock.version()
+                    cipher = ssock.cipher()[0]
+            r.check(
+                f"TLS {host}",
+                True,
+                f"{version} {cipher} leaf={common_name(cert, 'subject')} "
+                f"issuer={common_name(cert, 'issuer')} [{store}]",
+            )
+        except Exception as e:  # noqa: BLE001
+            r.check(f"TLS {host}", False, f"{type(e).__name__}: {e} [{store}]")
+
+
+def run_token_checks(r, args):
+    """Probe an ephemeral token's lifetime with a bogus SDP offer.
+
+    A bogus offer (`v=0`) is rejected with 400 once the token is accepted; an
+    expired token should be 401/403. The probe does not start a session.
+    """
+    r.section("Token lifetime")
+    token, session_id, status, body = get_token(
+        {"chat_session_id": args.session}, insecure=args.insecure
+    )
+    ok = status == 200 and bool(token) and token.startswith("ek_")
+    r.check("POST /token", ok,
+            f"HTTP {status} token={token[:14] + '…' if token else None}")
+    if not token:
+        return
+
+    def probe(tag):
+        st, bd, _ = http_request(
+            "POST", AZURE_SDP, body=b"v=0",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/sdp"},
+            insecure=args.insecure,
+        )
+        r.check(f"token accepted {tag}", st == 400, f"HTTP {st}: {bd[:100]}")
+
+    probe("immediately (bogus offer -> 400)")
+    if args.token_wait > 0:
+        print(f"  waiting {args.token_wait:g}s …")
+        time.sleep(args.token_wait)
+        probe(f"after {args.token_wait:g}s")
 
 
 # ------------------------------------------------------------------ audio I/O
@@ -807,25 +923,64 @@ def send_json(dc, obj):
     dc.send(json.dumps(obj, ensure_ascii=False))
 
 
-def send_session_update(dc, enable_stt=True, voice="coral", instructions=None):
+def parse_sdp_audio(answer):
+    """Return the first m=audio payload type and its rtpmap from an SDP answer.
+
+    Returns None when the answer has no audio m-line. `rtpmap` is the codec
+    spec (e.g. "opus/48000/2") for the first payload type, or None when it is
+    not advertised.
+    """
+    if not answer:
+        return None
+    rtpmaps = {}
+    m_audio = None
+    for ln in answer.splitlines():
+        ln = ln.strip()
+        if ln.startswith("a=rtpmap:"):
+            spec = ln[len("a=rtpmap:"):]
+            pt, _, codec = spec.partition(" ")
+            rtpmaps[pt] = codec
+        elif ln.startswith("m=audio "):
+            parts = ln.split()
+            if len(parts) >= 4 and m_audio is None:
+                m_audio = parts[3:]
+    if not m_audio:
+        return None
+    pt = m_audio[0]
+    return {"pt": pt, "rtpmap": rtpmaps.get(pt),
+            "all_pts": m_audio, "rtpmaps": rtpmaps}
+
+
+def send_session_update(dc, enable_stt=True, voice="coral", instructions=None,
+                        ptt=False):
+    """Configure the session.
+
+    ptt=True sends `audio.input.turn_detection = null` — the GA schema nests
+    turn detection under `audio.input`, and null disables server VAD so the
+    client can commit manually. The old top-level `session.turn_detection`
+    (beta shape) is rejected with `unknown_parameter`; `modalities` is
+    likewise read-only.
+    """
     session = {"type": "realtime"}
     audio = {}
+    audio_input = {}
     if enable_stt:
         # STT is OFF by default; this is the opt-in the ring must send.
-        audio["input"] = {"transcription": {"model": "whisper-1"}}
+        audio_input["transcription"] = {"model": "whisper-1"}
+    if ptt:
+        audio_input["turn_detection"] = None
+    if audio_input:
+        audio["input"] = audio_input
     if voice:
         audio["output"] = {"voice": voice}
     if audio:
         session["audio"] = audio
-    # NOTE: do NOT send `turn_detection` — the GA endpoint rejects it with
-    # `unknown_parameter` (the server configures server_vad itself, and it is
-    # visible in session.created). `modalities` is likewise read-only.
     if instructions:
         session["instructions"] = instructions
     send_json(dc, {"type": "session.update", "session": session})
 
 
-async def run_webrtc(r, args, voice):
+async def run_webrtc(r, args, voice, ptt=False):
     try:
         from aiortc import (
             RTCConfiguration, RTCIceServer, RTCPeerConnection,
@@ -837,7 +992,7 @@ async def run_webrtc(r, args, voice):
         print("  scripts/.venv/bin/pip install aiortc")
         return 2
 
-    r.section("WebRTC session" + (" (voice)" if voice else " (text)"))
+    r.section("WebRTC session" + (" (PTT)" if ptt else " (voice)" if voice else " (text)"))
 
     # 1. token
     token, session_id, status, body = get_token(
@@ -884,6 +1039,7 @@ async def run_webrtc(r, args, voice):
         "created": asyncio.Event(), "updated": asyncio.Event(),
         "response_done": asyncio.Event(), "speech_stopped": asyncio.Event(),
         "default_stt": None, "stt": None, "default_turn": None,
+        "turn": None,
         "user_text": "", "assistant_text": "", "last_transcript": "",
         "fn_calls": 0, "responses_done": 0, "pending_fn": False,
         "errors": [], "tool_status": None, "tool_chunks": 0,
@@ -947,6 +1103,7 @@ async def run_webrtc(r, args, voice):
         elif t == "session.updated":
             sess = ev.get("session", {})
             st["stt"] = sess.get("audio", {}).get("input", {}).get("transcription")
+            st["turn"] = sess.get("audio", {}).get("input", {}).get("turn_detection")
             st["updated"].set()
         elif t == "conversation.item.input_audio_transcription.completed":
             st["user_text"] = ev.get("transcript", "")
@@ -977,24 +1134,40 @@ async def run_webrtc(r, args, voice):
             recorder = MediaRecorder(args.out)
             recorder.addTrack(track)
 
-    # 6. SDP exchange
+    # 6. SDP exchange (retry transport errors; the gateway resets TLS ~8%)
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
-    status, answer, _ = await loop.run_in_executor(
-        None, lambda: http_request(
-            "POST", AZURE_SDP,
-            body=pc.localDescription.sdp.encode(),
-            headers={"Authorization": f"Bearer {token}",
-                     "Content-Type": "application/sdp"},
-            timeout=40, insecure=args.insecure,
+    status, answer = -1, ""
+    for attempt in range(3):
+        status, answer, _ = await loop.run_in_executor(
+            None, lambda: http_request(
+                "POST", AZURE_SDP,
+                body=pc.localDescription.sdp.encode(),
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/sdp"},
+                timeout=40, insecure=args.insecure,
+            )
         )
-    )
+        if status == 201:
+            break
+        if attempt < 2:
+            await asyncio.sleep(0.5 * (attempt + 1))
     r.check("SDP exchange -> HTTP 201", status == 201,
             f"HTTP {status}: {answer[:120]}")
     if status != 201:
         await pc.close()
         return 1
     await pc.setRemoteDescription(RTCSessionDescription(sdp=answer, type="answer"))
+
+    # The ring reuses the ring_net Opus pipeline only if the answer negotiates
+    # Opus on m=audio. PCMA/PCMU would mean a different codec path.
+    sdp_audio = parse_sdp_audio(answer)
+    r.check(
+        "SDP answer negotiates Opus",
+        sdp_audio is not None and "opus" in (sdp_audio["rtpmap"] or "").lower(),
+        f"m=audio pt={sdp_audio['pt'] if sdp_audio else None} "
+        f"rtpmap={sdp_audio['rtpmap'] if sdp_audio else None}",
+    )
 
     # 7. wait for the session, then configure it
     try:
@@ -1013,24 +1186,44 @@ async def run_webrtc(r, args, voice):
     )
 
     send_session_update(dc, enable_stt=not args.no_stt,
-                        voice=args.voice, instructions=args.system_prompt)
+                        voice=args.voice, instructions=args.system_prompt,
+                        ptt=ptt)
     try:
         await asyncio.wait_for(st["updated"].wait(), timeout=15)
     except asyncio.TimeoutError:
-        r.check("session.updated received", False, "timeout")
+        r.check("session.updated received", False,
+                f"timeout; errors={st['errors'][:2]}")
         await pc.close()
         return 1
-    r.check(
-        "session.updated received (STT opt-in applied)",
-        isinstance(st["stt"], dict) and st["stt"].get("model") == "whisper-1",
-        f"transcription={st['stt']}",
-    )
+    if ptt:
+        # A rejected update never produces session.updated (see the timeout
+        # above); an accepted one echoes turn_detection: null.
+        r.check(
+            "session.updated received (PTT: turn_detection=null)",
+            st["turn"] is None,
+            f"turn_detection={st['turn']} errors={st['errors'][:1]}",
+        )
+    else:
+        r.check(
+            "session.updated received (STT opt-in applied)",
+            isinstance(st["stt"], dict) and st["stt"].get("model") == "whisper-1",
+            f"transcription={st['stt']}",
+        )
 
     if recorder:
         await recorder.start()
 
     # 8. send the turn
-    if voice:
+    if ptt:
+        # Hold-to-talk: the clip is the held uplink; release is an explicit
+        # commit + response.create (server VAD is off, so nothing else would
+        # ever trigger the reply).
+        print(f"  PTT: streaming clip as held uplink ({clip_dur:.1f} s) …")
+        await asyncio.sleep(clip_dur + 0.5)
+        print("  PTT: release -> input_audio_buffer.commit + response.create")
+        send_json(dc, {"type": "input_audio_buffer.commit"})
+        send_json(dc, {"type": "response.create"})
+    elif voice:
         print(f"  streaming clip ({clip_dur:.1f} s) …")
         try:
             await asyncio.wait_for(
@@ -1394,13 +1587,21 @@ def main():
     ap = argparse.ArgumentParser(
         description="Verify the GEODIS Voice Agent API (HTTP + WebRTC)."
     )
-    ap.add_argument("--mode", choices=["http", "webrtc", "voice", "live", "all"],
+    ap.add_argument("--mode",
+                    choices=["http", "tls", "token", "webrtc", "voice",
+                             "ptt", "live", "all"],
                     default="http",
                     help="http = HTTP surface only (default); "
+                         "tls = trust both hosts against the Mozilla bundle; "
+                         "token = probe ephemeral token lifetime; "
                          "webrtc = WebRTC text turn; "
                          "voice = WebRTC spoken turn from a clip; "
+                         "ptt = push-to-talk (turn_detection=null + commit); "
                          "live = interactive mic -> agent -> speaker; "
-                         "all = HTTP + WebRTC text turn")
+                         "all = HTTP + TLS + WebRTC text turn")
+    ap.add_argument("--token-wait", type=float, default=60.0,
+                    help="seconds to wait before re-probing the token "
+                         "(--mode token; 0 skips the wait)")
     ap.add_argument("--base", default=BASE, help="GEODIS gateway base URL")
     ap.add_argument("--sdp-url", default=AZURE_SDP, help="Azure SDP exchange URL")
     ap.add_argument("--session", default=f"hermes-test-{uuid.uuid4().hex[:8]}",
@@ -1468,8 +1669,15 @@ def main():
     try:
         if args.mode in ("http", "all"):
             run_http_checks(r, args)
-        if args.mode in ("webrtc", "voice", "all"):
-            rc = asyncio.run(run_webrtc(r, args, voice=(args.mode == "voice")))
+        if args.mode in ("tls", "all"):
+            run_tls_checks(r, args)
+        if args.mode == "token":
+            run_token_checks(r, args)
+        if args.mode in ("webrtc", "voice", "ptt", "all"):
+            rc = asyncio.run(run_webrtc(
+                r, args,
+                voice=(args.mode in ("voice", "ptt")),
+                ptt=(args.mode == "ptt")))
             if rc == 2:
                 return 2
         if args.mode == "live":

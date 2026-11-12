@@ -8,6 +8,7 @@
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_crt_bundle.h"
 
 #define TAG "ring_http"
 
@@ -22,6 +23,22 @@ esp_http_client_handle_t ring_http_init(const char *url, const char *ca_pem,
         .url = url,
         .cert_pem = ca_pem,
         .cert_len = ca_len,
+        .timeout_ms = timeout_ms,
+        .buffer_size = buffer_size,
+        .buffer_size_tx = tx_size,
+    };
+    return esp_http_client_init(&cfg);
+}
+
+esp_http_client_handle_t ring_http_init_bundle(const char *url, int timeout_ms,
+                                               size_t buffer_size, size_t tx_size)
+{
+    if (url == NULL) {
+        return NULL;
+    }
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = timeout_ms,
         .buffer_size = buffer_size,
         .buffer_size_tx = tx_size,

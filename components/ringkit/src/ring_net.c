@@ -52,16 +52,6 @@ size_t ring_net_ca_pem_len(void)
     return ring_ca_pem_len();
 }
 
-/* FreeRTOS calls this on stack overflow. The stock hook aborts with an
- * unusable backtrace; name the offending task and its headroom instead. */
-void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName);
-void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
-{
-    ESP_DRAM_LOGE("ring_net", "*** STACK OVERFLOW in task '%s' (hwm %u words)",
-                  pcTaskName, (unsigned)uxTaskGetStackHighWaterMark(xTask));
-    abort();
-}
-
 /* ------------------------------------------------------------- helpers */
 
 const char *ring_net_state_name(ring_net_state_t state)

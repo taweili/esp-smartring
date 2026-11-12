@@ -196,6 +196,12 @@ client-executed RAG tool call → spoken reply).
 python3 scripts/test_geodis_api.py
 python3 scripts/test_geodis_api.py --mode http
 
+# TLS trust for both hosts (stdlib only)
+python3 scripts/test_geodis_api.py --mode tls
+
+# token lifetime probe (stdlib only; waits --token-wait seconds)
+python3 scripts/test_geodis_api.py --mode token --token-wait 120
+
 # full WebRTC session, deterministic text turn (needs scripts/.venv)
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode webrtc
 
@@ -203,13 +209,17 @@ scripts/.venv/bin/python scripts/test_geodis_api.py --mode webrtc
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice --clip /tmp/q.wav
 
+# push-to-talk: turn_detection=null, stream a clip, commit + response.create
+scripts/.venv/bin/python scripts/test_geodis_api.py --mode ptt
+scripts/.venv/bin/python scripts/test_geodis_api.py --mode ptt --clip /tmp/q.wav
+
 # live microphone -> agent -> speaker (interactive, multiple turns)
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode live
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode live --list-devices
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode live --turns 5 \
     --mic-device 5 --speaker-device 0 --playback adaptive
 
-# everything (HTTP + WebRTC text turn)
+# everything (HTTP + TLS + WebRTC text turn)
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode all -v
 ```
 
@@ -217,10 +227,24 @@ scripts/.venv/bin/python scripts/test_geodis_api.py --mode all -v
 `system_prompt`/`chat_session_id`), `/tool-call` (string arguments → RAG
 chunks; object arguments → HTTP 500), the `save-message`/`transcripts`
 round-trip, the **absence of a WebSocket route** (404) and the presence of the
-SDP route (bogus offer → 400). `--mode webrtc` / `voice` run a real session and
-check the SDP exchange, the `session.created` defaults (STT off, server_vad
-preset), the `session.update` STT opt-in, the assistant transcript, the tool
-call, and the saved reply (`scripts/geodis_reply.wav`).
+SDP route (bogus offer → 400). `--mode tls` verifies both hosts against the
+Mozilla bundle (`certifi`, falling back to the system store) and prints the
+leaf/issuer. `--mode token` fetches an `ek_` token and re-probes it with a
+bogus offer after `--token-wait` seconds. `--mode webrtc` / `voice` /
+`ptt` run a real session and check the SDP exchange, the **negotiated audio
+codec (Opus)**, the `session.created` defaults (STT off, server_vad preset),
+the `session.update` STT opt-in, the assistant transcript, the tool call, and
+the saved reply (`scripts/geodis_reply.wav`).
+
+`--mode ptt` is the push-to-talk spike: it sends
+`audio.input.turn_detection = null`, streams a clip as the held uplink, then
+sends `input_audio_buffer.commit` + `response.create`. This is the flow the
+ring's `ring_geodis` module will use.
+
+> **Flaky gateway.** The GEODIS gateway intermittently resets TLS connections
+> (~1 in 12 requests from the bench). `http_request()`, `get_token()` and the
+> SDP POST retry transport errors; HTTPError responses are never retried. The
+> firmware must do the same.
 
 The spoken question is generated with `espeak` at runtime; pass `--clip` with
 a WAV or raw 48 kHz mono s16le PCM to use your own. `--no-stt` skips the

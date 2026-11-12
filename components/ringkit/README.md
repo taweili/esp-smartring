@@ -43,7 +43,8 @@ the two-symbol example contract (see `examples/README.md`).
 |---|---|---|
 | `ring_chat.h` | HTTPS REST cascade (STT→LLM→TTS) | blocking, no realtime; `examples/06` |
 | `ring_ws.h` | WebSocket, PCM in JSON | server_vad / smart_turn_v2 / PTT; `examples/10` |
-| `ring_net.h` | WebRTC, Opus over RTP | lowest latency, needs UDP/DTLS; `examples/07` |
+| `ring_net.h` | WebRTC, Opus over RTP (Qianwen) | lowest latency, needs UDP/DTLS; `examples/07` |
+| `ring_geodis.h` | WebRTC, Opus over RTP (GEODIS / Azure Realtime) | ephemeral token + Azure SDP, client-executed RAG tool call; `examples/14` |
 
 ### Shared infrastructure
 
@@ -90,6 +91,10 @@ Tasks created by ringkit:
 | `ring-net-signal` | 4 KB | 4 | `ring_net` | SDP exchange / peer bring-up |
 | `ring-net-event` | 6 KB | 4 | `ring_net` | state + transcript callbacks |
 | `ring-net-peer` | 16 KB | 5 | `ring_net` | `esp_peer` main loop |
+| `ring-geodis-signal` | 4 KB | 4 | `ring_geodis` | token + SDP exchange / peer bring-up |
+| `ring-geodis-event` | 6 KB | 4 | `ring_geodis` | state + transcript callbacks |
+| `ring-geodis-peer` | 16 KB | 5 | `ring_geodis` | `esp_peer` main loop |
+| `ring-geodis-tool` | 12 KB | 4 | `ring_geodis` | client-executed `/tool-call` HTTPS POST |
 | `ring-ws-worker` | 8 KB | 5 | `ring_ws` | WS transport / reassembly / base64 |
 | `ring-ws-event` | 6 KB | 4 | `ring_ws` | state + transcript + tool callbacks |
 | NimBLE host | NimBLE | — | `ring_bt` | GAP + GATT access callbacks |
@@ -111,6 +116,8 @@ Consequences:
 ring_wifi:  OFF ──start()──▶ DISCONNECTED ──connect──▶ CONNECTING ──IP──▶ CONNECTED
 ring_bt:    OFF ──init()──▶ IDLE ──advertising()──▶ ADVERTISING ──peer──▶ CONNECTED
 ring_net:   OFF ──start()──▶ CONNECTING ──READY──▶ LISTENING ──reply──▶ SPEAKING
+                                      └──fail──▶ ERROR
+ring_geodis: OFF ──start()──▶ CONNECTING ──READY──▶ LISTENING ──reply──▶ SPEAKING
                                       └──fail──▶ ERROR
 ring_ws:    OFF ──start()──▶ CONNECTING ──READY──▶ LISTENING ──reply──▶ SPEAKING
                                       └──fail──▶ ERROR
@@ -156,19 +163,24 @@ a mutex; `ring_wifi`/`ring_bt` do the same.
 
 ## Voice transport decision guide
 
-| | `ring_chat` | `ring_ws` | `ring_net` |
-|---|---|---|---|
-| Transport | HTTPS REST (TCP/443) | WebSocket (TCP/443) | WebRTC (UDP/DTLS + RTP) |
-| Audio | 48k PCM in/out, resampled internally | 48k PCM in/out, resampled internally | 48k PCM, Opus over RTP |
-| Turn-taking | none (3 sequential calls) | server_vad / smart_turn_v2 / PTT | server_vad only |
-| Works on UDP-blocked nets | yes | yes | **no** (DTLS times out) |
-| Latency | highest (3 round trips) | low | lowest |
-| Extra deps | `esp_http_client` | `esp_websocket_client` | `esp_peer`, `esp_audio_codec` |
+| | `ring_chat` | `ring_ws` | `ring_net` | `ring_geodis` |
+|---|---|---|---|---|
+| Transport | HTTPS REST (TCP/443) | WebSocket (TCP/443) | WebRTC (UDP/DTLS + RTP) | WebRTC (UDP/DTLS + RTP) |
+| Audio | 48k PCM in/out, resampled internally | 48k PCM in/out, resampled internally | 48k PCM, Opus over RTP | 48k PCM, Opus over RTP |
+| Turn-taking | none (3 sequential calls) | server_vad / smart_turn_v2 / PTT | server_vad only | PTT (`turn_detection:null` + commit) / server_vad |
+| Works on UDP-blocked nets | yes | yes | **no** (DTLS times out) | **no** (DTLS times out) |
+| Latency | highest (3 round trips) | low | lowest | lowest |
+| Extra deps | `esp_http_client` | `esp_websocket_client` | `esp_peer`, `esp_audio_codec` | `esp_peer`, `esp_audio_codec` |
+| Tool calls | — | app-executed | — | **client-executed RAG** (`/tool-call`) |
 
 - **Default to `ring_ws`** for interactive voice: it is the only realtime
   transport that works where UDP is blocked, and it supports push-to-talk.
 - Use **`ring_net`** only when UDP is known to work and the lowest latency
   matters.
+- Use **`ring_geodis`** for the GEODIS Voice Agent (Azure OpenAI Realtime).
+  Same WebRTC constraints as `ring_net`, but the ephemeral-token signalling,
+  the GA session schema and the client-executed RAG tool call are specific to
+  it.
 - Use **`ring_chat`** for the simplest possible cascade, or when only
   TCP/443 is available and latency is acceptable.
 
@@ -178,10 +190,12 @@ pipeline at the app boundary.
 
 ## Build hygiene
 
-- `components/ringkit/Kconfig` gates the four optional modules:
-  `CONFIG_RINGKIT_NET`, `_WS`, `_CHAT`, `_BT` (all `default y`). Disable the
-  ones an app does not use to shrink the build; the shared leaves stay
-  compiled so any combination links.
+- `components/ringkit/Kconfig` gates the five optional modules:
+  `CONFIG_RINGKIT_NET`, `_WS`, `_CHAT`, `_GEODIS`, `_BT` (all `default y`).
+  Disable the ones an app does not use to shrink the build; the shared leaves
+  stay compiled so any combination links. Unused module code is dropped by
+  the linker's `--gc-sections`, so an app that never calls `ring_geodis_*`
+  does not pay for it.
 - A component stays in `REQUIRES` only when a ringkit public header exposes
   one of its types. Everything else is `PRIV_REQUIRES`, so dependents do not
   inherit unused include paths. (`ring_http.h` exposes

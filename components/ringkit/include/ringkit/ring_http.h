@@ -31,6 +31,21 @@ esp_http_client_handle_t ring_http_init(const char *url, const char *ca_pem,
                                         size_t ca_len, int timeout_ms,
                                         size_t buffer_size, size_t tx_size);
 
+/**
+ * @brief Create an HTTPS client that trusts the Mozilla root bundle.
+ *
+ * Use this for hosts with a public certificate chain (e.g. Azure OpenAI),
+ * where a pinned PEM is not needed. Returns NULL on invalid arguments or
+ * allocation failure.
+ *
+ * @param url          Full URL.
+ * @param timeout_ms   Socket timeout.
+ * @param buffer_size  esp_http_client RX buffer (internal RAM; keep it small).
+ * @param tx_size      esp_http_client TX buffer.
+ */
+esp_http_client_handle_t ring_http_init_bundle(const char *url, int timeout_ms,
+                                                size_t buffer_size, size_t tx_size);
+
 /** Set `Authorization: Bearer <key>`. */
 esp_err_t ring_http_set_bearer(esp_http_client_handle_t c, const char *api_key);
 

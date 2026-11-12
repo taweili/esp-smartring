@@ -150,8 +150,9 @@ Everything goes through `ringkit/ringkit.h`:
 - `ring_button_*` — BOOT button on GPIO0: press / long-press / click / double-click
 - `ring_wifi_*` — Wi-Fi STA with NVS-persisted credentials
 - `ring_bt_*` — NimBLE BLE peripheral (declarative GATT DB, GAP state, notify)
-- `ring_chat_*` / `ring_ws_*` / `ring_net_*` — the three voice transports
-  (HTTPS cascade / WebSocket / WebRTC+Opus); see `components/ringkit/README.md`
+- `ring_chat_*` / `ring_ws_*` / `ring_net_*` / `ring_geodis_*` — the four
+  voice transports (HTTPS cascade / WebSocket / WebRTC+Opus /
+  GEODIS Azure Realtime WebRTC); see `components/ringkit/README.md`
 - `ring_ca_*`, `ring_time_*`, `ring_nvs_*`, `ring_json_*`, `ring_byte_ring_*`,
   `ring_resample_*`, `ring_http_*` — shared infrastructure used by the above
 - `ring_ui_*` — LVGL lock + `RING_UI_LOCKED(-1) { ... }` scoped lock, label
@@ -246,10 +247,13 @@ visible. UI design must account for this:
 - Net/voice (`ring_net.h`): `ring_net_init()`, `ring_net_start(model, key)`, `ring_net_sync_clock()`,
   `ring_net_probe(url)`, `ring_net_set_listening()`, `ring_net_send_audio()`, `ring_net_read_audio()`,
   `ring_net_state()`, `ring_net_send_event()`, `ring_net_ca_pem()`
+- GEODIS/voice (`ring_geodis.h`): `ring_geodis_init()`, `ring_geodis_start(cfg)`, `ring_geodis_stop()`,
+  `ring_geodis_set_listening()`, `ring_geodis_send_audio()`, `ring_geodis_read_audio()`,
+  `ring_geodis_commit()`, `ring_geodis_cancel()`, `ring_geodis_state()`, `ring_geodis_send_event()`
 - Shared infra: `ring_ca_pem()`, `ring_time_sync()`, `ring_nvs_init()`, `ring_nvs_get_str()`,
   `ring_nvs_set_str()`, `ring_json_get_str()`, `ring_json_append()`, `ring_json_append_string()`,
-  `ring_byte_ring_*()`, `ring_resample_*()`, `ring_http_init()`, `ring_http_read_body()`,
-  `ring_http_sse_line()`
+  `ring_byte_ring_*()`, `ring_resample_*()`, `ring_http_init()`, `ring_http_init_bundle()`,
+  `ring_http_read_body()`, `ring_http_sse_line()`
 - RNG: `ring_rand_seed()`, `ring_rand_u32()`, `ring_rand_below()`, `ring_rand_bool()` — do **not**
   replace with `esp_random()`; determinism is the point (a plain LCG breaks `% n` / `& 1`).
 - Secrets: `ring_secret_get(ns, key, build_fallback, out, len)` — NVS wins, else the
@@ -412,13 +416,18 @@ that must stay committed are the override *copies* in `components/`
 - **`09_hello_smoke_test` is bigger than `00_glyph_grid_reveal`** (~804 KB vs ~733 KB). Not a regression: it is
   the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables — but
   think before adding another large font.
-- **Image sizes are large and the partition is 3000K.** Measured: `12` 2638 KB, `07` 2640 KB,
-  `06` 1493 KB, `05` 1558 KB, `01` 1127 KB, `08` 1056 KB. `07`/`12` have only ~360 KB of
+- **Image sizes are large and the partition is 3000K.** Measured: `12` 2708 KB, `07` 2604 KB,
+  `06` 1493 KB, `05` 1558 KB, `01` 1127 KB, `08` 1056 KB. `07`/`12` have only ~300–400 KB of
   headroom, so check `idf.py -B build/<app> size` before adding a dependency that every app
   links (WebRTC, Opus, a TLS stack).
 - **A `ringkit` change reaches every app.** `ringkit`'s `PRIV_REQUIRES` still links `esp_peer`,
   `esp_audio_codec`, `esp_http_client` and `esp-tls` into every app (phase 3 moved them out of
-  `REQUIRES`, but they are still linked); adding to it grows every image.
+  `REQUIRES`, but they are still linked); adding to it grows every image. Module code itself is
+  dropped by `--gc-sections` when unused, so an app that never calls `ring_geodis_*` does not
+  pay for it.
+- **`vApplicationStackOverflowHook` is shared.** It lives in
+  `components/ringkit/src/ring_stack_hook.c`. Do not define it in a module — `ring_net` and
+  `ring_geodis` both used to, which is a duplicate symbol when both are compiled.
 - **Stale `build/` after the rename.** The project used to be `smartring_hello`; an old
   `build/` may still hold that artifact. If CMake behaves strangely, `rm -rf build build/*`
   and reconfigure.

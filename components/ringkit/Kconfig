@@ -27,6 +27,16 @@ menu "Ringkit"
             ring_llm and ring_tts; applications that call ring_chat_* will
             fail to link.
 
+    config RINGKIT_GEODIS
+        bool "Enable ring_geodis (GEODIS Azure Realtime voice)"
+        default y
+        help
+            Compile the ring_geodis module: GEODIS Voice Agent over WebRTC
+            (ephemeral token + Azure Realtime SDP, Opus codec, DataChannel
+            protocol, client-executed RAG tool call). Disabling drops the
+            GEODIS code from the image; applications that call ring_geodis_*
+            will fail to link.
+
     config RINGKIT_BT
         bool "Enable ring_bt (BLE peripheral)"
         default y

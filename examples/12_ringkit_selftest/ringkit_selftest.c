@@ -57,6 +57,7 @@ enum {
     ST_NET,
     ST_WS,
     ST_CHAT,
+    ST_GEODIS,
     ST_COUNT,
 };
 
@@ -80,7 +81,7 @@ static void dbg_heap(const char *when)
 
 static const char *const s_names[ST_COUNT] = {
     "display", "touch", "audio", "imu", "sd", "battery",
-    "wifi", "bt", "ring_net", "ring_ws", "ring_chat",
+    "wifi", "bt", "ring_net", "ring_ws", "ring_chat", "ring_geodis",
 };
 
 static lv_obj_t *s_labels[ST_COUNT];
@@ -263,12 +264,19 @@ static void selftest_task(void *arg)
     set_status(ST_CHAT, "%s", err == ESP_OK ? "init ok" : "init fail");
     ESP_LOGI(TAG, "ring_chat_init: %s", esp_err_to_name(err));
 
+    dbg_heap("chat_init");
+    err = ring_geodis_init(NULL, NULL, NULL, NULL);
+    set_status(ST_GEODIS, "%s", err == ESP_OK ? "init ok" : "init fail");
+    ESP_LOGI(TAG, "ring_geodis_init: %s", esp_err_to_name(err));
+
     /* Tear the sessions back down. The voice modules have no full deinit
      * (the PSRAM buffers stay allocated), but stop must be safe. */
     ring_net_stop();
     ring_ws_stop();
+    ring_geodis_stop();
     set_status(ST_NET, "stopped");
     set_status(ST_WS, "stopped");
+    set_status(ST_GEODIS, "stopped");
 
     /* Switch the radios off again. Wi-Fi holds tens of KB of internal RAM in
      * RX/TX buffers, and the QSPI flush needs ~29 KB of internal DMA-capable
@@ -276,7 +284,6 @@ static void selftest_task(void *arg)
      * with `spicommon_dma_setup_priv_buffer: Failed to allocate priv TX
      * buffer` / `Draw bitmap failed: ESP_ERR_NO_MEM` — the panel freezes on
      * the last frame that did make it out. The probe is done, so release it. */
-    dbg_heap("chat_init");
     ring_bt_stop_advertising();
     ring_wifi_stop();
     set_status(ST_BT, "%s", bt_state_name(ring_bt_state()));

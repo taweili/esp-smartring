@@ -35,6 +35,7 @@ set(RINGKIT_SRCS
     "src/ring_resample.c"
     "src/ring_resample_coeffs.c"
     "src/ring_http.c"
+    "src/ring_stack_hook.c"
 )
 
 if(CONFIG_RINGKIT_NET)
@@ -58,6 +59,14 @@ if(CONFIG_RINGKIT_CHAT)
         "src/ring_stt.c"
         "src/ring_llm.c"
         "src/ring_tts.c")
+endif()
+
+if(CONFIG_RINGKIT_GEODIS)
+    list(APPEND RINGKIT_SRCS
+        "src/ring_geodis.c"
+        "src/ring_geodis_signaling.c"
+        "src/ring_geodis_codec.c"
+        "src/ring_geodis_protocol.c")
 endif()
 
 if(CONFIG_RINGKIT_BT)
