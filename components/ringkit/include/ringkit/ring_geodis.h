@@ -39,6 +39,9 @@ extern "C" {
 /** Samples per uplink frame: 20 ms at 48 kHz. */
 #define RING_GEODIS_FRAME_SAMPLES 960
 
+/** Longest transcript fragment delivered to ring_geodis_transcript_cb_t. */
+#define RING_GEODIS_TEXT_MAX 192
+
 /** Default GEODIS UAT gateway (unauthenticated). */
 #define RING_GEODIS_DEFAULT_BASE_URL \
     "https://connect-weu-uat.api.geodis.com/corp/voice-agent/v1"
@@ -59,36 +62,69 @@ typedef enum {
 
 /** Session configuration — copied into the module by ring_geodis_start(). */
 typedef struct {
-    const char *base_url;      /**< GEODIS gateway; NULL = default              */
-    const char *sdp_url;       /**< Azure SDP exchange; NULL = default         */
-    const char *voice;         /**< assistant voice, e.g. "coral"; NULL/"" = default */
-    const char *system_prompt; /**< optional persona; sent in the /token body  */
-    bool        enable_stt;    /**< true = whisper-1 opt-in (default true)     */
-    bool        enable_ptt;    /**< true = turn_detection:null + commit (default true) */
+    const char *base_url;      /**< GEODIS gateway; NULL = RING_GEODIS_DEFAULT_BASE_URL */
+    const char *sdp_url;       /**< Azure SDP exchange; NULL = RING_GEODIS_DEFAULT_SDP_URL */
+    const char *voice;         /**< assistant voice, e.g. "coral"; NULL/"" = "coral"  */
+    const char *system_prompt; /**< optional persona; sent in the /token body     */
+    int8_t      enable_stt;    /**< -1 = on (default), 0 = off, 1 = on            */
+    int8_t      enable_ptt;    /**< -1 = on (default), 0 = off, 1 = on            */
 } ring_geodis_cfg_t;
 
-/** State change notification, delivered on the ring_geodis event task. */
+/**
+ * @brief Initialise a config to "everything defaulted".
+ *
+ * Both flags are tri-state (-1 = default) because these two settings have a
+ * safe default that a zero-initialised struct would silently invert: without
+ * STT there is no user transcript, and without PTT the module leaves server
+ * VAD on while the app still calls ring_geodis_commit().
+ *
+ *     ring_geodis_cfg_t cfg = RING_GEODIS_CFG_DEFAULT();
+ *     cfg.system_prompt = "…";
+ */
+#define RING_GEODIS_CFG_DEFAULT()                          \
+    {                                                      \
+        .base_url = NULL, .sdp_url = NULL, .voice = NULL,   \
+        .system_prompt = NULL, .enable_stt = -1, .enable_ptt = -1, \
+    }
+
+/**
+ * @brief State change notification, delivered on `ring-geodis-event`.
+ *
+ * The event task is a 6 KB internal-RAM task that does nothing but walk a
+ * queue and call these callbacks, so the LVGL lock may be taken here. Do not
+ * block it: it also carries the transcript fragments, and a slow callback
+ * costs fragments (the queue is bounded and drops with a warning).
+ */
 typedef void (*ring_geodis_state_cb_t)(ring_geodis_state_t state, void *user);
 
 /**
- * @brief Transcript callback, invoked on the ring_geodis event task.
+ * @brief Transcript callback, invoked on `ring-geodis-event`.
  *
- * @param text    Fragment text. For model output this is one delta; when
- *                @p is_user is true it is the complete recognised utterance.
+ * @param text    Fragment text, NUL-terminated but use @p len; fragments are
+ *                capped at 191 bytes (see RING_GEODIS_TEXT_MAX).
  * @param len     Bytes in @p text (never includes the terminator).
  * @param is_user true for the transcribed user utterance, false for model
  *                output.
+ * @param final   true when this fragment completes the line (`…done`, and the
+ *                user utterance, which arrives whole). Deltas are false —
+ *                append them; a final is what you commit to scrollback.
  * @param user    Opaque pointer passed to ring_geodis_init().
  */
 typedef void (*ring_geodis_transcript_cb_t)(const char *text, size_t len,
-                                            bool is_user, void *user);
+                                            bool is_user, bool final,
+                                            void *user);
 
 /**
- * @brief Function-calling hook, invoked on the ring_geodis event task.
+ * @brief Function-calling hook, invoked on `ring-geodis-tool`.
  *
- * Return true when the application handled the call itself (it must send the
- * function_call_output + response.create); return false to let the module run
- * the built-in RAG execution. May be NULL.
+ * Runs on the module's dedicated tool task (12 KB, never the peer task), just
+ * before the RAG lookup — so it is the right place to put the UI into a
+ * "looking up…" state. Return true when the application handled the call
+ * itself (it must send the function_call_output + response.create); return
+ * false to let the module run the built-in RAG execution. May be NULL.
+ *
+ * The lookup is blocked until this returns, so keep it short and never take a
+ * lock that a network operation holds.
  */
 typedef bool (*ring_geodis_tool_cb_t)(const char *name, const char *args_json,
                                       void *user);
@@ -96,8 +132,9 @@ typedef bool (*ring_geodis_tool_cb_t)(const char *name, const char *args_json,
 /**
  * @brief Initialise the module (Opus codec, buffers, tasks).
  *
- * Call once from app_main after ring_board_init(). The callbacks run on a
- * dedicated task, never on a peer thread, so they may take the LVGL lock.
+ * Call once from app_main after ring_board_init(). Calling it twice is a
+ * no-op, not a re-initialisation. Every callback runs on one of the module's
+ * own tasks, never on the peer/DTLS task and never on yours.
  */
 esp_err_t ring_geodis_init(ring_geodis_state_cb_t state_cb,
                            ring_geodis_transcript_cb_t text_cb,
@@ -125,6 +162,12 @@ const char *ring_geodis_state_name(ring_geodis_state_t state);
 /**
  * @brief Open/close the uplink (the talk button).
  *
+ * Opening it while the model is speaking is a barge-in: the module cancels the
+ * response and flushes the decoded-audio buffer, so the ring does not keep
+ * talking into its own microphone. Opening/closing is independent of the
+ * reported state — the model may start answering while the button is still
+ * held, which sets RING_GEODIS_SPEAKING without closing the uplink.
+ *
  * Closing the uplink is what lets the server VAD detect the end of speech in
  * server-VAD mode; in PTT mode the caller then sends ring_geodis_commit().
  */
@@ -134,7 +177,9 @@ esp_err_t ring_geodis_set_listening(bool on);
  * @brief Send one Opus frame of 48 kHz / 16-bit / mono PCM.
  *
  * Feed it RING_GEODIS_FRAME_SAMPLES samples at a time (20 ms). Returns
- * ESP_ERR_INVALID_STATE unless the session is LISTENING.
+ * ESP_ERR_INVALID_STATE unless the uplink is open (ring_geodis_set_listening
+ * (true)) and the session connected — note it stays valid while the model is
+ * speaking back, which is exactly when a barge-in uplink is open.
  */
 esp_err_t ring_geodis_send_audio(const int16_t *pcm, size_t samples);
 
@@ -158,17 +203,26 @@ bool ring_geodis_is_speaking(void);
  */
 esp_err_t ring_geodis_commit(void);
 
-/** Cancel the current response (barge-in). No-op if not speaking. */
+/**
+ * @brief Cancel the current response (barge-in). No-op if not speaking.
+ *
+ * Drops the decoded audio still queued for playback as well, so the caller
+ * does not have to know about the buffer.
+ */
 esp_err_t ring_geodis_cancel(void);
 
 /** Send an arbitrary JSON event over the DataChannel. */
 esp_err_t ring_geodis_send_event(const char *json);
 
 /**
- * @brief Keep an idle session alive.
+ * @brief Re-assert the session configuration (READY only).
  *
- * The Azure Realtime session lifetime is undocumented; re-sending
- * session.update is a safe no-op unless READY.
+ * Sends session.update again. The Azure session lifetime is undocumented and
+ * the `ek_` token is spent at the SDP exchange, so this does not extend
+ * anything the way a ping would — it is an idempotent reconfiguration, and the
+ * endpoint rejects it while a response is in flight (returns ESP_ERR_INVALID_STATE
+ * for that case). Prefer tearing the session down and calling
+ * ring_geodis_start() again for real recovery.
  */
 esp_err_t ring_geodis_keepalive(void);
 

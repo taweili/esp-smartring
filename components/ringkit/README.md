@@ -44,7 +44,7 @@ the two-symbol example contract (see `examples/README.md`).
 | `ring_chat.h` | HTTPS REST cascade (STT→LLM→TTS) | blocking, no realtime; `examples/06` |
 | `ring_ws.h` | WebSocket, PCM in JSON | server_vad / smart_turn_v2 / PTT; `examples/10` |
 | `ring_net.h` | WebRTC, Opus over RTP (Qianwen) | lowest latency, needs UDP/DTLS; `examples/07` |
-| `ring_geodis.h` | WebRTC, Opus over RTP (GEODIS / Azure Realtime) | ephemeral token + Azure SDP, client-executed RAG tool call; `examples/14` |
+| `ring_geodis.h` | WebRTC, Opus over RTP (GEODIS / Azure Realtime) | ephemeral token + Azure SDP, client-executed RAG tool call; **no app yet** (see `notes/geodis-push-to-talk-plan.md`) |
 
 ### Shared infrastructure
 
@@ -158,6 +158,13 @@ a mutex; `ring_wifi`/`ring_bt` do the same.
 - Use `ring_secret_get()` for credentials; NVS wins, else the build-time value
   from `ring_secrets.h` (which is then persisted).
 - `ring_button` callbacks run on the `ring-button` task, never the LVGL task.
+- `ring_geodis` callbacks never run on the peer/DTLS task: `state_cb` and
+  `text_cb` are delivered in order on `ring-geodis-event` (6 KB, so LVGL is
+  fine), `tool_cb` on `ring-geodis-tool` (12 KB, before the blocking RAG POST).
+  The event queue stores transitions, not a state cell, so
+  `READY → LISTENING → SPEAKING` arrives as three callbacks.
+  `ring_geodis_set_listening(false)` closes the uplink but not the model's
+  reply: state may go `LISTENING → SPEAKING` without a release.
   Take `RING_UI_LOCKED(-1)` before touching LVGL; `ring_button_is_pressed()` /
   `ring_button_held_ms()` are lock-free snapshots for a UI timer.
 

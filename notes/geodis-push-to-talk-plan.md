@@ -511,6 +511,51 @@ caused by the new module. The CST816S needs a **physical power cycle**
 it. Phase 1's firmware verification (boot log + `ring_geodis_init`/`stop`)
 is pending that.
 
+### 6A.5 Review fixes (2026-11-12, after `b7e0065`)
+
+`notes/geodis-code-review.md` read the module against how example 14 will use
+it. The P0/P1 findings are fixed; the module still has never run on hardware,
+so the fixes are compile-verified only (`12_ringkit_selftest` links and builds,
+host tests 1480 checks / 0 failures).
+
+Contract changes an app author must know:
+
+- **Callbacks moved off the peer task.** `state_cb`/`text_cb` run on
+  `ring-geodis-event`, `tool_cb` on `ring-geodis-tool`. Previously all three
+  ran on the 16 KB peer task that also runs DTLS, which contradicted the
+  header's "may take the LVGL lock".
+- **The event queue carries transitions, not a state cell.** `READY →
+  LISTENING → SPEAKING` is three callbacks; the old 1-deep overwrite queue
+  delivered only the last one.
+- **`text_cb` gained `bool final`** (same shape as `ring_ws`): deltas append,
+  a final replaces the line.
+- **`ring_geodis_cfg_t` defaults are explicit**: `NULL` = documented default,
+  `enable_stt`/`enable_ptt` are tri-state (`-1` = on). Use
+  `RING_GEODIS_CFG_DEFAULT()`; a zero-initialised struct still means "off".
+  `ring_geodis_start()` logs the effective config.
+- **The uplink is a separate flag from the state.** `send_audio` no longer
+  stops working when the model starts answering mid-hold, and `set_listening
+  (true)` cancels + flushes, so pressing while the reply plays is a real
+  barge-in instead of the ring talking into its own microphone.
+- **Peer lifetime has one owner.** `stop()`/retry ask `ring-geodis-peer` to
+  close and wait (`RING_GEODIS_PEER_CLOSE_TIMEOUT_MS`), instead of freeing the
+  DTLS state from the caller's task while the main loop is inside it.
+- **Signalling is generation-stamped.** `start()` bumps `session_gen`; a slow
+  token+SDP round trip whose session was replaced is dropped instead of
+  installing an answer for a dead peer. The SDP POST retries twice
+  (`RING_GEODIS_SDP_ATTEMPTS`) so its worst case fits inside
+  `RING_GEODIS_SESSION_TIMEOUT_MS` (25 s) — previously start() timed out while
+  the signal task kept going.
+- **Tool-call failures are honest.** Unreadable/truncated `arguments` no
+  longer degrade to `{}` (a confident answer to an empty query); the model
+  gets `lookup_unavailable` with a reason, which it can say out loud. Truncated
+  tool output is detected (`ring_json_get_str_ex`) instead of being sent as
+  broken JSON.
+
+`ring_net` still has the peer-lifetime and callback-task problems; it was left
+alone deliberately (07 works, and the fix is best made once in a shared
+`ring_rtc_core`). See the review's §7 for the recommended order.
+
 ---
 
 ## 7. Phases

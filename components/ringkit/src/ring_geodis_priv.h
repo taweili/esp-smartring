@@ -62,7 +62,20 @@
 #define RING_GEODIS_SDP_MAX_BYTES          4096
 #define RING_GEODIS_HTTP_TIMEOUT_MS        10000
 #define RING_GEODIS_SNTP_TIMEOUT_MS        15000
-#define RING_GEODIS_SESSION_TIMEOUT_MS     20000
+/* Covers the worst case the signal task can take before it gives up: two SDP
+ * attempts at HTTP_TIMEOUT_MS plus backoff, then DTLS and session.update. If
+ * this is shorter than the signalling budget, ring_geodis_start() returns a
+ * timeout for a session that is still coming up. */
+#define RING_GEODIS_SESSION_TIMEOUT_MS     25000
+/* The signal task's SDP POST budget: attempts x HTTP_TIMEOUT_MS must stay
+ * under SESSION_TIMEOUT_MS. The gateway flakes ~1 in 12 connections, so two
+ * attempts (1 in 144) is the trade-off between resilience and a start() that
+ * blocks for a minute. */
+#define RING_GEODIS_SDP_ATTEMPTS           2
+#define RING_GEODIS_TOKEN_ATTEMPTS         3
+/* A peer that will not let go within this window is wedged; start()/stop()
+ * report it rather than blocking the caller for ever. */
+#define RING_GEODIS_PEER_CLOSE_TIMEOUT_MS  3000
 
 #define RING_GEODIS_BASE_URL_MAX           192
 #define RING_GEODIS_SDP_URL_MAX            192
@@ -70,6 +83,34 @@
 #define RING_GEODIS_PROMPT_MAX             512
 #define RING_GEODIS_TOKEN_MAX              128
 #define RING_GEODIS_SESSION_ID_MAX         64
+
+/* ------------------------------------------------------------- events
+ *
+ * Everything the application is told arrives as one of these, on the
+ * `ring-geodis-event` task. The queue is the ordering: a state transition and
+ * the fragment that followed it cannot be delivered out of order, and a burst
+ * of RING_GEODIS_READY -> LISTENING -> SPEAKING is three events, not one
+ * overwritten cell.
+ *
+ * The peer task may only ever *enqueue*; it never calls application code.
+ */
+
+#define RING_GEODIS_EV_TEXT_MAX  192   /* == RING_GEODIS_TEXT_MAX */
+#define RING_GEODIS_EVENT_DEPTH  24
+
+typedef enum {
+    RING_GEODIS_EV_STATE = 0,
+    RING_GEODIS_EV_TEXT,
+} ring_geodis_ev_kind_t;
+
+typedef struct {
+    uint8_t             kind;      /* ring_geodis_ev_kind_t */
+    uint8_t             is_user;
+    uint8_t             final;
+    ring_geodis_state_t state;     /* EV_STATE */
+    uint16_t            len;       /* EV_TEXT  */
+    char                text[RING_GEODIS_EV_TEXT_MAX];
+} ring_geodis_event_t;
 
 /* ------------------------------------------------------------- state */
 
@@ -79,11 +120,30 @@ typedef struct {
     ring_geodis_transcript_cb_t text_cb;
     ring_geodis_tool_cb_t       tool_cb;
     void                       *user;
+    bool                        inited;
 
     esp_peer_handle_t           peer;
     TaskHandle_t                peer_task;
     TaskHandle_t                signal_task;
     TaskHandle_t                event_task;
+
+    /* Peer ownership. Only `ring-geodis-peer` calls esp_peer_open()/
+     * esp_peer_close(); everybody else uses the handle under peer_lock and
+     * requests teardown via peer_close_req. Without this, stop() frees the
+     * DTLS/SRTP state while the peer task is inside esp_peer_main_loop(). */
+    SemaphoreHandle_t           peer_lock;
+    SemaphoreHandle_t           peer_gone;
+    volatile bool               peer_close_req;
+    /* Set once esp_peer_new_connection() has returned: the main loop must not
+     * run against a connection that is still being built. */
+    volatile bool               peer_ready;
+
+    /* Bumped per session. The signal task stamps its POST with the generation
+     * it started under and drops the answer if a new session began meanwhile —
+     * otherwise a slow /token+SDP round trip installs an answer for a peer that
+     * no longer exists. */
+    volatile uint32_t           session_gen;
+    esp_err_t                   last_err;
 
     char                        base_url[RING_GEODIS_BASE_URL_MAX];
     char                        sdp_url[RING_GEODIS_SDP_URL_MAX];
@@ -123,15 +183,20 @@ typedef struct {
     /* Downlink PCM ring buffer (48 kHz mono). */
     ring_byte_ring_t            dl_ring;
 
-    QueueHandle_t               event_queue;
+    QueueHandle_t               event_queue;   /* ring_geodis_event_t */
     SemaphoreHandle_t           state_mutex;
+    /* Two independent facts: whether the app has the uplink open (the button)
+     * and what the model is doing (the state). They overlap — the model can
+     * start answering mid-hold — so gating send_audio on the state would kill
+     * the uplink at the worst moment. */
+    volatile bool               uplink_open;
     volatile bool               speaking;
 
     /* RTP presentation timestamp for the current session (sample count). */
     uint32_t                    pts;
 
-    /* Client-executed RAG tool call. The DataChannel callback only queues a
-     * job; the tool task does the blocking HTTPS POST. */
+    /* Client-executed RAG tool call. The peer task only queues a job; the tool
+     * task runs the app hook and the blocking HTTPS POST. */
     QueueHandle_t               tool_queue;
     TaskHandle_t                tool_task;
 } ring_geodis_ctx_t;
@@ -139,18 +204,25 @@ typedef struct {
 extern ring_geodis_ctx_t ring_geodis_s;
 
 /* One queued tool call. */
+#define RING_GEODIS_TOOL_ARGS_MAX 1024
+
 typedef struct {
-    char call_id[64];
-    char name[64];
-    char args_json[1024];
+    uint8_t bad_args;                    /* arguments present but unreadable */
+    char    call_id[64];
+    char    name[64];
+    char    args_json[RING_GEODIS_TOOL_ARGS_MAX];
 } ring_geodis_tool_job_t;
 
 /* ------------------------------------------------------------- shared helpers
  *
  * Defined in ring_geodis.c unless noted. */
 
-/* Update the state and notify the event task (safe from any task). */
+/* Update the state and queue a transition for the event task. Safe from any
+ * task, including the peer task; never calls application code. */
 void ring_geodis_state_set(ring_geodis_state_t st);
+
+/* Queue a transcript fragment for the event task. called on the peer task. */
+void ring_geodis_emit_text(const char *text, size_t len, bool is_user, bool final);
 
 /* Push decoded downlink PCM onto the ring (defined in ring_geodis_codec.c). */
 void ring_geodis_dl_push(const uint8_t *pcm, size_t len);
@@ -158,14 +230,22 @@ void ring_geodis_dl_push(const uint8_t *pcm, size_t len);
 /* Open the Opus encoder/decoder (defined in ring_geodis_codec.c). */
 esp_err_t ring_geodis_opus_open(void);
 
-/* Peer bring-up and token fetch (defined in ring_geodis_signaling.c). */
+/* Peer bring-up and token fetch (defined in ring_geodis_signaling.c).
+ * ring_geodis_peer_open() must only be called once the previous peer is gone
+ * (ring_geodis_peer_close() returned). */
 esp_err_t ring_geodis_peer_open(void);
+esp_err_t ring_geodis_peer_close(void);
 esp_err_t ring_geodis_fetch_token(void);
 
 /* HTTPS helpers (defined in ring_geodis_signaling.c). */
 esp_err_t ring_geodis_post_json(const char *url, const char *body,
                                 int expect_status, char *resp, size_t resp_cap,
                                 int *resp_len, int *status);
+/* Same, with an explicit attempt count: the tool call is on the user's
+ * critical path, so it retries less aggressively than the token fetch. */
+esp_err_t ring_geodis_post_json_ex(const char *url, const char *body,
+                                   int expect_status, char *resp, size_t resp_cap,
+                                   int *resp_len, int *status, int attempts);
 esp_err_t ring_geodis_post_sdp(const char *url, const char *token,
                                const char *offer, char *answer, size_t answer_cap);
 

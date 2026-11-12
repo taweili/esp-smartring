@@ -26,6 +26,11 @@ extern "C" {
  * Handles the standard escapes and encodes \uXXXX as UTF-8, including
  * surrogate pairs. Returns false when the key is absent or is not a string.
  *
+ * **A value that does not fit is silently truncated** and still returns true —
+ * that is the right behaviour for a display fragment, but wrong when the value
+ * is going to be handed to something that parses it. Use
+ * ring_json_get_str_ex() there.
+ *
  * @param out      Destination.
  * @param cap      Capacity of @p out.
  * @param out_len  Optional: receives the number of bytes written (excluding
@@ -33,6 +38,28 @@ extern "C" {
  */
 bool ring_json_get_str(const char *json, const char *key,
                        char *out, size_t cap, size_t *out_len);
+
+/**
+ * @brief ring_json_get_str(), but report truncation.
+ *
+ * Identical except that @p truncated is set when the value did not fit in
+ * @p out. A truncated value is a well-formed prefix, not a value: treating it
+ * as one is how a JSON payload turns into a request the server rejects.
+ *
+ * @param truncated Optional: set true when bytes were dropped. Never cleared
+ *                  on success/failure, so initialise it at the call site.
+ */
+bool ring_json_get_str_ex(const char *json, const char *key,
+                          char *out, size_t cap, size_t *out_len,
+                          bool *truncated);
+
+/**
+ * @brief True when `key` appears as a field name at all.
+ *
+ * Distinguishes "the field is not there" from "the field is there and I could
+ * not read it" — the two need different error handling.
+ */
+bool ring_json_has_key(const char *json, const char *key);
 
 /** Extract an integer value. Returns false when absent or not a number. */
 bool ring_json_get_int(const char *json, const char *key, int *out);

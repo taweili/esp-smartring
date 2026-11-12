@@ -249,6 +249,66 @@ static void test_append_string(void)
     CHECK(!ring_json_append_string(small, 4, &pos, NULL), "append_string null val");
 }
 
+/* -------------------------------------------------------------- get_str_ex */
+
+static void test_get_str_ex(void)
+{
+    char out[8];
+    size_t len = 0;
+    bool trunc;
+
+    /* A value that fits: no truncation reported. */
+    trunc = false;
+    CHECK(ring_json_get_str_ex("{\"s\":\"hello\"}", "s", out, sizeof(out),
+                               &len, &trunc), "ex fits");
+    CHECK(!trunc, "ex fits not truncated");
+
+    /* One byte short: the prefix is still returned, but it says so. */
+    trunc = false;
+    CHECK(ring_json_get_str_ex("{\"s\":\"hello\"}", "s", out, 5, &len, &trunc),
+          "ex small present");
+    CHECK(strcmp(out, "hell") == 0, "ex small value");
+    CHECK(trunc, "ex small truncated");
+
+    /* Truncation inside an escape: the escape expands, so it overflows a
+     * buffer that looked big enough for the raw text. */
+    trunc = false;
+    CHECK(ring_json_get_str_ex("{\"s\":\"a\\u00e9b\"}", "s", out, 3, &len, &trunc),
+          "ex escape present");
+    CHECK(trunc, "ex escape truncated");
+
+    /* Both entry points agree on the value; only the flag differs. */
+    trunc = false;
+    CHECK(ring_json_get_str_ex("{\"s\":\"ab\"}", "s", out, sizeof(out), &len, &trunc),
+          "ex plain present");
+    CHECK(strcmp(out, "ab") == 0 && len == 2 && !trunc, "ex plain value");
+}
+
+/* --------------------------------------------------------------- has_key */
+
+static void test_has_key(void)
+{
+    CHECK(ring_json_has_key("{\"arguments\":\"{}\"}", "arguments"),
+          "has_key present");
+    CHECK(ring_json_has_key("{ \"arguments\" : \"{}\" }", "arguments"),
+          "has_key with spaces");
+    CHECK(!ring_json_has_key("{\"name\":\"arguments\"}", "arguments"),
+          "has_key must not match a value");
+    CHECK(!ring_json_has_key("{\"args\":\"{}\"}", "arguments"),
+          "has_key prefix of another key");
+    CHECK(!ring_json_has_key(NULL, "arguments"), "has_key null json");
+    CHECK(!ring_json_has_key("{\"arguments\"}", "arguments"), "has_key no colon");
+
+    /* The distinction that matters: absent vs present-but-unreadable. A field
+     * that is there but is not a string must not look like "no field". */
+    char out[4];
+    CHECK(!ring_json_get_str_ex("{\"arguments\":{}}", "arguments",
+                                out, sizeof(out), NULL, NULL),
+          "read fails on a non-string value");
+    CHECK(ring_json_has_key("{\"arguments\":{}}", "arguments"),
+          "but the key is there");
+}
+
 /* ------------------------------------------------------------------ main */
 
 int main(void)
@@ -257,6 +317,8 @@ int main(void)
     test_get_str_escapes();
     test_get_str_unicode();
     test_get_str_truncation();
+    test_get_str_ex();
+    test_has_key();
     test_get_str_missing();
     test_get_int();
     test_get_bool();

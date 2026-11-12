@@ -8,8 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-bool ring_json_get_str(const char *json, const char *key,
-                       char *out, size_t cap, size_t *out_len)
+bool ring_json_get_str_ex(const char *json, const char *key,
+                          char *out, size_t cap, size_t *out_len,
+                          bool *truncated)
 {
     if (json == NULL || key == NULL || out == NULL || cap == 0) {
         return false;
@@ -37,11 +38,14 @@ bool ring_json_get_str(const char *json, const char *key,
     p++;
 
     size_t n = 0;
+    bool dropped = false;
     while (*p != '\0' && *p != '"') {
         char c = *p;
         if (c != '\\') {
             if (n + 1 < cap) {
                 out[n++] = c;
+            } else {
+                dropped = true;
             }
             p++;
             continue;
@@ -120,6 +124,8 @@ bool ring_json_get_str(const char *json, const char *key,
             for (int i = 0; i < m; i++) {
                 if (n + 1 < cap) {
                     out[n++] = enc[i];
+                } else {
+                    dropped = true;
                 }
             }
             p++;
@@ -130,6 +136,8 @@ bool ring_json_get_str(const char *json, const char *key,
         }
         if (n + 1 < cap) {
             out[n++] = c;
+        } else {
+            dropped = true;
         }
         p++;
     }
@@ -140,7 +148,34 @@ bool ring_json_get_str(const char *json, const char *key,
     if (out_len != NULL) {
         *out_len = n;
     }
+    if (truncated != NULL && dropped) {
+        *truncated = true;
+    }
     return true;
+}
+
+bool ring_json_get_str(const char *json, const char *key,
+                       char *out, size_t cap, size_t *out_len)
+{
+    return ring_json_get_str_ex(json, key, out, cap, out_len, NULL);
+}
+
+bool ring_json_has_key(const char *json, const char *key)
+{
+    if (json == NULL || key == NULL) {
+        return false;
+    }
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (p == NULL) {
+        return false;
+    }
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+        p++;
+    }
+    return *p == ':';
 }
 
 bool ring_json_get_int(const char *json, const char *key, int *out)

@@ -122,6 +122,44 @@ void esp_http_client_cleanup(esp_http_client_handle_t client)
     (void)client;
 }
 
+esp_err_t esp_http_client_open(esp_http_client_handle_t client, int write_len)
+{
+    (void)client;
+    (void)write_len;
+    return ESP_FAIL;             /* no network on the host */
+}
+
+int esp_http_client_write(esp_http_client_handle_t client, const char *buffer,
+                          int len)
+{
+    (void)client;
+    (void)buffer;
+    return len;                  /* pretend the write succeeded */
+}
+
+int64_t esp_http_client_fetch_headers(esp_http_client_handle_t client)
+{
+    (void)client;
+    return 0;                    /* no body */
+}
+
+int esp_http_client_read(esp_http_client_handle_t client, char *buffer, int len)
+{
+    (void)client;
+    (void)buffer;
+    (void)len;
+    return 0;                    /* EOF */
+}
+
+int esp_http_client_read_response(esp_http_client_handle_t client, char *buffer,
+                                  int len)
+{
+    (void)client;
+    (void)buffer;
+    (void)len;
+    return 0;                    /* EOF */
+}
+
 /* ---- ring_ca ---- */
 
 const char *ring_ca_pem(void)

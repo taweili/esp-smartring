@@ -22,3 +22,5 @@ scripts/geodis_reply.wav
 # Python bytecode
 __pycache__/
 *.pyc
+.Trash-0
+.workbuddy
