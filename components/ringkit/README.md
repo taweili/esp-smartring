@@ -95,6 +95,7 @@ Tasks created by ringkit:
 | `ring-geodis-event` | 6 KB | 4 | `ring_geodis` | state + transcript callbacks |
 | `ring-geodis-peer` | 16 KB | 5 | `ring_geodis` | `esp_peer` main loop |
 | `ring-geodis-tool` | 12 KB | 4 | `ring_geodis` | client-executed `/tool-call` HTTPS POST |
+| `ring-geodis-mock` | 4 KB | 5 | `ring_geodis` (mock) | stand-in for the peer: canned turns, no network |
 | `ring-ws-worker` | 8 KB | 5 | `ring_ws` | WS transport / reassembly / base64 |
 | `ring-ws-event` | 6 KB | 4 | `ring_ws` | state + transcript + tool callbacks |
 | NimBLE host | NimBLE | — | `ring_bt` | GAP + GATT access callbacks |
@@ -194,6 +195,28 @@ a mutex; `ring_wifi`/`ring_bt` do the same.
 All three share the same 48 kHz / 16-bit / mono PCM interface and the same
 CA / bearer plumbing, so switching transports does not change the audio
 pipeline at the app boundary.
+
+### Developing `ring_geodis` without a network
+
+`CONFIG_RINGKIT_GEODIS_MOCK=y` swaps the network half of `ring_geodis` (Wi-Fi,
+SNTP, `/token`, SDP, DTLS, RTP) for a local mock. The public API, the state
+machine, the event queue, the downlink ring, the tool task and the callbacks are
+the real code, so an app written against the mock is the app that runs against
+the gateway.
+
+```
+start()              CONNECTING -> READY     ~300 ms
+set_listening(true)  LISTENING
+commit()             user transcript -> SPEAKING
+                     "Je vérifie votre colis…" -> tool call (fails offline, by design)
+                     1.6 s of canned 48 kHz PCM -> READY
+cancel()             playback stops at the next frame boundary
+```
+
+The `/tool-call` POST fails on purpose: the app exercises the real
+`lookup_unavailable` path instead of a fabricated answer. Timing is adjustable
+via `ring_geodis_mock_config()`. Costs ~150 KB of flash (the embedded clip) —
+never ship it.
 
 ## Build hygiene
 

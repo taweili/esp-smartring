@@ -12,6 +12,7 @@
  * waits for the answer).
  */
 #include "ring_geodis_priv.h"
+#include "ring_geodis_payload.h"
 
 #include "ringkit/ring_time.h"
 #include "ringkit/ring_http.h"
@@ -154,25 +155,12 @@ esp_err_t ring_geodis_post_sdp(const char *url, const char *token,
 esp_err_t ring_geodis_fetch_token(void)
 {
     /* Every append is checked: JSON escaping can roughly double a prompt, and
-     * a truncated body is an HTTP 400 that says nothing useful. */
-    char body[RING_GEODIS_PROMPT_MAX * 2 + 320];
-    int pos = 0;
-    bool ok = ring_json_append(body, sizeof(body), &pos, "{\"chat_session_id\":");
-    if (ok) {
-        ok = ring_json_append_string(body, sizeof(body), &pos,
-                                     ring_geodis_s.chat_session_id);
-    }
-    if (ok && ring_geodis_s.system_prompt[0] != '\0') {
-        ok = ring_json_append(body, sizeof(body), &pos, ",\"system_prompt\":");
-        if (ok) {
-            ok = ring_json_append_string(body, sizeof(body), &pos,
-                                         ring_geodis_s.system_prompt);
-        }
-    }
-    if (ok) {
-        ok = ring_json_append(body, sizeof(body), &pos, "}");
-    }
-    if (!ok) {
+     * a truncated body is an HTTP 400 that says nothing useful. The builder is
+     * host-tested (see ring_geodis_payload.c). */
+    char body[RING_GEODIS_TOKEN_BODY_CAP];
+    if (!ring_geodis_payload_token_body(body, sizeof(body),
+                                        ring_geodis_s.chat_session_id,
+                                        ring_geodis_s.system_prompt)) {
         ESP_LOGE(TAG, "token: body overflow (%u B buffer, %u B prompt)",
                  (unsigned)sizeof(body),
                  (unsigned)strlen(ring_geodis_s.system_prompt));
@@ -375,6 +363,32 @@ void ring_geodis_signal_task(void *arg)
 }
 
 /* ------------------------------------------------------------- session */
+
+/* Wraps esp_peer_new_connection() so ring_geodis.c does not have to know
+ * whether a real transport or the mock is linked (CONFIG_RINGKIT_GEODIS_MOCK
+ * replaces this file with ring_geodis_mock.c). */
+esp_err_t ring_geodis_peer_connect(void)
+{
+    int r = esp_peer_new_connection(ring_geodis_s.peer);
+    if (r != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "new_connection failed: %d", r);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+/* The counterpart to peer_connect(): the peer task still owns the close, so
+ * this only asks esp_peer to stop the session, exactly as the peer task's own
+ * shutdown path does. Safe to call when no peer exists. */
+esp_err_t ring_geodis_peer_disconnect(void)
+{
+    xSemaphoreTake(ring_geodis_s.peer_lock, portMAX_DELAY);
+    if (ring_geodis_s.peer != NULL) {
+        esp_peer_disconnect(ring_geodis_s.peer);
+    }
+    xSemaphoreGive(ring_geodis_s.peer_lock);
+    return ESP_OK;
+}
 
 esp_err_t ring_geodis_peer_open(void)
 {

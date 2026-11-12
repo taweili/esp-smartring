@@ -19,8 +19,12 @@ INC       = -I$(RINGKIT)/include -I$(RINGKIT)/src -Istubs
 STUB_SRC  = stub_esp.c
 JSON_SRC  = $(RINGKIT)/src/ring_json.c
 CHAT_SRCS = $(RINGKIT)/src/ring_chat.c $(JSON_SRC)
+# The geodis payload builders are pure (ring_json only), so they build on the
+# host even though the rest of ring_geodis needs esp_peer and a peer thread.
+GEODIS_PAYLOAD_SRCS = $(RINGKIT)/src/ring_geodis_payload.c $(JSON_SRC)
 
-TESTS = test_ring_json test_ring_resample test_ring_byte_ring test_ring_chat_messages
+TESTS = test_ring_json test_ring_resample test_ring_byte_ring test_ring_chat_messages \
+        test_ring_geodis_payload
 
 all: $(TESTS)
 
@@ -38,6 +42,9 @@ test_ring_byte_ring: test_ring_byte_ring.c $(RINGKIT)/src/ring_byte_ring.c $(STU
 
 test_ring_chat_messages: test_ring_chat_messages.c $(CHAT_SRCS) $(STUB_SRC)
 	$(CC) $(CFLAGS) $(INC) $^ -o $@
+
+test_ring_geodis_payload: test_ring_geodis_payload.c $(GEODIS_PAYLOAD_SRCS)
+	$(CC) $(CFLAGS) -I$(RINGKIT)/src $(INC) $^ -o $@
 
 clean:
 	rm -f $(TESTS)

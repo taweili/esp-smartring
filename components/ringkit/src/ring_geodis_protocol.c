@@ -17,6 +17,7 @@
  * application code.
  */
 #include "ring_geodis_priv.h"
+#include "ring_geodis_payload.h"
 
 #include "ringkit/ring_json.h"
 
@@ -46,51 +47,13 @@
 
 /* ------------------------------------------------------------- session.update */
 
+/* Thin wrapper over the host-tested builder: it only supplies the session's
+ * configuration. The wire rules live in ring_geodis_payload.c. */
 static bool build_session_update(char *buf, size_t cap)
 {
-    int pos = 0;
-    bool ok = ring_json_append(buf, cap, &pos,
-                               "{\"type\":\"session.update\",\"session\":{\"audio\":{");
-    bool need_comma = false;
-    if (ok && (ring_geodis_s.enable_stt || ring_geodis_s.enable_ptt)) {
-        ok = ring_json_append(buf, cap, &pos, "\"input\":{");
-        bool in_comma = false;
-        if (ok && ring_geodis_s.enable_stt) {
-            ok = ring_json_append(buf, cap, &pos,
-                                  "\"transcription\":{\"model\":\"whisper-1\"}");
-            in_comma = true;
-        }
-        if (ok && ring_geodis_s.enable_ptt) {
-            if (in_comma) {
-                ok = ring_json_append(buf, cap, &pos, ",");
-            }
-            if (ok) {
-                ok = ring_json_append(buf, cap, &pos, "\"turn_detection\":null");
-            }
-        }
-        if (ok) {
-            ok = ring_json_append(buf, cap, &pos, "}");
-        }
-        need_comma = true;
-    }
-    if (ok && ring_geodis_s.voice[0] != '\0') {
-        if (need_comma) {
-            ok = ring_json_append(buf, cap, &pos, ",");
-        }
-        if (ok) {
-            ok = ring_json_append(buf, cap, &pos, "\"output\":{\"voice\":");
-        }
-        if (ok) {
-            ok = ring_json_append_string(buf, cap, &pos, ring_geodis_s.voice);
-        }
-        if (ok) {
-            ok = ring_json_append(buf, cap, &pos, "}");
-        }
-    }
-    if (ok) {
-        ok = ring_json_append(buf, cap, &pos, "}}}");
-    }
-    return ok;
+    return ring_geodis_payload_session_update(buf, cap, ring_geodis_s.voice,
+                                              ring_geodis_s.enable_stt,
+                                              ring_geodis_s.enable_ptt);
 }
 
 /* ------------------------------------------------------------- peer callbacks
@@ -319,6 +282,16 @@ int ring_geodis_on_data_frame(esp_peer_data_frame_t *frame, void *ctx)
 
 /* ------------------------------------------------------------- send */
 
+#ifndef CONFIG_RINGKIT_GEODIS_MOCK
+/* A real session needs no observation hook: the peer sends the event and the
+ * server answers. The mock compiles its own definition. */
+void ring_geodis_transport_on_event(const char *json, esp_err_t sent)
+{
+    (void)json;
+    (void)sent;
+}
+#endif
+
 esp_err_t ring_geodis_send_event(const char *json)
 {
     if (json == NULL) {
@@ -343,6 +316,9 @@ esp_err_t ring_geodis_send_event(const char *json)
         }
     }
     xSemaphoreGive(ring_geodis_s.peer_lock);
+    /* The mock transport has no wire to observe, so give it the same view the
+     * server would get. A no-op in a real build. */
+    ring_geodis_transport_on_event(json, ret);
     return ret;
 }
 
@@ -384,32 +360,10 @@ esp_err_t ring_geodis_keepalive(void)
 static void send_tool_output(const char *call_id, const char *output, char *out,
                              size_t cap)
 {
-    int pos = 0;
-    bool ok = ring_json_append(out, cap, &pos,
-                               "{\"type\":\"conversation.item.create\",\"item\":"
-                               "{\"type\":\"function_call_output\",\"call_id\":");
-    if (ok) {
-        ok = ring_json_append_string(out, cap, &pos, call_id);
-    }
-    if (ok) {
-        ok = ring_json_append(out, cap, &pos, ",\"output\":");
-    }
-    if (ok) {
-        ok = ring_json_append_string(out, cap, &pos, output);
-    }
-    if (ok) {
-        ok = ring_json_append(out, cap, &pos, "}}");
-    }
-    if (!ok) {
-        /* The item overflowed the buffer: send a short, valid one instead of a
-         * truncated JSON event the model cannot read. */
-        pos = 0;
-        ring_json_append(out, cap, &pos,
-                         "{\"type\":\"conversation.item.create\",\"item\":"
-                         "{\"type\":\"function_call_output\",\"call_id\":\"%s\","
-                         "\"output\":\"{\\\"error\\\":\\\"lookup_unavailable\\\","
-                         "\\\"detail\\\":\\\"response_too_large\\\"}\"}",
-                         call_id);
+    if (!ring_geodis_payload_tool_output(out, cap, call_id, output)) {
+        ESP_LOGE(TAG, "tool output item does not fit in %u bytes — dropping",
+                 (unsigned)cap);
+        return;
     }
     ring_geodis_send_event(out);
     ring_geodis_send_event("{\"type\":\"response.create\"}");
@@ -443,27 +397,8 @@ static void tool_exec(const ring_geodis_tool_job_t *job, char *resp, char *inner
      * `arguments` field is already a string; embed it verbatim. The escape
      * can roughly double it, so leave room and check the result. */
     char body[RING_GEODIS_TOOL_ARGS_MAX * 2 + 512];
-    int pos = 0;
-    bool ok = ring_json_append(body, sizeof(body), &pos, "{\"name\":");
-    if (ok) {
-        ok = ring_json_append_string(body, sizeof(body), &pos, job->name);
-    }
-    if (ok) {
-        ok = ring_json_append(body, sizeof(body), &pos, ",\"arguments\":");
-    }
-    if (ok) {
-        ok = ring_json_append_string(body, sizeof(body), &pos, job->args_json);
-    }
-    if (ok) {
-        ok = ring_json_append(body, sizeof(body), &pos, ",\"session_id\":");
-    }
-    if (ok) {
-        ok = ring_json_append_string(body, sizeof(body), &pos, ring_geodis_s.session_id);
-    }
-    if (ok) {
-        ok = ring_json_append(body, sizeof(body), &pos, "}");
-    }
-    if (!ok) {
+    if (!ring_geodis_payload_tool_body(body, sizeof(body), job->name,
+                                       job->args_json, ring_geodis_s.session_id)) {
         ESP_LOGE(TAG, "tool '%s': request body overflow", job->name);
         tool_error_output(inner, RING_GEODIS_TOOL_INNER_CAP, "request_too_large");
         send_tool_output(job->call_id, inner, resp, cap);

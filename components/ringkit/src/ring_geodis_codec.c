@@ -100,6 +100,64 @@ esp_err_t ring_geodis_opus_open(void)
     return ring_geodis_s.dec_mutex ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+/* ------------------------------------------------------------- uplink */
+
+/* Encode one mono frame to Opus and hand it to the peer. Runs on the app's
+ * audio task. Kept here because the encoder lives here; ring_geodis.c owns the
+ * public API and the uplink_open gate. */
+esp_err_t ring_geodis_uplink_send(const int16_t *pcm, size_t samples)
+{
+    if (pcm == NULL || ring_geodis_s.enc == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+#ifdef CONFIG_RINGKIT_GEODIS_MOCK
+    /* No RTP path in a mock session. Accept and count the frame anyway: an app
+     * whose audio loop stops on the first error must not be hidden by the
+     * mock, and the uplink-open contract is worth testing end to end. */
+    ring_geodis_s.pts += samples;
+    return ESP_OK;
+#else
+    /* Encode outside the lock: only the peer handle needs protecting, and the
+     * encoder belongs to the caller's audio task alone. */
+    int16_t *stereo = (int16_t *)ring_geodis_s.enc_in;
+    for (size_t i = 0; i < samples; i++) {
+        stereo[2 * i] = pcm[i];
+        stereo[2 * i + 1] = pcm[i];
+    }
+    esp_audio_enc_in_frame_t in = {
+        .buffer = ring_geodis_s.enc_in,
+        .len = (uint32_t)(samples * RING_GEODIS_OPUS_CHANNELS * 2),
+    };
+    esp_audio_enc_out_frame_t out = {
+        .buffer = ring_geodis_s.enc_out,
+        .len = (uint32_t)ring_geodis_s.enc_out_size,
+    };
+    esp_audio_err_t e = esp_audio_enc_process(ring_geodis_s.enc, &in, &out);
+    if (e != ESP_AUDIO_ERR_OK || out.encoded_bytes == 0) {
+        return ESP_FAIL;
+    }
+
+    /* RTP presentation timestamp: the sample count, not the wall clock. */
+    esp_peer_audio_frame_t frame = {
+        .data = ring_geodis_s.enc_out,
+        .size = (int)out.encoded_bytes,
+        .pts = ring_geodis_s.pts,
+    };
+
+    esp_err_t ret = ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(ring_geodis_s.peer_lock, portMAX_DELAY);
+    if (ring_geodis_s.peer != NULL) {
+        ring_geodis_s.pts += samples;
+        int r = esp_peer_send_audio(ring_geodis_s.peer, &frame);
+        ret = (r == ESP_PEER_ERR_NONE || r == ESP_PEER_ERR_WOULD_BLOCK) ? ESP_OK
+                                                                      : ESP_FAIL;
+    }
+    xSemaphoreGive(ring_geodis_s.peer_lock);
+    return ret;
+#endif /* CONFIG_RINGKIT_GEODIS_MOCK */
+}
+
 /* ------------------------------------------------------------- peer callback
  *
  * Runs on the peer task, which also runs esp_peer_main_loop: keep the stack

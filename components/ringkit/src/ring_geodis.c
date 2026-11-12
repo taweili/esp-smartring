@@ -312,6 +312,7 @@ esp_err_t ring_geodis_start(const ring_geodis_cfg_t *cfg)
     ring_geodis_s.send_stream_id = 0;
     ring_geodis_state_set(RING_GEODIS_CONNECTING);
 
+#ifndef CONFIG_RINGKIT_GEODIS_MOCK
     /* 1. Wi-Fi */
     esp_err_t err = ring_wifi_start();
     if (err != ESP_OK) {
@@ -329,6 +330,12 @@ esp_err_t ring_geodis_start(const ring_geodis_cfg_t *cfg)
     if (err != ESP_OK) {
         goto fail;
     }
+#else
+    /* Mock build: no Wi-Fi, no SNTP, no TLS. Everything below still runs the
+     * real code path so the app sees the same call sequence. */
+    esp_err_t err = ESP_OK;
+    ESP_LOGW(TAG, "MOCK TRANSPORT: no network, canned replies");
+#endif
 
     /* 3. Ephemeral token. The gateway resets ~1 in 12 TLS connections, so the
      * POST retries internally. */
@@ -342,10 +349,8 @@ esp_err_t ring_geodis_start(const ring_geodis_cfg_t *cfg)
     if (err != ESP_OK) {
         goto fail;
     }
-    int r = esp_peer_new_connection(ring_geodis_s.peer);
-    if (r != ESP_PEER_ERR_NONE) {
-        ESP_LOGE(TAG, "new_connection failed: %d", r);
-        err = ESP_FAIL;
+    err = ring_geodis_peer_connect();
+    if (err != ESP_OK) {
         goto fail;
     }
     /* The offer has been produced; the main loop may now drive the session. */
@@ -394,6 +399,7 @@ esp_err_t ring_geodis_stop(void)
     ring_geodis_s.speaking = false;
     /* Nothing may be delivered for a session that is going away. */
     ring_geodis_s.session_gen++;
+    ring_geodis_peer_disconnect();
     ring_geodis_peer_close();
     ring_byte_ring_reset(&ring_geodis_s.dl_ring);
     ring_geodis_state_set(RING_GEODIS_OFF);
@@ -445,44 +451,7 @@ esp_err_t ring_geodis_send_audio(const int16_t *pcm, size_t samples)
         ring_geodis_s.enc == NULL || !ring_geodis_s.uplink_open) {
         return ESP_ERR_INVALID_STATE;
     }
-
-    /* Encode outside the lock: only the peer handle needs protecting, and the
-     * encoder belongs to the caller's audio task alone. */
-    int16_t *stereo = (int16_t *)ring_geodis_s.enc_in;
-    for (size_t i = 0; i < samples; i++) {
-        stereo[2 * i] = pcm[i];
-        stereo[2 * i + 1] = pcm[i];
-    }
-    esp_audio_enc_in_frame_t in = {
-        .buffer = ring_geodis_s.enc_in,
-        .len = (uint32_t)(samples * RING_GEODIS_OPUS_CHANNELS * 2),
-    };
-    esp_audio_enc_out_frame_t out = {
-        .buffer = ring_geodis_s.enc_out,
-        .len = (uint32_t)ring_geodis_s.enc_out_size,
-    };
-    esp_audio_err_t e = esp_audio_enc_process(ring_geodis_s.enc, &in, &out);
-    if (e != ESP_AUDIO_ERR_OK || out.encoded_bytes == 0) {
-        return ESP_FAIL;
-    }
-
-    /* RTP presentation timestamp: the sample count, not the wall clock. */
-    esp_peer_audio_frame_t frame = {
-        .data = ring_geodis_s.enc_out,
-        .size = (int)out.encoded_bytes,
-        .pts = ring_geodis_s.pts,
-    };
-
-    esp_err_t ret = ESP_ERR_INVALID_STATE;
-    xSemaphoreTake(ring_geodis_s.peer_lock, portMAX_DELAY);
-    if (ring_geodis_s.peer != NULL) {
-        ring_geodis_s.pts += samples;
-        int r = esp_peer_send_audio(ring_geodis_s.peer, &frame);
-        ret = (r == ESP_PEER_ERR_NONE || r == ESP_PEER_ERR_WOULD_BLOCK) ? ESP_OK
-                                                                      : ESP_FAIL;
-    }
-    xSemaphoreGive(ring_geodis_s.peer_lock);
-    return ret;
+    return ring_geodis_uplink_send(pcm, samples);
 }
 
 esp_err_t ring_geodis_read_audio(int16_t *pcm, size_t samples, size_t *out_samples,

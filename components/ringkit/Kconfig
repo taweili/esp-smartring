@@ -37,6 +37,25 @@ menu "Ringkit"
             GEODIS code from the image; applications that call ring_geodis_*
             will fail to link.
 
+    config RINGKIT_GEODIS_MOCK
+        bool "ring_geodis: mock transport (no network, canned replies)"
+        depends on RINGKIT_GEODIS
+        default n
+        help
+            Replace the network half of ring_geodis with a local mock: no
+            Wi-Fi, no SNTP, no /token, no SDP, no DTLS. The session goes
+            CONNECTING -> READY after ~300 ms, commit() triggers a canned
+            user transcript, a canned tool call and 1.6 s of canned 48 kHz
+            PCM, and barge-in interrupts it like the real thing.
+
+            Everything above the transport is unchanged — same state machine,
+            same callbacks, same downlink ring — so an app developed against
+            the mock is the app that runs against the gateway. Intended for
+            bench work where outbound UDP/DTLS is blocked, and for UI
+            development with no gateway budget.
+
+            Adds ~150 KB of flash (the canned clip). Never ship it.
+
     config RINGKIT_BT
         bool "Enable ring_bt (BLE peripheral)"
         default y

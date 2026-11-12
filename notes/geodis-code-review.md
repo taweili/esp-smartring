@@ -9,8 +9,12 @@
 
 **Status (2026-11-12):** §1.1–§1.4, §2.1–§2.4 and the barge-in/uplink half of
 §3.1–§3.2 are implemented — see `notes/geodis-push-to-talk-plan.md` §6A.5 for the
-contract changes. Everything from §3.3 onward is open. Nothing here has run on
-hardware; the fixes are compile-verified (`12_ringkit_selftest`) plus host tests.
+contract changes. §5 (payload builders + host tests) and §6.2 (mock transport)
+are now done as well — see §5 and §6.2 below. Everything from §3.3 onward is
+open except where noted. Nothing here has run on hardware: the ring is not
+attached in the current environment (`/dev/ttyACM0` absent), so the fixes are
+compile-verified (both `RINGKIT_GEODIS_MOCK=n` and `=y` link cleanly) plus host
+tests.
 
 
 ---
@@ -193,15 +197,24 @@ Two smaller structural notes:
 
 ## 5. Testing
 
-There are no host tests for this module, but three of its pure functions are the ones that fail silently:
+**Done (2026-11-12).** The three builders now live in
+`components/ringkit/src/ring_geodis_payload.c` behind `ring_geodis_payload.h`,
+as pure functions (no globals, no FreeRTOS — `ring_json` is the only
+dependency), and `tests/test_ring_geodis_payload.c` asserts their exact bytes:
+62 checks, wired into `make check`.
 
-- `build_session_update()` (`protocol.c:39-71`) — combinatorial: stt × ptt × voice, and it must never emit top-level `modalities`/`turn_detection` (the endpoint 400s on those). A host test asserting the exact JSON for the 4 flag combinations would have caught a wrong-field regression in one line.
-- the `/token` body builder (`signaling.c:143-151`) — the 768-byte overflow in §2.4 is a two-line test.
-- the `/tool-call` body builder (`protocol.c:288-296`) — `arguments` must stay a **string**; an object is HTTP 500. A test with quotes/backslashes/UTF-8 in the args catches both the "wrong type" and the escaping bugs.
+| builder | what the test pins |
+|---|---|
+| `ring_geodis_payload_session_update()` | never emits a top-level `modalities`/`turn_detection`; exact JSON for all four flag combinations; `"input"` omitted entirely when both flags are off; `turn_detection: null` present (not omitted) when PTT is on |
+| `ring_geodis_payload_token_body()` | empty prompt is omitted rather than sent as `""`; a 512-byte prompt of pure `"` (2× escaped) still fits and closes |
+| `ring_geodis_payload_tool_body()` | `arguments` is a **string**, never spliced raw; quotes/backslashes/UTF-8 survive; NULLs never become `null` |
+| `ring_geodis_payload_tool_output()` | oversized output degrades to a closed `lookup_unavailable` item, not truncated JSON |
 
-They are `static` today. Move them to a `ring_geodis_payload.c` compiled into both the component and `tests/Makefile` (the harness already links `ring_json.c`, `ring_json` is the only dependency). ~40 lines of test, no hardware.
+The prompt-limit constant is duplicated in the test (it cannot include
+`ring_geodis_priv.h`), so `test_capacity_constants()` guards the copy.
 
-Everything else (peer lifecycle, state transitions, tool ordering) needs the mock in §6.2, not unit tests.
+Everything else (peer lifecycle, state transitions, tool ordering) is covered
+by the mock in §6.2, not by unit tests.
 
 ---
 
@@ -234,11 +247,48 @@ Either way, the app must not re-derive what the module should own: uplink-open, 
 
 ### 6.2 A mock transport — the biggest unblock
 
-The plan's risk #1 is that the bench LAN blocks outbound UDP/DTLS, so `07` and `14` are unverifiable at the desk, and Phase 1's only hardware check is a boot log. That will not change.
+**Done (2026-11-12).** `CONFIG_RINGKIT_GEODIS_MOCK` (default n) replaces the
+network half of the module and nothing else:
 
-Add `CONFIG_RINGKIT_GEODIS_MOCK` (default n): same public API, no network. `start()` → CONNECTING → READY after 300 ms. `set_listening(true)` → LISTENING; on `commit()` → SPEAKING after 400 ms, push a canned 48 kHz PCM clip (`scripts/geodis_reply.wav` is already mono 48 k? verify — it is 4,020,558 B ≈ 42 s, so trim a 3 s slice to a C array, ~290 KB flash or PSRAM-loaded from SD), emit the canned user transcript and a canned tool call with a 600 ms delay, then READY.
+| file | role |
+|---|---|
+| `src/ring_geodis_mock.c` | `peer_open/close/connect/disconnect`, `fetch_token`, `signal_task`, the HTTPS POSTs, and the `transport_on_event` hook — the symbols `ring_geodis_signaling.c` would have provided |
+| `src/ring_geodis_mock.h` | `ring_geodis_mock_config()` timing overrides (connect / reply / tool delays, or drop the audio) |
+| `assets/geodis_mock_reply.pcm` | 1.6 s of 48 kHz mono from `scripts/reply.wav`, peak-normalised; embedded with `EMBED_TXTFILES` (150 KB of flash, no generated C array) |
 
-What that buys: the whole UI — states, transcripts, barge-in, ring flush, level meter, tool-call "looking up…" — becomes developable and demoable with no network, no gateway budget, and no flake. The reply WAV already exists in the repo, so the mock is mostly plumbing. This is the difference between "the app builds" and "the app is right".
+Everything above the transport is the real code — the same state machine, the
+same event queue, the same downlink ring, the same tool task, the same public
+API — so an app developed against the mock is the app that runs against the
+gateway. Behaviour:
+
+```
+start()              CONNECTING -> READY          ~300 ms
+set_listening(true)  LISTENING
+commit()             user transcript (final) -> SPEAKING
+                     "Je vérifie votre colis…" delta -> tool call
+                     1.6 s of canned PCM, one 20 ms frame at a time -> READY
+cancel()             playback stops at the next frame boundary (barge-in)
+```
+
+The `/tool-call` POST is offline by design and returns `ESP_FAIL`, which
+exercises the real §2.2/§6.5 failure path: the model is told
+`lookup_unavailable` instead of getting a fabricated answer. That is a feature —
+it is the one code path most likely to be wrong and the hardest to provoke
+against a healthy gateway.
+
+Turning it on:
+
+```
+# sdkconfig
+CONFIG_RINGKIT_GEODIS_MOCK=y
+```
+
+Both configurations link cleanly. The compile-time switch is a `#ifdef` in
+`ring_geodis.c` (skip Wi-Fi/SNTP), `ring_geodis_codec.c` (`uplink_send` counts
+and returns OK), and the CMake source list (signalling **or** mock, never both).
+`ring_geodis_protocol.c` gains a `transport_on_event()` no-op, which is how the
+mock learns about commit/cancel without duplicating `send_event()`.
+
 
 ### 6.3 Make latency measurable, not felt
 

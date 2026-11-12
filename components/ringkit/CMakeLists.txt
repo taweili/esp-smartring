@@ -64,9 +64,20 @@ endif()
 if(CONFIG_RINGKIT_GEODIS)
     list(APPEND RINGKIT_SRCS
         "src/ring_geodis.c"
-        "src/ring_geodis_signaling.c"
         "src/ring_geodis_codec.c"
-        "src/ring_geodis_protocol.c")
+        "src/ring_geodis_protocol.c"
+        "src/ring_geodis_payload.c")
+    if(CONFIG_RINGKIT_GEODIS_MOCK)
+        # The mock supplies ring_geodis_peer_open/close/fetch_token/connect/
+        # disconnect and ring_geodis_send_event / ring_geodis_uplink_send, so
+        # the signalling unit must not be compiled alongside it.
+        list(APPEND RINGKIT_SRCS
+            "src/ring_geodis_mock.c")
+        list(APPEND ringkit_embed_files "assets/geodis_mock_reply.pcm")
+    else()
+        list(APPEND RINGKIT_SRCS
+            "src/ring_geodis_signaling.c")
+    endif()
 endif()
 
 if(CONFIG_RINGKIT_BT)
@@ -82,5 +93,5 @@ idf_component_register(
     REQUIRES smartring_plus lvgl esp_http_client esp_driver_gpio
     PRIV_REQUIRES esp_lvgl_adapter esp_wifi esp_netif esp_event nvs_flash bt
                   esp_peer esp-tls lwip mbedtls esp_audio_codec esp_websocket_client
-    EMBED_TXTFILES "assets/qianwen_ca.pem"
+    EMBED_TXTFILES "assets/qianwen_ca.pem" ${ringkit_embed_files}
 )

@@ -195,6 +195,11 @@ typedef struct {
     /* RTP presentation timestamp for the current session (sample count). */
     uint32_t                    pts;
 
+    /* Mock transport (CONFIG_RINGKIT_GEODIS_MOCK only): commit() sets this and
+     * the mock task turns it into a canned reply. Always present so the two
+     * builds share one context layout. */
+    volatile bool               mock_turn_req;
+
     /* Client-executed RAG tool call. The peer task only queues a job; the tool
      * task runs the app hook and the blocking HTTPS POST. */
     QueueHandle_t               tool_queue;
@@ -232,10 +237,29 @@ esp_err_t ring_geodis_opus_open(void);
 
 /* Peer bring-up and token fetch (defined in ring_geodis_signaling.c).
  * ring_geodis_peer_open() must only be called once the previous peer is gone
- * (ring_geodis_peer_close() returned). */
+ * (ring_geodis_peer_close() returned).
+ *
+ * With CONFIG_RINGKIT_GEODIS_MOCK, ring_geodis_mock.c supplies these three
+ * plus ring_geodis_send_event instead, and the build compiles exactly one of
+ * the two translation units. */
 esp_err_t ring_geodis_peer_open(void);
 esp_err_t ring_geodis_peer_close(void);
 esp_err_t ring_geodis_fetch_token(void);
+
+/* open/close a session inside the peer. The real implementation wraps
+ * esp_peer_new_connection()/esp_peer_disconnect(); the mock just moves the
+ * state machine along. */
+esp_err_t ring_geodis_peer_connect(void);
+esp_err_t ring_geodis_peer_disconnect(void);
+
+/* Exactly one of these is linked: ring_geodis_codec.c encodes + sends over
+ * esp_peer, ring_geodis_mock.c accepts and discards. */
+esp_err_t ring_geodis_uplink_send(const int16_t *pcm, size_t samples);
+
+/* Called by ring_geodis_send_event() after it has handed a DataChannel event
+ * to the peer. A no-op in a real build; the mock uses it to see commit and
+ * cancel, which is all a mocked server needs to react to. */
+void ring_geodis_transport_on_event(const char *json, esp_err_t sent);
 
 /* HTTPS helpers (defined in ring_geodis_signaling.c). */
 esp_err_t ring_geodis_post_json(const char *url, const char *body,
