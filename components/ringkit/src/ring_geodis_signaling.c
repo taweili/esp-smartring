@@ -173,8 +173,10 @@ esp_err_t ring_geodis_fetch_token(void)
     char resp[768];
     int resp_len = 0;
     int status = 0;
+    uint32_t t0 = ring_geodis_now_ms();
     esp_err_t err = ring_geodis_post_json(url, body, 200, resp, sizeof(resp),
                                           &resp_len, &status);
+    ring_geodis_s.stats.token_ms = ring_geodis_now_ms() - t0;
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "token: HTTP %d", status);
         return err;
@@ -224,8 +226,10 @@ static esp_err_t sdp_exchange(const char *offer, char *answer, size_t answer_len
     }
     normalise_sdp_crlf(offer, offer_crlf, RING_GEODIS_SDP_MAX_BYTES);
 
+    uint32_t t0 = ring_geodis_now_ms();
     esp_err_t err = ring_geodis_post_sdp(ring_geodis_s.sdp_url, ring_geodis_s.token,
                                          offer_crlf, answer, answer_len);
+    ring_geodis_s.stats.sdp_ms = ring_geodis_now_ms() - t0;
     free(offer_crlf);
     return err;
 }

@@ -120,6 +120,7 @@ typedef struct {
     ring_geodis_state_cb_t      state_cb;
     ring_geodis_transcript_cb_t text_cb;
     ring_geodis_tool_cb_t       tool_cb;
+    ring_geodis_tool_done_cb_t  tool_done_cb;
     void                       *user;
     bool                        inited;
 
@@ -145,6 +146,12 @@ typedef struct {
      * no longer exists. */
     volatile uint32_t           session_gen;
     esp_err_t                   last_err;
+
+    /* Diagnostics (ring_geodis_get_stats). Written from the start, signal,
+     * peer/mock, audio and tool tasks; read as "last known". */
+    ring_geodis_stats_t         stats;
+    uint32_t                    commit_ms;
+    volatile bool               commit_pending;
 
     char                        base_url[RING_GEODIS_BASE_URL_MAX];
     char                        sdp_url[RING_GEODIS_SDP_URL_MAX];
@@ -222,6 +229,10 @@ typedef struct {
 /* ------------------------------------------------------------- shared helpers
  *
  * Defined in ring_geodis.c unless noted. */
+
+/* Monotonic millisecond tick for diagnostics (wrap-safe comparisons live in
+ * ring_geodis.c). */
+uint32_t ring_geodis_now_ms(void);
 
 /* Update the state and queue a transition for the event task. Safe from any
  * task, including the peer task; never calls application code. */

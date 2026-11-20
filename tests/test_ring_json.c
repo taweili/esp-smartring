@@ -309,6 +309,57 @@ static void test_has_key(void)
           "but the key is there");
 }
 
+/* ----------------------------------------------------------- count_array */
+
+static void test_count_array(void)
+{
+    int n = -1;
+
+    CHECK(ring_json_count_array("{\"a\":[]}", "a", &n), "empty present");
+    CHECK(n == 0, "empty count");
+
+    CHECK(ring_json_count_array("{\"a\":[1,2,3]}", "a", &n), "ints present");
+    CHECK(n == 3, "ints count");
+
+    CHECK(ring_json_count_array("{\"a\":[ \"x\" , \"y\" ]}", "a", &n),
+          "strings + spaces present");
+    CHECK(n == 2, "strings + spaces count");
+
+    /* The RAG shape: objects whose strings contain commas, braces and escaped
+     * quotes. A comma inside a string must not split an element. */
+    const char *rag =
+        "{\"retrievedChunks\":["
+        "{\"score\":0.74,\"content\":\"a, b, c\"},"
+        "{\"score\":0.5,\"content\":\"say \\\"hi\\\"\"},"
+        "{\"nested\":[1,2],\"content\":\"x\"}]}";
+    CHECK(ring_json_count_array(rag, "retrievedChunks", &n), "rag present");
+    CHECK(n == 3, "rag count");
+
+    /* Nested arrays/objects must not be counted as elements. */
+    CHECK(ring_json_count_array("{\"a\":[[1,2],[3,4]]}", "a", &n),
+          "nested arrays present");
+    CHECK(n == 2, "nested arrays count");
+
+    CHECK(ring_json_count_array("{\"a\":[{\"b\":1}]}", "a", &n),
+          "single object present");
+    CHECK(n == 1, "single object count");
+
+    /* Absent / wrong type / unterminated. */
+    CHECK(!ring_json_count_array("{\"x\":[1]}", "a", &n), "absent key");
+    CHECK(!ring_json_count_array("{\"a\":{\"b\":1}}", "a", &n), "object value");
+    CHECK(!ring_json_count_array("{\"a\":\"[1]\"}", "a", &n), "string value");
+    CHECK(!ring_json_count_array("{\"a\":[1,2}", "a", &n), "unterminated");
+    CHECK(!ring_json_count_array(NULL, "a", &n), "null json");
+    CHECK(!ring_json_count_array("{\"a\":[1]}", NULL, &n), "null key");
+    CHECK(!ring_json_count_array("{\"a\":[1]}", "a", NULL), "null out");
+
+    /* The key must be a field name, not a value or a prefix of another key. */
+    CHECK(!ring_json_count_array("{\"x\":\"a\",\"b\":[1,2]}", "a", &n),
+          "must not match a value");
+    CHECK(!ring_json_count_array("{\"ab\":[1,2]}", "a", &n),
+          "must not match a longer key");
+}
+
 /* ------------------------------------------------------------------ main */
 
 int main(void)
@@ -319,6 +370,7 @@ int main(void)
     test_get_str_truncation();
     test_get_str_ex();
     test_has_key();
+    test_count_array();
     test_get_str_missing();
     test_get_int();
     test_get_bool();

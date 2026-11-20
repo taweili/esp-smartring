@@ -62,9 +62,31 @@ const char *ring_geodis_state_name(ring_geodis_state_t state)
     return "?";
 }
 
+esp_err_t ring_geodis_last_err(void)
+{
+    return ring_geodis_s.last_err;
+}
+
+esp_err_t ring_geodis_get_stats(ring_geodis_stats_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Diagnostics, not a synchronisation point: a field may be mid-update.
+     * Each is a 32-bit aligned word, so a reader sees either the old or the new
+     * value, never a torn one. */
+    *out = ring_geodis_s.stats;
+    return ESP_OK;
+}
+
 static uint32_t now_ms(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+uint32_t ring_geodis_now_ms(void)
+{
+    return now_ms();
 }
 
 /* Wrap-safe: the timestamp counter rolls over after 49.7 days, and
@@ -266,11 +288,23 @@ esp_err_t ring_geodis_init(ring_geodis_state_cb_t state_cb,
     return ESP_OK;
 }
 
+esp_err_t ring_geodis_set_tool_done_cb(ring_geodis_tool_done_cb_t cb)
+{
+    ring_geodis_s.tool_done_cb = cb;
+    return ESP_OK;
+}
+
 esp_err_t ring_geodis_start(const ring_geodis_cfg_t *cfg)
 {
     if (!ring_geodis_s.inited || cfg == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* Per-session diagnostics start from zero. */
+    memset(&ring_geodis_s.stats, 0, sizeof(ring_geodis_s.stats));
+    ring_geodis_s.commit_ms = 0;
+    ring_geodis_s.commit_pending = false;
+    uint32_t t_start = now_ms();
 
     /* NULL means "the documented default" for every pointer field, and -1 for
      * the two flags (0 = the caller explicitly turned it off). */
@@ -383,6 +417,7 @@ esp_err_t ring_geodis_start(const ring_geodis_cfg_t *cfg)
         if (st == RING_GEODIS_READY || st == RING_GEODIS_LISTENING ||
             st == RING_GEODIS_SPEAKING) {
             ESP_LOGI(TAG, "session ready");
+            ring_geodis_s.stats.session_setup_ms = now_ms() - t_start;
             return ESP_OK;
         }
         ESP_LOGW(TAG, "session not ready (%s)", ring_geodis_state_name(st));
@@ -396,6 +431,7 @@ esp_err_t ring_geodis_start(const ring_geodis_cfg_t *cfg)
 
 fail:
     ring_geodis_s.last_err = err;
+    ring_geodis_s.stats.session_setup_ms = now_ms() - t_start;
     ring_geodis_peer_close();
     ring_geodis_state_set(RING_GEODIS_ERROR);
     return err;
@@ -405,6 +441,7 @@ esp_err_t ring_geodis_stop(void)
 {
     ring_geodis_s.uplink_open = false;
     ring_geodis_s.speaking = false;
+    ring_geodis_s.commit_pending = false;
     /* Nothing may be delivered for a session that is going away. */
     ring_geodis_s.session_gen++;
     ring_geodis_peer_disconnect();

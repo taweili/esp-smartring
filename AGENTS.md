@@ -259,11 +259,13 @@ visible. UI design must account for this:
   `ring_net_state()`, `ring_net_send_event()`, `ring_net_ca_pem()`
 - GEODIS/voice (`ring_geodis.h`): `ring_geodis_init()`, `ring_geodis_start(cfg)`, `ring_geodis_stop()`,
   `ring_geodis_set_listening()`, `ring_geodis_send_audio()`, `ring_geodis_read_audio()`,
-  `ring_geodis_commit()`, `ring_geodis_cancel()`, `ring_geodis_state()`, `ring_geodis_send_event()`
+  `ring_geodis_commit()`, `ring_geodis_cancel()`, `ring_geodis_state()`, `ring_geodis_send_event()`,
+  `ring_geodis_last_err()`, `ring_geodis_get_stats()`, `ring_geodis_set_tool_done_cb()`
 - Shared infra: `ring_ca_pem()`, `ring_time_sync()`, `ring_nvs_init()`, `ring_nvs_get_str()`,
-  `ring_nvs_set_str()`, `ring_json_get_str()`, `ring_json_append()`, `ring_json_append_string()`,
-  `ring_byte_ring_*()`, `ring_resample_*()`, `ring_http_init()`, `ring_http_init_bundle()`,
-  `ring_http_read_body()`, `ring_http_read_body_ex()`, `ring_http_sse_init/next/deinit()`
+  `ring_nvs_set_str()`, `ring_json_get_str()`, `ring_json_count_array()`, `ring_json_append()`,
+  `ring_json_append_string()`, `ring_byte_ring_*()`, `ring_resample_*()`, `ring_http_init()`,
+  `ring_http_init_bundle()`, `ring_http_read_body()`, `ring_http_read_body_ex()`,
+  `ring_http_sse_init/next/deinit()`
 - RNG: `ring_rand_seed()`, `ring_rand_u32()`, `ring_rand_below()`, `ring_rand_bool()` — do **not**
   replace with `esp_random()`; determinism is the point (a plain LCG breaks `% n` / `& 1`).
 - Secrets: `ring_secret_get(ns, key, build_fallback, out, len)` — NVS wins, else the

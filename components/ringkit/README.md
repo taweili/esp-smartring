@@ -179,6 +179,9 @@ a mutex; `ring_wifi`/`ring_bt` do the same.
 - `ring_geodis` callbacks never run on the peer/DTLS task: `state_cb` and
   `text_cb` are delivered in order on `ring-geodis-event` (6 KB, so LVGL is
   fine), `tool_cb` on `ring-geodis-tool` (12 KB, before the blocking RAG POST).
+  `ring_geodis_set_tool_done_cb()` adds the lookup result (`ok`, HTTP status,
+  `retrievedChunks` count) on that same task; `ring_geodis_get_stats()` and
+  `ring_geodis_last_err()` expose per-turn latency and the last failure.
   The event queue stores transitions, not a state cell, so
   `READY → LISTENING → SPEAKING` arrives as three callbacks.
   `ring_geodis_set_listening(false)` closes the uplink but not the model's

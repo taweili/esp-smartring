@@ -13,7 +13,7 @@ make check
 
 | Test | Module | Cases |
 |------|--------|-------|
-| `test_ring_json` | `ring_json.c` | string extraction (escapes, `\uXXXX`, surrogate pairs, truncation), int/bool, `type_is`, `append` overflow, `append_string` escaping |
+| `test_ring_json` | `ring_json.c` | string extraction (escapes, `\uXXXX`, surrogate pairs, truncation), int/bool, `type_is`, `count_array` (nested arrays/objects, commas in strings, empty, unterminated), `append` overflow, `append_string` escaping |
 | `test_ring_resample` | `ring_resample.c` + `ring_resample_coeffs.c` | coefficient DC gain, decim/interp DC steady state, impulse response shape, streaming-chunk equivalence, NULL/empty guards |
 | `test_ring_byte_ring` | `ring_byte_ring.c` | push/pop, partial reads, newest-wins overflow, even-drop 16-bit alignment, reset, NULL guards |
 | `test_ring_chat_messages` | `ring_llm.c` (`build_messages`) + `ring_chat.c` | empty/system-only output, message order, escaping, JSON buffer cap, history storage cap, `max_history_turns` window |

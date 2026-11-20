@@ -31,6 +31,18 @@ void ring_geodis_dl_push(const uint8_t *pcm, size_t len)
 {
     size_t dropped = 0;
     ring_byte_ring_push(&ring_geodis_s.dl_ring, pcm, len, &dropped);
+    if (dropped >= RING_GEODIS_FRAME_BYTES) {
+        ring_geodis_s.stats.frames_dropped +=
+            (uint32_t)(dropped / RING_GEODIS_FRAME_BYTES);
+    }
+    /* commit() -> first decoded frame. Measured here rather than in the peer
+     * callback so the mock (which pushes PCM directly) reports the same number
+     * as a real session. */
+    if (ring_geodis_s.commit_pending) {
+        ring_geodis_s.stats.commit_to_first_audio_ms =
+            ring_geodis_now_ms() - ring_geodis_s.commit_ms;
+        ring_geodis_s.commit_pending = false;
+    }
 }
 
 /* ------------------------------------------------------------- codec */
@@ -116,6 +128,7 @@ esp_err_t ring_geodis_uplink_send(const int16_t *pcm, size_t samples)
      * whose audio loop stops on the first error must not be hidden by the
      * mock, and the uplink-open contract is worth testing end to end. */
     ring_geodis_s.pts += samples;
+    ring_geodis_s.stats.frames_sent++;
     return ESP_OK;
 #else
     /* Encode outside the lock: only the peer handle needs protecting, and the
@@ -154,6 +167,9 @@ esp_err_t ring_geodis_uplink_send(const int16_t *pcm, size_t samples)
                                                                       : ESP_FAIL;
     }
     xSemaphoreGive(ring_geodis_s.peer_lock);
+    if (ret == ESP_OK) {
+        ring_geodis_s.stats.frames_sent++;
+    }
     return ret;
 #endif /* CONFIG_RINGKIT_GEODIS_MOCK */
 }

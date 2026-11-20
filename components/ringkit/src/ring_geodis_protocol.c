@@ -75,6 +75,7 @@ int ring_geodis_on_state(esp_peer_state_t state, void *ctx)
     case ESP_PEER_STATE_DISCONNECTED:
     case ESP_PEER_STATE_CONNECT_FAILED:
         ESP_LOGW(TAG, "peer lost (%d)", state);
+        ring_geodis_s.last_err = ESP_FAIL;
         ring_geodis_s.speaking = false;
         /* The uplink died with the session; the next button press must not
          * try to stream into a peer that is gone. */
@@ -334,6 +335,8 @@ esp_err_t ring_geodis_send_event(const char *json)
 
 esp_err_t ring_geodis_commit(void)
 {
+    ring_geodis_s.commit_ms = ring_geodis_now_ms();
+    ring_geodis_s.commit_pending = true;
     esp_err_t e1 = ring_geodis_send_event("{\"type\":\"input_audio_buffer.commit\"}");
     esp_err_t e2 = ring_geodis_send_event("{\"type\":\"response.create\"}");
     return (e1 == ESP_OK && e2 == ESP_OK) ? ESP_OK : ESP_FAIL;
@@ -394,14 +397,29 @@ static void tool_error_output(char *inner, size_t cap, const char *detail)
              detail);
 }
 
+/* Report the lookup result to the app. Runs on this task, never the peer task,
+ * so the callback may take the LVGL lock. */
+static void tool_done_notify(const ring_geodis_tool_job_t *job, bool ok,
+                             int status, int chunks)
+{
+    if (ring_geodis_s.tool_done_cb != NULL) {
+        ring_geodis_s.tool_done_cb(job->name, ok, status, chunks,
+                                   ring_geodis_s.user);
+    }
+}
+
 static void tool_exec(const ring_geodis_tool_job_t *job, char *resp, char *inner,
                       size_t cap)
 {
     const char *output;
+    bool ok = false;
+    int status = 0;
+    int chunks = -1;
 
     if (job->bad_args) {
         tool_error_output(inner, RING_GEODIS_TOOL_INNER_CAP, "arguments_unreadable");
         send_tool_output(job->call_id, inner, resp, cap);
+        tool_done_notify(job, false, 0, -1);
         return;
     }
 
@@ -417,14 +435,16 @@ static void tool_exec(const ring_geodis_tool_job_t *job, char *resp, char *inner
         ESP_LOGE(TAG, "tool '%s': request body overflow", job->name);
         tool_error_output(inner, RING_GEODIS_TOOL_INNER_CAP, "request_too_large");
         send_tool_output(job->call_id, inner, resp, cap);
+        tool_done_notify(job, false, 0, -1);
         return;
     }
 
     /* Two attempts, not three: somebody is listening to silence while this
      * runs, and a second timeout is worse than an honest failure. */
-    int status = 0;
+    uint32_t t0 = ring_geodis_now_ms();
     esp_err_t err = ring_geodis_post_json_ex(url, body, 200, resp, cap, NULL,
                                              &status, 2);
+    ring_geodis_s.stats.tool_ms = ring_geodis_now_ms() - t0;
 
     bool trunc = false;
     size_t inner_len = 0;
@@ -434,8 +454,10 @@ static void tool_exec(const ring_geodis_tool_job_t *job, char *resp, char *inner
                                           &inner_len, &trunc);
     if (have_text && !trunc && inner_len > 0 && inner[0] == '{') {
         output = inner;
-        ESP_LOGI(TAG, "tool '%s': HTTP %d, %u B inner JSON",
-                 job->name, status, (unsigned)inner_len);
+        ok = true;
+        ring_json_count_array(inner, "retrievedChunks", &chunks);
+        ESP_LOGI(TAG, "tool '%s': HTTP %d, %u B inner JSON, %d chunks",
+                 job->name, status, (unsigned)inner_len, chunks);
     } else {
         const char *detail = (err != ESP_OK) ? "http_error"
                             : trunc           ? "response_too_large"
@@ -446,6 +468,7 @@ static void tool_exec(const ring_geodis_tool_job_t *job, char *resp, char *inner
     }
 
     send_tool_output(job->call_id, output, resp, cap);
+    tool_done_notify(job, ok, status, chunks);
 }
 
 void ring_geodis_tool_task(void *arg)
@@ -467,6 +490,7 @@ void ring_geodis_tool_task(void *arg)
         if (xQueueReceive(ring_geodis_s.tool_queue, &job, portMAX_DELAY) != pdTRUE) {
             continue;
         }
+        ring_geodis_s.stats.tool_calls++;
         /* The app hook runs here, on this task, never on the peer task: the
          * contract says a callback may take the LVGL lock, and this is the only
          * place where blocking is harmless (one call at a time, and the RAG

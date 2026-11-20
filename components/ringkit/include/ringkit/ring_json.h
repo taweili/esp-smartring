@@ -61,6 +61,18 @@ bool ring_json_get_str_ex(const char *json, const char *key,
  */
 bool ring_json_has_key(const char *json, const char *key);
 
+/**
+ * @brief Count the elements of a top-level array field.
+ *
+ * Unlike the getters above this walks the array rather than copying a value, so
+ * it can report how much data came back without a second buffer. Understands
+ * nested objects/arrays, escaped quotes and commas inside strings. Returns false
+ * when `key` is absent, is not an array, or the array is unterminated.
+ *
+ * @param out  Receives the element count (0 for an empty array).
+ */
+bool ring_json_count_array(const char *json, const char *key, int *out);
+
 /** Extract an integer value. Returns false when absent or not a number. */
 bool ring_json_get_int(const char *json, const char *key, int *out);
 

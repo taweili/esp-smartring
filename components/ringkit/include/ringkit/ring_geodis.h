@@ -88,6 +88,24 @@ typedef struct {
     }
 
 /**
+ * @brief Per-session diagnostics.
+ *
+ * Reset by ring_geodis_start(). The fields are written from several tasks and
+ * are intended for a status/latency line, not for control flow: read them as
+ * "last known", not as a synchronised snapshot.
+ */
+typedef struct {
+    uint32_t session_setup_ms;         /**< start() -> READY                */
+    uint32_t token_ms;                 /**< POST /token round trip          */
+    uint32_t sdp_ms;                   /**< SDP POST round trip (0: mock)   */
+    uint32_t commit_to_first_audio_ms; /**< commit() -> first decoded frame  */
+    uint32_t frames_sent;              /**< Opus frames accepted by uplink  */
+    uint32_t frames_dropped;           /**< downlink frames lost to overflow */
+    uint32_t tool_calls;               /**< RAG lookups dequeued            */
+    uint32_t tool_ms;                  /**< last /tool-call POST round trip */
+} ring_geodis_stats_t;
+
+/**
  * @brief State change notification, delivered on `ring-geodis-event`.
  *
  * The event task is a 6 KB internal-RAM task that does nothing but walk a
@@ -133,6 +151,21 @@ typedef bool (*ring_geodis_tool_cb_t)(const char *name, const char *args_json,
                                       void *user);
 
 /**
+ * @brief Tool-lookup result, invoked on `ring-geodis-tool`.
+ *
+ * `tool_cb` signals only the *start* of a lookup; this is how the UI learns
+ * that the "looking up…" stage ended and what came back. Only module-executed
+ * lookups get one: an app that returns true from tool_cb owns the call and its
+ * result. Register with ring_geodis_set_tool_done_cb().
+ *
+ * @param ok      true when the gateway answered 200 with a parseable result.
+ * @param status  HTTP status code, or 0 when no HTTP response was parsed.
+ * @param chunks  `retrievedChunks` count, or -1 when unavailable.
+ */
+typedef void (*ring_geodis_tool_done_cb_t)(const char *name, bool ok,
+                                           int status, int chunks, void *user);
+
+/**
  * @brief Initialise the module (Opus codec, buffers, tasks).
  *
  * Call once from app_main after ring_board_init(). Calling it twice is a
@@ -142,6 +175,16 @@ typedef bool (*ring_geodis_tool_cb_t)(const char *name, const char *args_json,
 esp_err_t ring_geodis_init(ring_geodis_state_cb_t state_cb,
                            ring_geodis_transcript_cb_t text_cb,
                            ring_geodis_tool_cb_t tool_cb, void *user);
+
+/**
+ * @brief Register the tool-result callback (may be NULL to clear).
+ *
+ * Uses the @p user pointer passed to ring_geodis_init(). Call after
+ * ring_geodis_init() (which clears the context) and before
+ * ring_geodis_start(); the callback runs on `ring-geodis-tool`, so it may take
+ * the LVGL lock.
+ */
+esp_err_t ring_geodis_set_tool_done_cb(ring_geodis_tool_done_cb_t cb);
 
 /**
  * @brief Bring up Wi-Fi + SNTP, fetch a token, then connect the WebRTC session.
@@ -161,6 +204,17 @@ ring_geodis_state_t ring_geodis_state(void);
 
 /** Static name for a state, for logging/UI. */
 const char *ring_geodis_state_name(ring_geodis_state_t state);
+
+/** Last failure code (ESP_OK while the session is healthy). */
+esp_err_t ring_geodis_last_err(void);
+
+/**
+ * @brief Copy the per-session diagnostics.
+ *
+ * @param out  Destination; must not be NULL.
+ * @return ESP_OK, or ESP_ERR_INVALID_ARG when @p out is NULL.
+ */
+esp_err_t ring_geodis_get_stats(ring_geodis_stats_t *out);
 
 /**
  * @brief Open/close the uplink (the talk button).

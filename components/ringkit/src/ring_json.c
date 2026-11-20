@@ -178,6 +178,100 @@ bool ring_json_has_key(const char *json, const char *key)
     return *p == ':';
 }
 
+bool ring_json_count_array(const char *json, const char *key, int *out)
+{
+    if (json == NULL || key == NULL || out == NULL) {
+        return false;
+    }
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (p == NULL) {
+        return false;
+    }
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+        p++;
+    }
+    if (*p != ':') {
+        return false;
+    }
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+        p++;
+    }
+    if (*p != '[') {
+        return false;
+    }
+    p++;
+
+    int count = 0;
+    int depth = 0;          /* nested object/array depth inside the array */
+    bool in_str = false;
+    bool esc = false;
+    bool seen = false;      /* current slot holds a value */
+    for (; *p != '\0'; p++) {
+        char c = *p;
+        if (in_str) {
+            if (esc) {
+                esc = false;
+            } else if (c == '\\') {
+                esc = true;
+            } else if (c == '"') {
+                in_str = false;
+            }
+            continue;
+        }
+        switch (c) {
+        case '"':
+            in_str = true;
+            seen = true;
+            break;
+        case '{':
+        case '[':
+            depth++;
+            seen = true;
+            break;
+        case '}':
+            if (depth > 0) {
+                depth--;
+            }
+            seen = true;
+            break;
+        case ']':
+            if (depth == 0) {
+                if (seen) {
+                    count++;
+                }
+                *out = count;
+                return true;
+            }
+            depth--;
+            seen = true;
+            break;
+        case ',':
+            if (depth == 0) {
+                if (seen) {
+                    count++;
+                    seen = false;
+                }
+            } else {
+                seen = true;
+            }
+            break;
+        case ' ':
+        case '\t':
+        case '\n':
+        case '\r':
+            break;
+        default:
+            seen = true;
+            break;
+        }
+    }
+    return false;           /* unterminated array */
+}
+
 bool ring_json_get_int(const char *json, const char *key, int *out)
 {
     if (json == NULL || key == NULL || out == NULL) {
