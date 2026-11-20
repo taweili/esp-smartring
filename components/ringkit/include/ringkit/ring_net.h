@@ -51,10 +51,16 @@ typedef void (*ring_net_state_cb_t)(ring_net_state_t state, void *user);
  * @param len     Bytes in @p text (never includes the terminator).
  * @param is_user true for the transcribed user utterance, false for model
  *                output. Lets an app show "you: …" beside the reply.
+ * @param final   true when this fragment completes the line; false for a
+ *                streaming delta (incremental, append it).
+ * @param clipped true when @p text was truncated to fit the module's event
+ *                payload (RING_NET_EV_TEXT_MAX); a @p final line with this set
+ *                is a prefix, not the whole utterance.
  * @param user    Opaque pointer passed to ring_net_init().
  */
 typedef void (*ring_net_transcript_cb_t)(const char *text, size_t len,
-                                         bool is_user, void *user);
+                                         bool is_user, bool final,
+                                         bool clipped, void *user);
 
 /**
  * @brief Initialise the module (Opus codec, buffers, tasks).

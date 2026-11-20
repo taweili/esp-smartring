@@ -1,6 +1,8 @@
-# Host test binaries (built by `make`).
+# Host test binaries (built by `make`). List them explicitly: a `/test_ring_*`
+# wildcard would also ignore a future `test_ring_*_stubs.c` source file.
 /test_ring_json
 /test_ring_resample
 /test_ring_byte_ring
 /test_ring_chat_messages
 /test_ring_geodis_payload
+/test_ring_http

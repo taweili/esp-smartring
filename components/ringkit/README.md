@@ -22,7 +22,7 @@ the two-symbol example contract (see `examples/README.md`).
 | `ring_battery.h` | AXP2101 (V2) / GPIO1 ADC (V1) | thread-safe getters |
 | `ring_power.h` | soft power-off GPIO47 | `ring_power_shutdown()` normally does not return |
 | `ring_button.h` | BOOT button on GPIO0 | press / long-press / click / double-click (`ring_button_*`) |
-| `ring_audio.h` | ES8311 + I2S 48 kHz / 16-bit / stereo | read/write/mute + stereo↔mono |
+| `ring_audio.h` | ES8311 + I2S 48 kHz / 16-bit / stereo | read/write/mute + stereo↔mono + level meter |
 | `ring_imu.h` | QMI8658A accel + gyro + temp | thread-safe getters, level calibration |
 | `ring_sd.h` | SDMMC + FAT `/sdcard` | no card-detect pin: "no card" == "mount failed" |
 | `ring_ui.h` | LVGL lock + helpers | `RING_UI_LOCKED`, label creation, exact centring |
@@ -34,8 +34,8 @@ the two-symbol example contract (see `examples/README.md`).
 | Header | Wraps | Notes |
 |---|---|---|
 | `ring_wifi.h` | ESP-IDF Wi-Fi STA | NVS-persisted credentials, thread-safe state |
-| `ring_bt.h` | NimBLE BLE peripheral | declarative GATT DB, GAP state, notifications |
-| `ring_secret.h` | NVS + build-time secrets | `ring_secret_get()` |
+| `ring_bt.h` | NimBLE BLE peripheral | declarative GATT DB, GAP state, notifications, shared demo DB |
+| `ring_secret.h` | NVS + build-time secrets | `ring_secret_get()`, `ring_secret_api_key()` |
 
 ### Voice / realtime
 
@@ -88,7 +88,7 @@ Tasks created by ringkit:
 | `lvgl_adapter` | BSP | — | BSP | LVGL timerhandler + flush |
 | BSP IMU sampler | BSP | — | BSP | 250 Hz accel/gyro/temp |
 | `ring-button` | 3 KB | 5 | `ring_button` | 10 ms BOOT-button sample + event decode |
-| `ring-net-signal` | 4 KB | 4 | `ring_net` | SDP exchange / peer bring-up |
+| `ring-net-signal` | 4 KB | 4 | `ring_net` | HTTPS SDP exchange (generation-stamped) |
 | `ring-net-event` | 6 KB | 4 | `ring_net` | state + transcript callbacks |
 | `ring-net-peer` | 16 KB | 5 | `ring_net` | `esp_peer` main loop |
 | `ring-geodis-signal` | 4 KB | 4 | `ring_geodis` | token + SDP exchange / peer bring-up |
@@ -104,6 +104,10 @@ Consequences:
 
 - The voice **event** callbacks run on `ring-*-event`, not on a peer/WS thread,
   so they may take the LVGL lock.
+- **The `esp_peer` handle is owned by `ring-*-peer`.** Every other task uses it
+  under `peer_lock` and asks for teardown via `peer_close_req`, waiting on
+  `peer_gone`. Calling `esp_peer_close()` from anywhere else frees the DTLS/SRTP
+  state while `esp_peer_main_loop()` is inside it (use-after-free).
 - The BT **GATT access** callbacks run on the NimBLE host task — keep them
   short and never touch LVGL directly; copy the value and let a UI timer
   render it (`ring_bt_notify()` is safe from any task).
@@ -152,6 +156,19 @@ a mutex; `ring_wifi`/`ring_bt` do the same.
   mutex on the normal path, which freezes the `lvgl_adapter` worker task and
   stops all repaints without any error (see `README.md` § Architecture —
   "Lock discipline").
+- **Lock order: never hold a module mutex while taking the LVGL lock.** The
+  LVGL task's own input callbacks run with the adapter lock already held, so
+  a callback that takes a module mutex deadlocks against a module task that
+  holds that mutex and then waits for the LVGL lock (AB-BA). The safe pattern
+  is: take the module mutex, copy, release, then `RING_UI_LOCKED`. Examples
+  `07` and `10` had exactly this bug; both now copy first. Concretely, do not
+  wrap `lv_label_set_text()` in `xSemaphoreTake(&some_module_mutex)` — copy
+  the string under the mutex, release, then render.
+- Every transport (`ring_net`, `ring_ws`, `ring_geodis`) marshals state,
+  transcript and tool events to its own event task; application callbacks run
+  there and may take the LVGL lock. The peer/WS/worker tasks only enqueue.
+  The event queue stores transitions, not a state cell, so a burst of
+  `READY → LISTENING → SPEAKING` is delivered whole.
 - Mandatory init uses `ESP_ERROR_CHECK`; optional peripherals (SD, IMU) fail
   soft and are reported in `ring_board_t`.
 - Log with `ESP_LOGI/LOGW/LOGE` and a `TAG`.
@@ -240,8 +257,9 @@ FreeRTOS stubs:
 cd tests && make check
 ```
 
-Covers `ring_json`, `ring_resample`, `ring_byte_ring` and the
-`ring_chat` message builder. See `tests/README.md`.
+Covers `ring_json`, `ring_resample`, `ring_byte_ring`, the `ring_chat` message
+builder, the `ring_geodis` payload builders and `ring_http`'s body/SSE readers.
+See `tests/README.md`.
 
 ## Related docs
 

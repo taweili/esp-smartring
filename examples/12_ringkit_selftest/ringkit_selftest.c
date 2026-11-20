@@ -105,43 +105,13 @@ static void set_status(int idx, const char *fmt, ...)
 
 /* ------------------------------------------------------------- BLE config
 
- * A minimal GATT database: one vendor service with a readable name
- * characteristic. The selftest only proves the host comes up and advertises;
- * it does not wait for a peer. */
-#define BT_SVC_UUID  0xFFE0
-#define BT_CHR_NAME  0xFFE1
-
-static esp_err_t bt_access(uint16_t conn_handle, uint16_t chr_uuid,
-                           bool is_read, const uint8_t *data, size_t len,
-                           uint8_t *out, size_t *out_len, void *user)
-{
-    (void)conn_handle; (void)data; (void)len; (void)user;
-
-    if (chr_uuid == BT_CHR_NAME && is_read) {
-        const char *name = "SmartRing";
-        size_t n = strlen(name);
-        if (n > *out_len) n = *out_len;
-        memcpy(out, name, n);
-        *out_len = n;
-        return ESP_OK;
-    }
-    return ESP_ERR_NOT_SUPPORTED;
-}
-
-static const ring_bt_chr_t bt_chrs[] = {
-    { .uuid = BT_CHR_NAME, .flags = RING_BT_CHR_READ, .max_len = 32, .cb = bt_access },
-    { .uuid = 0 },
-};
-
-static const ring_bt_svc_t bt_svcs[] = {
-    { .svc_uuid = BT_SVC_UUID, .chars = bt_chrs },
-    { .svc_uuid = 0 },
-};
-
-static const ring_bt_config_t bt_cfg = {
+ * The shared demo GATT database (name / battery / command) lives in ringkit;
+ * the selftest only proves the host comes up and advertises, it does not wait
+ * for a peer. */
+static ring_bt_config_t bt_cfg = {
     .name        = "SmartRing",
-    .svcs        = bt_svcs,
-    .adv_uuid    = BT_SVC_UUID,
+    .svcs        = NULL,   /* set in ring_example_start() */
+    .adv_uuid    = RING_BT_DEMO_SVC_UUID,
     .bonding     = true,
     .mitm        = false,
     .secure_conn = true,
@@ -301,6 +271,8 @@ static void selftest_task(void *arg)
 
 esp_err_t ring_example_start(void)
 {
+    bt_cfg.svcs = ring_bt_demo_db();
+
     s_status_mutex = xSemaphoreCreateMutex();
     if (s_status_mutex == NULL) {
         ESP_LOGE(TAG, "status mutex create failed");

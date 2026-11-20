@@ -63,11 +63,9 @@ endif()
 #
 # Preferred path: ./secrets.local (sourced by tools/dev.sh) is turned into a
 # generated header, so the values never appear on a command line or in
-# CMakeCache.txt — passing them as -D puts secrets into build/log/ and the
-# cache, where they persist in plaintext.
-#
-# The legacy -DQIANWEN_API_KEY=... form still works; it is only honoured when
-# secrets.local is absent.
+# CMakeCache.txt. Passing them as -D would put secrets into build/log/ and
+# the cache, where they persist in plaintext, so that form is deliberately
+# NOT honoured here.
 # ---------------------------------------------------------------------------
 # Written into the build's config directory: every component already has it on
 # its include path, so ringkit (a dependency of main) sees the same values.
@@ -86,8 +84,6 @@ foreach(_pair
     list(GET _kv 1 _macro)
     if(DEFINED ENV{${_env}} AND NOT "$ENV{${_env}}" STREQUAL "")
         set(_val "$ENV{${_env}}")
-    elseif(DEFINED ${_env} AND NOT "${${_env}}" STREQUAL "")
-        set(_val "${${_env}}")     # legacy -D form
     else()
         continue()
     endif()

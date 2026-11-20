@@ -4,6 +4,11 @@
  * Split out of ring_net.c. The HTTPS round trip runs on its own task so a
  * slow SDP POST never stalls RTP; the peer main loop runs on another task.
  * See ring_net_priv.h for the shared state and ring_net.h for the public API.
+ *
+ * Ownership: `ring-net-peer` is the only task that closes the handle.
+ * Everything else touches it under peer_lock, which is what makes
+ * ring_net_stop() safe to call while the main loop is running (it asks, and
+ * waits for the answer).
  */
 #include "ring_net_priv.h"
 
@@ -149,13 +154,21 @@ static esp_err_t sdp_exchange(const char *offer, char *answer, size_t answer_len
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    /* Read the whole Answer (chunked responses report length -1). */
+    /* Read the whole Answer (chunked responses report length -1). A short
+     * buffer is an error, not a truncated SDP we would install. */
+    bool truncated = false;
     int n = 0;
-    esp_err_t rerr = ring_http_read_body(c, answer, answer_len, &n);
+    esp_err_t rerr = ring_http_read_body_ex(c, answer, answer_len, &n,
+                                            &truncated);
     esp_http_client_cleanup(c);
     if (rerr != ESP_OK) {
         ESP_LOGE(TAG, "SDP answer empty (content-length %d)", total);
         return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (truncated) {
+        ESP_LOGE(TAG, "SDP answer truncated at %u bytes (content-length %d)",
+                 (unsigned)answer_len, total);
+        return ESP_ERR_INVALID_SIZE;
     }
     ESP_LOGI(TAG, "SDP answer: %d bytes", n);
     return ESP_OK;
@@ -163,6 +176,15 @@ static esp_err_t sdp_exchange(const char *offer, char *answer, size_t answer_len
 
 /* ------------------------------------------------------------- tasks */
 
+/* The peer main loop. This task owns the handle: it is the only one that
+ * closes it, so nothing can free the DTLS/SRTP state while
+ * esp_peer_main_loop() is inside it.
+ *
+ * Senders (audio task, signal task) take peer_lock around a single
+ * esp_peer_send_*() call. The lock is deliberately NOT held across
+ * esp_peer_main_loop(): a 20 ms audio frame cannot wait for a 200 ms polling
+ * tick. Send-vs-main-loop concurrency is therefore unchanged from the
+ * transport's existing contract. */
 void ring_net_peer_task(void *arg)
 {
     (void)arg;
@@ -170,11 +192,30 @@ void ring_net_peer_task(void *arg)
     ESP_LOGI(TAG, "peer task started (hwm %u words)",
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
     for (;;) {
-        if (ring_net_s.peer) {
+        ulTaskNotifyTake(pdTRUE, 0);
+
+        if (ring_net_s.peer_close_req) {
+            ring_net_s.peer_close_req = false;
+            ring_net_s.peer_ready = false;
+            xSemaphoreTake(ring_net_s.peer_lock, portMAX_DELAY);
+            if (ring_net_s.peer != NULL) {
+                esp_peer_disconnect(ring_net_s.peer);
+                esp_peer_close(ring_net_s.peer);
+                ring_net_s.peer = NULL;
+                ESP_LOGI(TAG, "peer closed");
+            }
+            xSemaphoreGive(ring_net_s.peer_lock);
+            /* Wakes ring_net_peer_close(). Given even when the handle was
+             * already NULL, so a close request is never lost. */
+            xSemaphoreGive(ring_net_s.peer_gone);
+            continue;
+        }
+
+        if (ring_net_s.peer != NULL && ring_net_s.peer_ready) {
             esp_peer_main_loop(ring_net_s.peer);
         }
         if ((ticks++ % 1000) == 0) {
-            ESP_LOGI(TAG, "peer task alive (hwm %u words)",
+            ESP_LOGD(TAG, "peer task alive (hwm %u words)",
                      (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -187,11 +228,20 @@ void ring_net_signal_task(void *arg)
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
+        /* Stamp the work with the session it belongs to. A second start() (or
+         * a stop()) during the POST bumps session_gen; the answer then belongs
+         * to a peer that no longer exists and must be dropped, not installed. */
+        uint32_t gen = ring_net_s.session_gen;
+
         char *offer = malloc(RING_NET_SDP_MAX_BYTES);
         char *answer = malloc(RING_NET_SDP_MAX_BYTES);
         if (offer == NULL || answer == NULL) {
             free(offer);
             free(answer);
+            if (gen == ring_net_s.session_gen) {
+                ring_net_s.last_err = ESP_ERR_NO_MEM;
+                ring_net_state_set(RING_NET_ERROR);
+            }
             continue;
         }
 
@@ -200,32 +250,91 @@ void ring_net_signal_task(void *arg)
         offer[RING_NET_SDP_MAX_BYTES - 1] = '\0';
         xSemaphoreGive(ring_net_s.sdp_mutex);
 
-        if (offer[0] != '\0' &&
-            sdp_exchange(offer, answer, RING_NET_SDP_MAX_BYTES) == ESP_OK) {
-            esp_peer_msg_t m = {
-                .type = ESP_PEER_MSG_TYPE_SDP,
-                .data = (uint8_t *)answer,
-                .size = (int)strlen(answer),
-            };
-            int r = esp_peer_send_msg(ring_net_s.peer, &m);
-            if (r != ESP_PEER_ERR_NONE) {
-                ESP_LOGE(TAG, "esp_peer_send_msg failed: %d", r);
+        if (offer[0] == '\0') {
+            ESP_LOGE(TAG, "signal: empty local SDP");
+            free(offer);
+            free(answer);
+            if (gen == ring_net_s.session_gen) {
+                ring_net_s.last_err = ESP_FAIL;
                 ring_net_state_set(RING_NET_ERROR);
-            } else {
-                ESP_LOGI(TAG, "remote SDP installed (%u bytes)",
-                         (unsigned)strlen(answer));
-                ESP_LOGD(TAG, "ANSWER SDP:\n%s", answer);
             }
-        } else {
-            ring_net_state_set(RING_NET_ERROR);
+            continue;
         }
 
+        esp_err_t err = sdp_exchange(offer, answer, RING_NET_SDP_MAX_BYTES);
         free(offer);
+
+        if (gen != ring_net_s.session_gen) {
+            ESP_LOGW(TAG, "signal: stale SDP answer dropped (session %u moved on)",
+                     (unsigned)gen);
+            free(answer);
+            continue;
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "signal: SDP exchange failed: %s", esp_err_to_name(err));
+            ring_net_s.last_err = err;
+            ring_net_state_set(RING_NET_ERROR);
+            free(answer);
+            continue;
+        }
+
+        esp_peer_msg_t m = {
+            .type = ESP_PEER_MSG_TYPE_SDP,
+            .data = (uint8_t *)answer,
+            .size = (int)strlen(answer),
+        };
+        int r;
+        xSemaphoreTake(ring_net_s.peer_lock, portMAX_DELAY);
+        r = (ring_net_s.peer != NULL)
+                ? esp_peer_send_msg(ring_net_s.peer, &m)
+                : ESP_PEER_ERR_INVALID_ARG;
+        xSemaphoreGive(ring_net_s.peer_lock);
+
+        if (r != ESP_PEER_ERR_NONE) {
+            ESP_LOGE(TAG, "esp_peer_send_msg failed: %d", r);
+            if (gen == ring_net_s.session_gen) {
+                ring_net_s.last_err = ESP_FAIL;
+                ring_net_state_set(RING_NET_ERROR);
+            }
+        } else {
+            ESP_LOGI(TAG, "remote SDP installed (%u bytes)",
+                     (unsigned)strlen(answer));
+            ESP_LOGD(TAG, "ANSWER SDP:\n%s", answer);
+        }
+
         free(answer);
     }
 }
 
 /* ------------------------------------------------------------- session */
+
+esp_err_t ring_net_peer_connect(void)
+{
+    int r;
+    xSemaphoreTake(ring_net_s.peer_lock, portMAX_DELAY);
+    r = (ring_net_s.peer != NULL)
+            ? esp_peer_new_connection(ring_net_s.peer)
+            : ESP_PEER_ERR_INVALID_ARG;
+    xSemaphoreGive(ring_net_s.peer_lock);
+    if (r != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "new_connection failed: %d", r);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+/* The counterpart to peer_connect(): the peer task still owns the close, so
+ * this only asks esp_peer to stop the session. Safe to call when no peer
+ * exists. */
+esp_err_t ring_net_peer_disconnect(void)
+{
+    xSemaphoreTake(ring_net_s.peer_lock, portMAX_DELAY);
+    if (ring_net_s.peer != NULL) {
+        esp_peer_disconnect(ring_net_s.peer);
+    }
+    xSemaphoreGive(ring_net_s.peer_lock);
+    return ESP_OK;
+}
 
 esp_err_t ring_net_peer_open(void)
 {
@@ -270,14 +379,54 @@ esp_err_t ring_net_peer_open(void)
         .ctx = NULL,
     };
 
-    int r = esp_peer_open(&cfg, esp_peer_get_default_impl(), &ring_net_s.peer);
+    /* Open into a local and publish under the lock: the peer task reads the
+     * handle and must never see a half-built one. */
+    esp_peer_handle_t h = NULL;
+    int r = esp_peer_open(&cfg, esp_peer_get_default_impl(), &h);
     if (r != ESP_PEER_ERR_NONE) {
         ESP_LOGE(TAG, "esp_peer_open failed: %d", r);
         return ESP_FAIL;
     }
+    xSemaphoreTake(ring_net_s.peer_lock, portMAX_DELAY);
+    ring_net_s.peer = h;
+    ring_net_s.peer_ready = false;
+    xSemaphoreGive(ring_net_s.peer_lock);
+    return ESP_OK;
+}
+
+esp_err_t ring_net_peer_close(void)
+{
+    if (ring_net_s.peer_lock == NULL || ring_net_s.peer_gone == NULL) {
+        return ESP_OK;              /* never initialised */
+    }
+
+    xSemaphoreTake(ring_net_s.peer_lock, portMAX_DELAY);
+    bool have_peer = (ring_net_s.peer != NULL);
+    xSemaphoreGive(ring_net_s.peer_lock);
+    if (!have_peer && !ring_net_s.peer_close_req) {
+        return ESP_OK;
+    }
+
     if (ring_net_s.peer_task == NULL) {
-        xTaskCreate(ring_net_peer_task, "ring-net-peer", RING_NET_PEER_TASK_STACK,
-                    NULL, RING_NET_PEER_TASK_PRIO, &ring_net_s.peer_task);
+        /* No owner to ask (cannot happen once init() ran). */
+        xSemaphoreTake(ring_net_s.peer_lock, portMAX_DELAY);
+        if (ring_net_s.peer != NULL) {
+            esp_peer_disconnect(ring_net_s.peer);
+            esp_peer_close(ring_net_s.peer);
+            ring_net_s.peer = NULL;
+        }
+        xSemaphoreGive(ring_net_s.peer_lock);
+        return ESP_OK;
+    }
+
+    xSemaphoreTake(ring_net_s.peer_gone, 0);   /* drop a stale token */
+    ring_net_s.peer_close_req = true;
+    xTaskNotifyGive(ring_net_s.peer_task);
+    if (xSemaphoreTake(ring_net_s.peer_gone,
+                       pdMS_TO_TICKS(RING_NET_PEER_CLOSE_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGE(TAG, "peer task did not close the connection in %d ms",
+                 RING_NET_PEER_CLOSE_TIMEOUT_MS);
+        return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
 }

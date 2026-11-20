@@ -24,7 +24,7 @@ CHAT_SRCS = $(RINGKIT)/src/ring_chat.c $(JSON_SRC)
 GEODIS_PAYLOAD_SRCS = $(RINGKIT)/src/ring_geodis_payload.c $(JSON_SRC)
 
 TESTS = test_ring_json test_ring_resample test_ring_byte_ring test_ring_chat_messages \
-        test_ring_geodis_payload
+        test_ring_geodis_payload test_ring_http
 
 all: $(TESTS)
 
@@ -45,6 +45,11 @@ test_ring_chat_messages: test_ring_chat_messages.c $(CHAT_SRCS) $(STUB_SRC)
 
 test_ring_geodis_payload: test_ring_geodis_payload.c $(GEODIS_PAYLOAD_SRCS)
 	$(CC) $(CFLAGS) -I$(RINGKIT)/src $(INC) $^ -o $@
+
+# ring_http.c brings its own HTTP-client stub (a scriptable byte source);
+# linking stub_esp.c too would duplicate the no-op ring_http symbols.
+test_ring_http: test_ring_http.c ring_http_test_stubs.c $(RINGKIT)/src/ring_http.c
+	$(CC) $(CFLAGS) $(INC) $^ -o $@
 
 clean:
 	rm -f $(TESTS)

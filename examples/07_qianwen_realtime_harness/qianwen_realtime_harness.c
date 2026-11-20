@@ -23,7 +23,7 @@
  *
  * Task layout:
  *   qw-connect  32 KB, internal  — Wi-Fi + SNTP + probe + SDP session, retries
- *   qw-turn    256 KB, PSRAM     — the audio loop (Opus needs > 96 KB of stack;
+ *   qw-turn    128 KB, PSRAM        — the audio loop (Opus needs > 96 KB of stack;
  *                                   FreeRTOS stacks are internal-RAM-only, so
  *                                   this one is allocated with the WithCaps API)
  *   ring_net's own peer / signal / event tasks do the WebRTC work.
@@ -47,14 +47,6 @@
 #define TAG "07_qianwen_realtime_harness"
 
 /* ------------------------------------------------------------- config */
-
-/* Secrets are generated into ring_secrets.h by main/CMakeLists.txt from the
- * environment (tools/dev.sh sources secrets.local). Never committed. */
-#include "ring_secrets.h"
-
-#ifndef QIANWEN_API_KEY
-#define QIANWEN_API_KEY ""
-#endif
 
 #define QIANWEN_MODEL          "qwen-audio-3.1-realtime-flash"
 
@@ -112,30 +104,7 @@ static bool s_ui_ready;
 static volatile bool s_stop;
 static volatile bool s_worker_busy;
 
-/* ------------------------------------------------------------- audio helpers
- *
- * The stereo<->mono fold lives in ringkit (`ring_audio_stereo_to_mono` /
- * `ring_audio_mono_to_stereo`); only the level meter is app-specific.
- * ------------------------------------------------------------------------- */
-
 /* ------------------------------------------------------------- UI helpers */
-
-/* Average absolute sample -> 0..100%. The ring's silence floor is ~50;
- * speech lands in the high hundreds / low thousands. */
-static uint8_t mic_level_percent(const int16_t *pcm, size_t samples)
-{
-    uint32_t acc = 0;
-    for (size_t i = 0; i < samples; i++) {
-        int32_t v = pcm[i];
-        acc += (uint32_t)(v < 0 ? -v : v);
-    }
-    uint32_t avg = acc / samples;
-    if (avg < 80) {
-        return 0;
-    }
-    uint32_t pct = (avg - 80) * 100 / 2000;
-    return (uint8_t)(pct > 100 ? 100 : pct);
-}
 
 static void ui_mic_level(uint8_t pct)
 {
@@ -188,12 +157,21 @@ static void ui_wifi(void)
 
 static void ui_transcript(void)
 {
+    /* Copy under the mutex, release it, then take the LVGL lock. Holding
+     * s_text_mutex across an LVGL call inverts the lock order used by the
+     * LVGL task's own button callback (which takes s_text_mutex while the
+     * adapter lock is held) and deadlocks the whole UI. */
+    char user[sizeof(s_user_text)];
+    char line[sizeof(s_transcript)];
     xSemaphoreTake(s_text_mutex, portMAX_DELAY);
-    RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_user_label, s_user_text);
-        lv_label_set_text(s_transcript_label, s_transcript);
-    }
+    snprintf(user, sizeof(user), "%s", s_user_text);
+    snprintf(line, sizeof(line), "%s", s_transcript);
     xSemaphoreGive(s_text_mutex);
+
+    RING_UI_LOCKED(-1) {
+        lv_label_set_text(s_user_label, user);
+        lv_label_set_text(s_transcript_label, line);
+    }
 }
 
 static void transcript_append(const char *text, size_t len)
@@ -270,11 +248,15 @@ static void net_state_cb(ring_net_state_t st, void *user)
     ui_status(text, color);
 }
 
-static void net_text_cb(const char *text, size_t len, bool is_user, void *user)
+static void net_text_cb(const char *text, size_t len, bool is_user, bool final,
+                        bool clipped, void *user)
 {
-    (void)user;
+    (void)user; (void)final;
     if (!s_ui_ready) {
         return;
+    }
+    if (clipped) {
+        ESP_LOGW(TAG, "transcript fragment clipped at %u bytes", (unsigned)len);
     }
     if (is_user) {
         transcript_set_user(text, len);
@@ -301,7 +283,7 @@ static void turn_task(void *arg)
         }
         ring_audio_stereo_to_mono((const int16_t *)stereo, mono,
                                    FRAME_SAMPLES);
-        uint8_t level = mic_level_percent(mono, FRAME_SAMPLES);
+        uint8_t level = ring_audio_level_pct(mono, FRAME_SAMPLES);
         if ((frame_count++ % 10) == 0) {
             ESP_LOGI(TAG, "mic=%u%%, sent=%d frames", level, frame_count);
             ui_mic_level(level);
@@ -447,10 +429,9 @@ static void connect_task(void *arg)
 
 static void load_api_key(void)
 {
-    if (ring_secret_get("qianwen", "api_key", QIANWEN_API_KEY,
-                        s_api_key, sizeof(s_api_key)) != ESP_OK) {
-        ESP_LOGE(TAG, "no API key: build with -DQIANWEN_API_KEY=... or set "
-                      "NVS 'qianwen'/'api_key'");
+    if (ring_secret_api_key(s_api_key, sizeof(s_api_key)) != ESP_OK) {
+        ESP_LOGE(TAG, "no API key: set QIANWEN_API_KEY in ./secrets.local "
+                      "(tools/dev.sh) or NVS 'qianwen'/'api_key'");
     }
 }
 

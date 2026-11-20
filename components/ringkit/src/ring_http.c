@@ -4,6 +4,7 @@
 #include "ringkit/ring_http.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -51,22 +52,50 @@ esp_err_t ring_http_set_bearer(esp_http_client_handle_t c, const char *api_key)
     if (c == NULL || api_key == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (strlen(api_key) > RING_HTTP_MAX_BEARER_KEY) {
+        /* A truncated key would silently produce a malformed header. */
+        return ESP_ERR_INVALID_ARG;
+    }
     char auth[200];
     snprintf(auth, sizeof(auth), "Bearer %s", api_key);
     return esp_http_client_set_header(c, "Authorization", auth);
 }
 
-esp_err_t ring_http_read_body(esp_http_client_handle_t c,
-                              char *buf, size_t cap, int *out_len)
+esp_err_t ring_http_read_body_ex(esp_http_client_handle_t c,
+                                 char *buf, size_t cap, int *out_len,
+                                 bool *truncated)
 {
     if (c == NULL || buf == NULL || cap == 0) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (truncated != NULL) {
+        *truncated = false;
+    }
+
     int total = 0;
-    while (total < (int)cap - 1) {
-        int r = esp_http_client_read(c, buf + total, (int)cap - 1 - total);
-        if (r <= 0) {
+    for (;;) {
+        if (total >= (int)cap - 1) {
+            /* Buffer full: probe for one more byte so a short buffer is
+             * reported as truncation rather than as a complete body. */
+            char extra;
+            int r = esp_http_client_read(c, &extra, 1);
+            if (r < 0) {
+                return ESP_ERR_INVALID_RESPONSE;    /* transport error */
+            }
+            if (r > 0 && truncated != NULL) {
+                *truncated = true;
+            }
             break;
+        }
+        int r = esp_http_client_read(c, buf + total, (int)cap - 1 - total);
+        if (r < 0) {
+            /* esp_http_client_read() returns a negative esp_err_t on error;
+             * treating it as EOF would hand the caller a truncated body with
+             * ESP_OK. */
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (r == 0) {
+            break;                                  /* clean end of stream */
         }
         total += r;
     }
@@ -75,6 +104,12 @@ esp_err_t ring_http_read_body(esp_http_client_handle_t c,
         *out_len = total;
     }
     return total > 0 ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
+esp_err_t ring_http_read_body(esp_http_client_handle_t c,
+                              char *buf, size_t cap, int *out_len)
+{
+    return ring_http_read_body_ex(c, buf, cap, out_len, NULL);
 }
 
 static bool sse_buf_reserve(char **buf, size_t *cap, size_t need)
@@ -175,7 +210,16 @@ const char *ring_http_sse_next(ring_http_sse_t *s, bool *truncated)
             return NULL;
         }
         int n = esp_http_client_read(s->client, s->carry + s->carry_len, 4096);
-        if (n <= 0) {
+        if (n < 0) {
+            /* Transport error: not end-of-stream. Mark it so the caller can
+             * tell the difference, and stop. */
+            s->err = true;
+            if (truncated != NULL) {
+                *truncated = true;
+            }
+            return NULL;
+        }
+        if (n == 0) {
             s->eof = true;
             continue;
         }

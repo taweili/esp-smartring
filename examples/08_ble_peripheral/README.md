@@ -34,6 +34,10 @@ A phone (nRF Connect / LightBlue) can scan for `SmartRing`, connect, pair
 notification. The screen shows the connection state, battery, and last received
 command; a 2 Hz UI timer refreshes it.
 
+The table lives in ringkit as `ring_bt_demo_db()` (with
+`ring_bt_demo_last_command()` for the last write), so
+`12_ringkit_selftest` exercises the same database and the two cannot drift.
+
 The connection itself is asynchronous: `ring_bt_init()` starts the host task and
 advertising starts when the host syncs. The example just reads
 `ring_bt_state()` / `ring_bt_is_connected()` from a UI timer.
@@ -373,8 +377,8 @@ the controller, LVGL, and the FreeRTOS heaps all want internal memory.
   transport ACLs). `CONFIG_BT_NIMBLE_MEM_OPTIMIZATION=y` and
   `CONFIG_BT_NIMBLE_STATIC_TO_DYNAMIC=y` are on by default and already reduce this.
 - **Flash:** NimBLE host+controller add on the order of a few hundred KB to the
-  app image. The project already uses
-  `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` (1500K factory) — **keep it**. A
+  app image. The project uses a custom `partitions.csv` with a **3000K** factory
+  partition (`CONFIG_PARTITION_TABLE_CUSTOM=y`) — **keep it**. A
   BLE+LVGL app fits, but if you also add Wi-Fi (esp_wifi + lwip + wpa_supplicant)
   and a big font set, watch the `factory` size (`idf.py size`).
 - **PSRAM:** the LVGL display buffer and any Wi-Fi/lwip buffers already use PSRAM
@@ -481,23 +485,26 @@ Design notes carried over from `ring_wifi.c`:
 
 ### Build wiring
 
-`ringkit/CMakeLists.txt` adds `ring_bt.c` to `SRCS` and `bt` to `REQUIRES`:
+`ringkit/CMakeLists.txt` adds `ring_bt.c` to `SRCS` and `bt` to
+`PRIV_REQUIRES` (only `smartring_plus lvgl esp_http_client esp_driver_gpio`
+are public):
 
 ```cmake
 idf_component_register(
     SRCS ... src/ring_bt.c ...
     INCLUDE_DIRS "include"
-    REQUIRES smartring_plus lvgl esp_lvgl_adapter esp_wifi esp_netif esp_event nvs_flash bt
+    REQUIRES smartring_plus lvgl esp_http_client esp_driver_gpio
+    PRIV_REQUIRES esp_lvgl_adapter esp_wifi esp_netif esp_event nvs_flash bt
+                  esp_peer esp-tls lwip mbedtls esp_audio_codec
+                  esp_websocket_client
 )
 ```
 
 `bt` is the in-tree ESP-IDF component that contains **both** the NimBLE host
 and the ESP32-S3 controller (there is no separate `nimble` component, and no
-`idf_component.yml` entry — Bluetooth is not a managed dependency). It must be
-in `REQUIRES` (not `PRIV_REQUIRES`) because NimBLE headers appear in ringkit's
-public `ring_bt.h`… actually they do not; `ring_bt.h` is NimBLE-free, so `bt`
-could be `PRIV_REQUIRES`. It is kept in `REQUIRES` so the include path is
-unambiguous. Enable it globally via `sdkconfig.defaults` (§4) — `sdkconfig`
+`idf_component.yml` entry — Bluetooth is not a managed dependency). It lives in
+`PRIV_REQUIRES`: `ring_bt.h` is NimBLE-free, so dependents do not need its
+include path. Enable it globally via `sdkconfig.defaults` (§4) — `sdkconfig`
 is shared by every app, so this affects all builds (harmless: the linker
 garbage-collects the BT code for apps that never call `ring_bt_init()`).
 

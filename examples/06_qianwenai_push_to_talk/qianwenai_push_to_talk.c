@@ -14,8 +14,8 @@
  * operates on 48 kHz / 16-bit / mono. This file folds/expands at the boundary.
  *
  * Tasks:
- *   qw-connect  8 KB internal — Wi-Fi + SNTP, retry loop
- *   qw-talk     16 KB internal — capture + cascade (no codec, no PSRAM stack)
+ *   qw-connect  32 KB internal — Wi-Fi + SNTP, retry loop
+ *   qw-talk     64 KB internal — capture + cascade (no codec, no PSRAM stack)
  */
 #include "ring_example.h"
 
@@ -34,12 +34,6 @@
 #define TAG "06_qianwenai_push_to_talk"
 
 /* ------------------------------------------------------------- config */
-
-#include "ring_secrets.h"
-
-#ifndef QIANWEN_API_KEY
-#define QIANWEN_API_KEY ""
-#endif
 
 #define STT_MODEL         "qwen3-asr-flash"
 #define LLM_MODEL         "qwen3.8-flash"
@@ -196,19 +190,7 @@ static void ui_error(const char *msg)
 
 /* ------------------------------------------------------------- audio helpers */
 
-static uint8_t level_pct(const int16_t *pcm, size_t samples)
-{
-    if (samples == 0) return 0;
-    uint32_t acc = 0;
-    for (size_t i = 0; i < samples; i++) {
-        int32_t v = pcm[i];
-        acc += (uint32_t)(v < 0 ? -v : v);
-    }
-    uint32_t avg = acc / samples;
-    if (avg < 80) return 0;
-    uint32_t pct = (avg - 80) * 100 / 2000;
-    return (uint8_t)(pct > 100 ? 100 : pct);
-}
+/* The mic level meter lives in ringkit (ring_audio_level_pct). */
 
 /* TTS audio callback: fold mono to stereo and write to the speaker.
  *
@@ -262,7 +244,7 @@ static void talk_worker(void *arg)
         memcpy(s_capture + captured, mono, FRAME_SAMPLES * 2);
         captured += FRAME_SAMPLES;
 
-        uint8_t level = level_pct(mono, FRAME_SAMPLES);
+        uint8_t level = ring_audio_level_pct(mono, FRAME_SAMPLES);
         static int frame_cnt = 0;
         if ((frame_cnt++ % 25) == 0) {
             ESP_LOGI(TAG, "capture: %u ms, level %u%%",
@@ -374,10 +356,9 @@ static void btn_cb(lv_event_t *e)
 
 static void load_api_key(void)
 {
-    if (ring_secret_get("qianwen", "api_key", QIANWEN_API_KEY,
-                        s_api_key, sizeof(s_api_key)) != ESP_OK) {
-        ESP_LOGE(TAG, "no API key: build with -DQIANWEN_API_KEY=... or set "
-                      "NVS 'qianwen'/'api_key'");
+    if (ring_secret_api_key(s_api_key, sizeof(s_api_key)) != ESP_OK) {
+        ESP_LOGE(TAG, "no API key: set QIANWEN_API_KEY in ./secrets.local "
+                      "(tools/dev.sh) or NVS 'qianwen'/'api_key'");
     }
 }
 

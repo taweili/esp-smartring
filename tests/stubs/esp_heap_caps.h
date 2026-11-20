@@ -10,4 +10,5 @@
 #define MALLOC_CAP_INTERNAL 0
 
 void *heap_caps_malloc(size_t size, uint32_t caps);
+void *heap_caps_realloc(void *ptr, size_t size, uint32_t caps);
 void  heap_caps_free(void *ptr);

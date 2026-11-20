@@ -81,10 +81,14 @@ typedef void (*ring_ws_state_cb_t)(ring_ws_state_t state, void *user);
  * @param final   true when @p text is the complete utterance/reply (the
  *                `.done` / `.completed` events); false for a streaming delta,
  *                which is incremental and should be appended.
+ * @param clipped true when @p text was truncated to fit the module's event
+ *                payload (RING_WS_EV_TEXT_MAX); a @p final line with this set
+ *                is a prefix, not the whole line.
  * @param user    Opaque pointer passed to ring_ws_init().
  */
 typedef void (*ring_ws_transcript_cb_t)(const char *text, size_t len,
-                                        bool is_user, bool final, void *user);
+                                        bool is_user, bool final,
+                                        bool clipped, void *user);
 
 /**
  * @brief Function-calling callback, invoked on the ring-ws-event task.

@@ -82,6 +82,19 @@ void ring_audio_stereo_to_mono(const int16_t *stereo, int16_t *mono,
 void ring_audio_mono_to_stereo(const int16_t *mono, int16_t *stereo,
                                size_t frames);
 
+/**
+ * @brief Average |sample| of a mono frame as 0..100%.
+ *
+ * Shared by the voice examples so the on-screen level meter means the same
+ * thing everywhere. The ring's silence floor is ~80; speech lands in the high
+ * hundreds / low thousands.
+ *
+ * @param pcm     Mono samples.
+ * @param samples Number of samples.
+ * @return 0..100.
+ */
+uint8_t ring_audio_level_pct(const int16_t *pcm, size_t samples);
+
 /* Sane defaults measured on this board (see notes/hardware-bsp-reference.md). */
 #define RING_AUDIO_REC_GAIN_DB 42  /**< driver rounds down to a 6 dB step (ES8311 max) */
 #define RING_AUDIO_OUT_VOL     75  /**< 0..100                             */

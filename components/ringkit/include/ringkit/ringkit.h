@@ -43,4 +43,4 @@
 #include "ringkit/ring_http.h"
 
 /** Skeleton version, for logging. */
-#define RINGKIT_VERSION "1.0.0"
+#define RINGKIT_VERSION "1.1.0"

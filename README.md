@@ -48,14 +48,15 @@ idf.py -DRING_APP=04_voice_loopback -B build/04_voice_loopback -p /dev/ttyACM0 f
 
 An invalid `RING_APP` fails fast at configure time and lists the valid choices.
 
-The apps that need credentials (`05`–`07`: Wi-Fi SSID/password, Qianwen API key)
-take them from `./secrets.local` (git-ignored), never from the command line, so
-they stay out of shell history and the build log. `tools/dev.sh` wraps that:
+The apps that need credentials (`05`–`07` and `10`: Wi-Fi SSID/password,
+Qianwen API key) take them from `./secrets.local` (git-ignored), never from the
+command line, so they stay out of shell history and the build log.
+`tools/dev.sh` wraps that:
 
 ```bash
 tools/dev.sh build 06_qianwenai_push_to_talk    # build one app
 tools/dev.sh flash 06_qianwenai_push_to_talk    # build + flash to /dev/ttyACM0
-tools/dev.sh monitor
+tools/dev.sh monitor 06_qianwenai_push_to_talk  # follow that app's build dir
 ```
 
 > **Console back-pressure looks like a hang.** With USB-Serial/JTAG as the
@@ -67,7 +68,7 @@ tools/dev.sh monitor
 
 | App | Description |
 |-----|-------------|
-| `00_glyph_grid_reveal` | **Default.** 13×13 glyph grid, layered center-out reveal, hue-cycling accents. Touch to open/close. |
+| `00_glyph_grid_reveal` | **Default.** 13×13 glyph grid, layered center-out reveal driven by the ring's gyro (turn to reveal more/less), green/yellow accents. Tap resets to the idle core. |
 | `01_gbuddy_face` | The buddy face: 4 expressions from `medias/gbuddy-00N.png` as alpha sprites, with blink, IMU gaze, twist look and sleep. |
 | `02_imu_dashboard` | Live IMU dashboard: bubble level (tilt) + accel + gyro + temperature + level calibration. |
 | `03_gesture_probe` | Reports every single-finger gesture (tap / hold / swipe / press / release) the moment it happens. |
@@ -195,13 +196,19 @@ assert or error log.
 | `examples/06_qianwenai_push_to_talk/README.md` | The hold-to-talk STT → LLM → TTS cascade: the three HTTPS stages, audio pipeline, task & memory layout, configuration, and the latency/limitation tradeoffs. |
 | `examples/07_qianwen_realtime_harness/README.md` | The hands-free voice loop: explicit network gate, half-duplex turn-taking, task layout, and why the Opus task needs a PSRAM stack. |
 | `examples/08_ble_peripheral/README.md` | Bluetooth/BLE on the ring: what the silicon supports, NimBLE vs Bluedroid, exact `sdkconfig`, GATT-server bring-up, Wi-Fi coexistence, the `ring_bt` wrapper spec. |
+| `examples/09_hello_smoke_test/README.md` | The minimal bring-up smoke test: white panel + one 48 px glyph. |
 | `notes/networking-https-webrtc.md` | Networking, HTTPS & WebRTC reference: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and the three OpenAI API paths (REST, Realtime-over-WebSocket, Realtime-over-WebRTC). |
 | `notes/qianwen-ai-platform.md` | 千问 AI 平台 (qianwenai.com) reference: model catalog by category (LLM, vision, image/video/3D generation, speech, omni, embeddings) and the API surface (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async task/batch APIs). |
+| `notes/geodis-ai-api.md` | GEODIS Voice Agent API reference (Azure OpenAI Realtime over WebRTC: `/token`, SDP, session schema, tool call). |
+| `notes/geodis-push-to-talk-plan.md` | The planned `14_geodis_push_to_talk` app: protocol, state machine, verification plan. |
+| `notes/geodis-code-review.md` | Design review of `ring_geodis` and the transport ownership model shared with `ring_net`/`ring_ws`. |
 | `examples/10_qianwen_ws_voice_chat/README.md` | WebSocket voice chat: PCM 16 kHz in / 24 kHz out resampler, the `ring_ws` module, turn-taking, barge-in, transport internals, and the stack + jitter-ring budget. |
 | `examples/12_ringkit_selftest/README.md` | The subsystem diagnostic app. |
 | `examples/13_button_probe/README.md` | The BOOT-button (GPIO0) probe: events, timings, and the strapping-pin caveat. |
 | `notes/research-meta-muse.md`, `notes/research-xiaozhi.md` | Assistant feasibility research (no code yet). |
-| `scripts/README.md` | Host-side Qianwen WebRTC test client (`test_qianwen_realtime.py`): same flow as `07`, logs every event, saves the reply as WAV. |
+| `scripts/README.md` | Host-side API test clients: `test_qianwen_realtime.py` (WebRTC, as `07`), `test_qianwen_ws.py` (WebSocket, as `10`), `test_qianwen_ws_keepalive.py`, `test_geodis_api.py`. |
+| `tests/README.md` | Host unit tests for the pure-logic ringkit modules (`make check`). |
+| `tools/check_docs.py` | Repo documentation consistency checks: dangling `notes/`/example references, app tables vs directories, code-fence balance, secret `-D` flags. |
 | BSP upstream | `https://github.com/VIEWESMART/smartring_plus` (component `viewesmart/smartring_plus`). |
 
 ## License

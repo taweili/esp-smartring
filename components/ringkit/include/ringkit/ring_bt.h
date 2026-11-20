@@ -136,6 +136,33 @@ bool ring_bt_is_connected(void);
 /** Current connection handle (0xFFFF = none). */
 uint16_t ring_bt_conn_handle(void);
 
+/* ------------------------------------------------------------- demo DB */
+
+/** UUIDs of the built-in demo GATT database (service 0xFFE0). */
+#define RING_BT_DEMO_SVC_UUID    0xFFE0
+#define RING_BT_DEMO_CHR_NAME    0xFFE1  /**< READ: device name */
+#define RING_BT_DEMO_CHR_BATTERY 0xFFE2  /**< READ|NOTIFY: battery % */
+#define RING_BT_DEMO_CHR_COMMAND 0xFFE3  /**< WRITE|NOTIFY: command pipe */
+
+/**
+ * @brief The built-in demo GATT database, NULL-terminated.
+ *
+ * `name` (READ) serves "SmartRing", `battery` (READ|NOTIFY) serves
+ * `ring_battery_percent()`, and `command` (WRITE|NOTIFY) stores the last
+ * payload and echoes "ok" back. Shared by the BLE example and the self-test so
+ * the two cannot drift.
+ */
+const ring_bt_svc_t *ring_bt_demo_db(void);
+
+/**
+ * @brief Copy the last command written by a peer.
+ *
+ * @param buf  Destination.
+ * @param len  Size of @p buf.
+ * @return bytes copied (excluding the terminator).
+ */
+size_t ring_bt_demo_last_command(char *buf, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

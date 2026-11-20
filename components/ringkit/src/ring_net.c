@@ -17,6 +17,10 @@
  * This file owns the public API, the module state and the event task. The SDP
  * exchange and peer bring-up live in ring_net_signaling.c, the Opus codec in
  * ring_net_codec.c and the DataChannel JSON protocol in ring_net_protocol.c.
+ *
+ * Threading: the peer task owns the esp_peer handle; everybody else uses it
+ * under peer_lock and asks for teardown via peer_close_req (see
+ * ring_net_signaling.c). Application callbacks run on `ring-net-event`.
  */
 #include "ring_net_priv.h"
 
@@ -67,8 +71,8 @@ const char *ring_net_state_name(ring_net_state_t state)
     return "?";
 }
 
-/* Updates the state and notifies the event task, which runs the app callback.
- * Safe to call from any task, including the peer thread. */
+/* Updates the state and queues a transition for the event task. Safe to call
+ * from any task, including the peer thread. */
 void ring_net_state_set(ring_net_state_t st)
 {
     if (ring_net_s.state_mutex != NULL) {
@@ -85,11 +89,48 @@ void ring_net_state_set(ring_net_state_t st)
         xSemaphoreGive(ring_net_s.state_mutex);
     }
     ESP_LOGI(TAG, "state -> %s", ring_net_state_name(st));
-    if (ring_net_s.event_queue) {
-        xQueueOverwrite(ring_net_s.event_queue, &st);
-        if (ring_net_s.event_task) {
-            xTaskNotifyGive(ring_net_s.event_task);
-        }
+
+    if (ring_net_s.event_queue == NULL) {
+        return;
+    }
+    ring_net_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = RING_NET_EV_STATE;
+    ev.state = st;
+    if (xQueueSend(ring_net_s.event_queue, &ev, 0) != pdTRUE) {
+        /* Only reachable if the app's callback is slower than a state storm;
+         * the polled ring_net_state() is still correct. */
+        ESP_LOGW(TAG, "event queue full, state %s not delivered",
+                 ring_net_state_name(st));
+    }
+}
+
+/* Queue a transcript fragment for the event task. Called on the peer task. */
+void ring_net_emit_text(const char *text, size_t len, bool is_user, bool final,
+                        bool clipped)
+{
+    if (ring_net_s.event_queue == NULL || text == NULL || len == 0) {
+        return;
+    }
+    ring_net_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = RING_NET_EV_TEXT;
+    ev.is_user = is_user ? 1 : 0;
+    ev.final = final ? 1 : 0;
+    ev.clipped = clipped ? 1 : 0;
+    if (len > sizeof(ev.text) - 1) {
+        len = sizeof(ev.text) - 1;
+        ev.clipped = 1;
+    }
+    memcpy(ev.text, text, len);
+    ev.text[len] = '\0';
+    ev.len = (uint16_t)len;
+
+    if (xQueueSend(ring_net_s.event_queue, &ev, 0) != pdTRUE) {
+        /* Dropping a fragment costs a word on screen, never correctness: the
+         * `…done` event that follows carries the whole line. */
+        ESP_LOGW(TAG, "event queue full, transcript fragment dropped (%u B)",
+                 (unsigned)len);
     }
 }
 
@@ -110,11 +151,21 @@ static size_t dl_pop(uint8_t *pcm, size_t len)
 static void event_task(void *arg)
 {
     (void)arg;
+    ring_net_event_t ev;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        ring_net_state_t st;
-        if (xQueuePeek(ring_net_s.event_queue, &st, 0) == pdTRUE && ring_net_s.state_cb) {
-            ring_net_s.state_cb(st, ring_net_s.user);
+        if (xQueueReceive(ring_net_s.event_queue, &ev, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if (ev.kind == RING_NET_EV_STATE) {
+            if (ring_net_s.state_cb != NULL) {
+                ring_net_s.state_cb(ev.state, ring_net_s.user);
+            }
+        } else if (ev.kind == RING_NET_EV_TEXT) {
+            if (ring_net_s.text_cb != NULL) {
+                ring_net_s.text_cb(ev.text, ev.len, ev.is_user != 0,
+                                   ev.final != 0, ev.clipped != 0,
+                                   ring_net_s.user);
+            }
         }
     }
 }
@@ -125,10 +176,12 @@ static void event_task(void *arg)
  * zero-initialised context and on partial init failure. */
 static void net_release(void)
 {
-    if (ring_net_s.event_queue) { vQueueDelete(ring_net_s.event_queue); ring_net_s.event_queue = NULL; }
+    if (ring_net_s.event_queue) { vQueueDeleteWithCaps(ring_net_s.event_queue); ring_net_s.event_queue = NULL; }
     if (ring_net_s.state_mutex) { vSemaphoreDelete(ring_net_s.state_mutex); ring_net_s.state_mutex = NULL; }
     if (ring_net_s.sdp_mutex) { vSemaphoreDelete(ring_net_s.sdp_mutex); ring_net_s.sdp_mutex = NULL; }
     if (ring_net_s.dec_mutex) { vSemaphoreDelete(ring_net_s.dec_mutex); ring_net_s.dec_mutex = NULL; }
+    if (ring_net_s.peer_lock) { vSemaphoreDelete(ring_net_s.peer_lock); ring_net_s.peer_lock = NULL; }
+    if (ring_net_s.peer_gone) { vSemaphoreDelete(ring_net_s.peer_gone); ring_net_s.peer_gone = NULL; }
     if (ring_net_s.enc) { esp_audio_enc_close(ring_net_s.enc); ring_net_s.enc = NULL; }
     if (ring_net_s.dec) { esp_audio_dec_close(ring_net_s.dec); ring_net_s.dec = NULL; }
     free(ring_net_s.enc_out); ring_net_s.enc_out = NULL;
@@ -152,16 +205,26 @@ esp_err_t ring_net_init(ring_net_state_cb_t state_cb,
 
     ring_net_s.sdp_mutex = xSemaphoreCreateMutex();
     ring_net_s.state_mutex = xSemaphoreCreateMutex();
-    ring_net_s.event_queue = xQueueCreate(1, sizeof(ring_net_state_t));
-    if (ring_net_s.sdp_mutex == NULL || ring_net_s.state_mutex == NULL || ring_net_s.event_queue == NULL) {
+    ring_net_s.peer_lock = xSemaphoreCreateMutex();
+    ring_net_s.peer_gone = xSemaphoreCreateBinary();
+    /* ~6 KB of events: PSRAM, because internal RAM is where the panel buffers
+     * and the IMU task's stack live. */
+    ring_net_s.event_queue = xQueueCreateWithCaps(RING_NET_EVENT_DEPTH,
+                                                  sizeof(ring_net_event_t),
+                                                  MALLOC_CAP_SPIRAM);
+    if (ring_net_s.sdp_mutex == NULL || ring_net_s.state_mutex == NULL ||
+        ring_net_s.peer_lock == NULL || ring_net_s.peer_gone == NULL ||
+        ring_net_s.event_queue == NULL) {
         net_release();
         return ESP_ERR_NO_MEM;
     }
 
     /* The downlink buffer is 384 KB: it must live in PSRAM, not internal RAM. */
     if (ring_byte_ring_init(&ring_net_s.dl_ring, RING_NET_DL_BYTES, MALLOC_CAP_SPIRAM) != ESP_OK) {
-        ESP_LOGW(TAG, "downlink ring allocation failed (%d bytes)",
+        ESP_LOGE(TAG, "downlink ring allocation failed (%d bytes)",
                  RING_NET_DL_BYTES);
+        net_release();
+        return ESP_ERR_NO_MEM;
     }
 
     esp_err_t err = ring_net_opus_open();
@@ -171,10 +234,27 @@ esp_err_t ring_net_init(ring_net_state_cb_t state_cb,
         return err;
     }
 
-    xTaskCreate(ring_net_signal_task, "ring-net-signal", RING_NET_SIGNAL_TASK_STACK,
-                NULL, RING_NET_SIGNAL_TASK_PRIO, &ring_net_s.signal_task);
-    xTaskCreate(event_task, "ring-net-event", RING_NET_EVENT_TASK_STACK, NULL,
-                RING_NET_EVENT_TASK_PRIO, &ring_net_s.event_task);
+    BaseType_t ok = xTaskCreate(ring_net_signal_task, "ring-net-signal",
+                                RING_NET_SIGNAL_TASK_STACK, NULL,
+                                RING_NET_SIGNAL_TASK_PRIO,
+                                &ring_net_s.signal_task);
+    if (ok == pdPASS) {
+        ok = xTaskCreate(ring_net_peer_task, "ring-net-peer",
+                         RING_NET_PEER_TASK_STACK, NULL,
+                         RING_NET_PEER_TASK_PRIO, &ring_net_s.peer_task);
+    }
+    if (ok == pdPASS) {
+        ok = xTaskCreate(event_task, "ring-net-event", RING_NET_EVENT_TASK_STACK,
+                         NULL, RING_NET_EVENT_TASK_PRIO, &ring_net_s.event_task);
+    }
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "task creation failed");
+        if (ring_net_s.signal_task) { vTaskDelete(ring_net_s.signal_task); ring_net_s.signal_task = NULL; }
+        if (ring_net_s.peer_task) { vTaskDelete(ring_net_s.peer_task); ring_net_s.peer_task = NULL; }
+        if (ring_net_s.event_task) { vTaskDelete(ring_net_s.event_task); ring_net_s.event_task = NULL; }
+        net_release();
+        return ESP_ERR_NO_MEM;
+    }
 
     ESP_LOGI(TAG, "initialised");
     return ESP_OK;
@@ -189,12 +269,19 @@ esp_err_t ring_net_start(const char *model, const char *api_key)
     snprintf(ring_net_s.api_key, sizeof(ring_net_s.api_key), "%s", api_key);
 
     /* A retry must start from a clean peer: reusing a half-open connection
-     * would send a second offer over an existing DTLS session. */
-    if (ring_net_s.peer) {
-        esp_peer_disconnect(ring_net_s.peer);
-        esp_peer_close(ring_net_s.peer);
-        ring_net_s.peer = NULL;
+     * would send a second offer over an existing DTLS session. The peer task
+     * owns the handle, so teardown goes through it. */
+    esp_err_t err = ring_net_peer_close();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "previous peer would not close: %s", esp_err_to_name(err));
+        ring_net_s.last_err = err;
+        ring_net_state_set(RING_NET_ERROR);
+        return err;
     }
+    /* Whatever the signal task is still working on is now stale. */
+    ring_net_s.session_gen++;
+    ring_net_s.last_err = ESP_OK;
+
     ring_net_s.speaking = false;
     ring_net_s.pts = 0;
     /* A retry must not replay stale downlink audio or reuse a stale SCTP
@@ -204,38 +291,33 @@ esp_err_t ring_net_start(const char *model, const char *api_key)
     ring_net_state_set(RING_NET_CONNECTING);
 
     /* 1. Wi-Fi */
-    esp_err_t err = ring_wifi_start();
+    err = ring_wifi_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "wifi start: %s", esp_err_to_name(err));
-        ring_net_state_set(RING_NET_ERROR);
-        return err;
+        goto fail;
     }
     err = ring_wifi_wait_connected(20000);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "no IP: %s", esp_err_to_name(err));
-        ring_net_state_set(RING_NET_ERROR);
-        return err;
+        goto fail;
     }
 
     /* 2. Clock — required for TLS/DTLS certificate validation. */
     err = ring_time_sync(RING_NET_SNTP_TIMEOUT_MS);
     if (err != ESP_OK) {
-        ring_net_state_set(RING_NET_ERROR);
-        return err;
+        goto fail;
     }
 
     /* 3. PeerConnection + signaling */
     err = ring_net_peer_open();
     if (err != ESP_OK) {
-        ring_net_state_set(RING_NET_ERROR);
-        return err;
+        goto fail;
     }
-    int r = esp_peer_new_connection(ring_net_s.peer);
-    if (r != ESP_PEER_ERR_NONE) {
-        ESP_LOGE(TAG, "new_connection failed: %d", r);
-        ring_net_state_set(RING_NET_ERROR);
-        return ESP_FAIL;
+    err = ring_net_peer_connect();
+    if (err != ESP_OK) {
+        goto fail;
     }
+    ring_net_s.peer_ready = true;
 
     /* 4. Wait for the DataChannel + session.updated. */
     ESP_LOGI(TAG, "waiting for session...");
@@ -257,18 +339,30 @@ esp_err_t ring_net_start(const char *model, const char *api_key)
     if (st != RING_NET_READY && st != RING_NET_LISTENING &&
         st != RING_NET_SPEAKING) {
         ESP_LOGW(TAG, "session not ready (%s)", ring_net_state_name(st));
-        return ESP_ERR_TIMEOUT;
+        err = (ring_net_s.last_err != ESP_OK) ? ring_net_s.last_err
+                                              : ESP_ERR_TIMEOUT;
+        goto fail;
     }
     ESP_LOGI(TAG, "session ready (model %s)", ring_net_s.model);
     return ESP_OK;
+
+fail:
+    ring_net_s.last_err = err;
+    /* Tear the peer down (through its owning task) so a slow SDP POST cannot
+     * be answered into a handle that no longer exists. */
+    ring_net_peer_disconnect();
+    if (ring_net_peer_close() != ESP_OK) {
+        ESP_LOGW(TAG, "peer close after failure timed out");
+    }
+    ring_net_state_set(RING_NET_ERROR);
+    return err;
 }
 
 esp_err_t ring_net_stop(void)
 {
-    if (ring_net_s.peer) {
-        esp_peer_disconnect(ring_net_s.peer);
-        esp_peer_close(ring_net_s.peer);
-        ring_net_s.peer = NULL;
+    ring_net_peer_disconnect();
+    if (ring_net_peer_close() != ESP_OK) {
+        ESP_LOGW(TAG, "peer close timed out");
     }
     ring_net_state_set(RING_NET_OFF);
     return ESP_OK;
@@ -305,12 +399,13 @@ esp_err_t ring_net_set_listening(bool on)
 
 esp_err_t ring_net_send_audio(const int16_t *pcm, size_t samples)
 {
-    if (ring_net_s.peer == NULL || pcm == NULL || samples == 0 || ring_net_s.enc == NULL) {
+    if (ring_net_s.enc == NULL || pcm == NULL || samples == 0) {
         return ESP_ERR_INVALID_STATE;
     }
     if (samples != RING_NET_FRAME_SAMPLES) {
         return ESP_ERR_INVALID_ARG;
     }
+
     if (ring_net_state() != RING_NET_LISTENING) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -332,13 +427,6 @@ esp_err_t ring_net_send_audio(const int16_t *pcm, size_t samples)
         .len = (uint32_t)ring_net_s.enc_out_size,
     };
     esp_audio_err_t e = esp_audio_enc_process(ring_net_s.enc, &in, &out);
-    static int s_hwm;                    /* TEMP DIAG */
-    if (s_hwm < 3) {
-        ESP_LOGI(TAG, "enc: %d B in, %d B out, ret %d, stack hwm %u words",
-                 (int)in.len, (int)out.encoded_bytes, e,
-                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
-        s_hwm++;
-    }
     if (e != ESP_AUDIO_ERR_OK || out.encoded_bytes == 0) {
         return ESP_FAIL;
     }
@@ -352,12 +440,18 @@ esp_err_t ring_net_send_audio(const int16_t *pcm, size_t samples)
         .size = (int)out.encoded_bytes,
         .pts = ring_net_s.pts,
     };
-    ring_net_s.pts += samples;
-    int r = esp_peer_send_audio(ring_net_s.peer, &frame);
-    if (r != ESP_PEER_ERR_NONE && r != ESP_PEER_ERR_WOULD_BLOCK) {
-        return ESP_FAIL;
+
+    /* The peer handle belongs to the peer task; send under its lock. */
+    esp_err_t ret = ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(ring_net_s.peer_lock, portMAX_DELAY);
+    if (ring_net_s.peer != NULL) {
+        ring_net_s.pts += samples;
+        int r = esp_peer_send_audio(ring_net_s.peer, &frame);
+        ret = (r == ESP_PEER_ERR_NONE || r == ESP_PEER_ERR_WOULD_BLOCK) ? ESP_OK
+                                                                        : ESP_FAIL;
     }
-    return ESP_OK;
+    xSemaphoreGive(ring_net_s.peer_lock);
+    return ret;
 }
 
 esp_err_t ring_net_read_audio(int16_t *pcm, size_t samples, size_t *out_samples,

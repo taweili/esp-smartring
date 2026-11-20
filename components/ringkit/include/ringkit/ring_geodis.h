@@ -108,11 +108,14 @@ typedef void (*ring_geodis_state_cb_t)(ring_geodis_state_t state, void *user);
  * @param final   true when this fragment completes the line (`…done`, and the
  *                user utterance, which arrives whole). Deltas are false —
  *                append them; a final is what you commit to scrollback.
+ * @param clipped true when @p text was truncated to fit the module's event
+ *                payload (see RING_GEODIS_TEXT_MAX); a @p final line with this
+ *                set is a prefix, not the whole line.
  * @param user    Opaque pointer passed to ring_geodis_init().
  */
 typedef void (*ring_geodis_transcript_cb_t)(const char *text, size_t len,
                                             bool is_user, bool final,
-                                            void *user);
+                                            bool clipped, void *user);
 
 /**
  * @brief Function-calling hook, invoked on `ring-geodis-tool`.

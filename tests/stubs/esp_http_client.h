@@ -13,6 +13,18 @@
 
 typedef struct esp_http_client *esp_http_client_handle_t;
 
+/* Minimal subset of the real esp_http_client_config_t — only the fields
+ * ring_http.c initialises. */
+typedef struct {
+    const char *url;
+    const char *cert_pem;
+    size_t cert_len;
+    int timeout_ms;
+    int buffer_size;
+    int buffer_size_tx;
+    esp_err_t (*crt_bundle_attach)(void *conf);
+} esp_http_client_config_t;
+
 typedef enum {
     HTTP_METHOD_GET,
     HTTP_METHOD_POST,
@@ -22,6 +34,8 @@ typedef enum {
 
 esp_err_t esp_http_client_set_method(esp_http_client_handle_t client,
                                       esp_http_client_method_t method);
+esp_http_client_handle_t esp_http_client_init(
+    const esp_http_client_config_t *config);
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t client,
                                       const char *key, const char *value);
 esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t client,

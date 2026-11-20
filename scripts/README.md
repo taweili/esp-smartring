@@ -1,5 +1,12 @@
 # scripts/ — host-side helpers
 
+| Script | Covers |
+|---|---|
+| `test_qianwen_realtime.py` | WebRTC realtime API, same flow as `examples/07` |
+| `test_qianwen_ws.py` | WebSocket realtime API, same transport as `examples/10` |
+| `test_qianwen_ws_keepalive.py` | WebSocket session lifetime / keep-alive strategies |
+| `test_geodis_api.py` | GEODIS Voice Agent API (HTTP + WebRTC + voice/PTT/live) |
+
 ## test_qianwen_realtime.py
 
 Tests the Qianwen realtime WebRTC API from the host, using the same flow as
@@ -165,6 +172,24 @@ ffmpeg -y -i /tmp/capital.wav -ar 48000 -ac 1 -f s16le -acodec pcm_s16le \
        scripts/assets/test_clip.pcm
 ```
 
+## test_qianwen_ws.py
+
+Exercises the Qianwen realtime **WebSocket** API used by
+`examples/10_qianwen_ws_voice_chat`: connect to
+`wss://maas.qianwenaiapi.com/api-ws/v1/realtime`, send `session.update` with a
+configurable `turn_detection`, stream a PCM clip as
+`input_audio_buffer.append`, and save the spoken reply.
+
+```bash
+scripts/.venv/bin/python scripts/test_qianwen_ws.py
+scripts/.venv/bin/python scripts/test_qianwen_ws.py --mode smart_turn_v2
+scripts/.venv/bin/python scripts/test_qianwen_ws.py --mode null   # push-to-talk
+scripts/.venv/bin/python scripts/test_qianwen_ws.py --clip /tmp/q.wav
+```
+
+The API key comes from `--api-key`, `$QIANWEN_API_KEY`, or `./secrets.local`.
+`--mode` accepts `smart_turn_v2`, `smart_turn`, `server_vad` and `null`.
+
 ## test_qianwen_ws_keepalive.py
 
 Probes the Qianwen realtime **WebSocket** session lifetime and the keep-alive
@@ -184,8 +209,8 @@ scripts/.venv/bin/python scripts/test_qianwen_ws_keepalive.py --strategy silence
 
 ## test_geodis_api.py
 
-Verifies the **GEODIS Voice Agent** API from the host — an M0 spike for a
-future ring `ring_geodis` module. The agent is Azure OpenAI Realtime
+Verifies the **GEODIS Voice Agent** API from the host — the same flow the ring's
+`ring_geodis` module implements. The agent is Azure OpenAI Realtime
 (`gpt-realtime-2.1`) over WebRTC, fronted by an unauthenticated gateway; there
 is no REST chat API, so the script checks both the HTTP surface and a real
 WebRTC session (SDP → `session.update` → STT opt-in → text/voice turn →

@@ -134,20 +134,23 @@ int ring_net_on_data_frame(esp_peer_data_frame_t *frame, void *ctx)
         ESP_LOGE(TAG, "model error: %.200s", json);
     } else if (ring_json_type_is(json, "conversation.item.input_audio_transcription.completed")) {
         /* The server transcribes the user's utterance by default; surfacing it
-         * is the clearest evidence that the uplink arrived intact. */
-        char text[256];
+         * is the clearest evidence that the uplink arrived intact. The whole
+         * utterance arrives at once, so this is a final fragment. */
+        char text[RING_NET_EV_TEXT_MAX];
         size_t len = 0;
-        if (ring_net_s.text_cb != NULL &&
-            ring_json_get_str(json, "transcript", text, sizeof(text), &len)) {
-            ring_net_s.text_cb(text, len, true, ring_net_s.user);
+        bool trunc = false;
+        if (ring_json_get_str_ex(json, "transcript", text, sizeof(text),
+                                 &len, &trunc)) {
+            ring_net_emit_text(text, len, true, true, trunc);
         }
-    } else if (ring_net_s.text_cb != NULL &&
-               (ring_json_type_is(json, "response.text.delta") ||
-                ring_json_type_is(json, "response.audio_transcript.delta"))) {
-        char text[128];
+    } else if (ring_json_type_is(json, "response.text.delta") ||
+               ring_json_type_is(json, "response.audio_transcript.delta")) {
+        char text[RING_NET_EV_TEXT_MAX];
         size_t len = 0;
-        if (ring_json_get_str(json, "delta", text, sizeof(text), &len)) {
-            ring_net_s.text_cb(text, len, false, ring_net_s.user);
+        bool trunc = false;
+        if (ring_json_get_str_ex(json, "delta", text, sizeof(text),
+                                 &len, &trunc)) {
+            ring_net_emit_text(text, len, false, false, trunc);
         }
     }
     return 0;
@@ -157,20 +160,27 @@ int ring_net_on_data_frame(esp_peer_data_frame_t *frame, void *ctx)
 
 esp_err_t ring_net_send_event(const char *json)
 {
-    if (ring_net_s.peer == NULL || json == NULL) {
-        return ESP_ERR_INVALID_STATE;
+    if (json == NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
-    esp_peer_data_frame_t frame = {
-        .type = ESP_PEER_DATA_CHANNEL_STRING,
-        .stream_id = ring_net_s.send_stream_id,
-        .data = (uint8_t *)json,
-        .size = (int)strlen(json),
-    };
-    int r = esp_peer_send_data(ring_net_s.peer, &frame);
-    if (r != ESP_PEER_ERR_NONE) {
-        ESP_LOGE(TAG, "esp_peer_send_data(stream %u) failed: %d",
-                 ring_net_s.send_stream_id, r);
-        return ESP_FAIL;
+    esp_err_t ret = ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(ring_net_s.peer_lock, portMAX_DELAY);
+    if (ring_net_s.peer != NULL) {
+        esp_peer_data_frame_t frame = {
+            .type = ESP_PEER_DATA_CHANNEL_STRING,
+            .stream_id = ring_net_s.send_stream_id,
+            .data = (uint8_t *)json,
+            .size = (int)strlen(json),
+        };
+        int r = esp_peer_send_data(ring_net_s.peer, &frame);
+        if (r != ESP_PEER_ERR_NONE) {
+            ESP_LOGE(TAG, "esp_peer_send_data(stream %u) failed: %d",
+                     ring_net_s.send_stream_id, r);
+            ret = ESP_FAIL;
+        } else {
+            ret = ESP_OK;
+        }
     }
-    return ESP_OK;
+    xSemaphoreGive(ring_net_s.peer_lock);
+    return ret;
 }

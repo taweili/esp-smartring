@@ -63,7 +63,7 @@ to the mic), so full-duplex would need an AEC feed — see
 | Task | Stack | RAM | Role |
 |---|---|---|---|
 | `qw-connect` | 8192 words (32 KB) | internal | Wi-Fi + SNTP + probe + session, retries |
-| `qw-turn` | 65536 words (256 KB) | **PSRAM** | the audio loop |
+| `qw-turn` | 131072 bytes (128 KB) | **PSRAM** | the audio loop |
 | `ring-net-peer` | 16384 words | internal | `esp_peer` main loop + DTLS |
 | `ring-net-signal` | 4096 words | internal | HTTPS SDP exchange |
 | `ring-net-event` | 6144 words | internal | app callbacks |
@@ -84,12 +84,12 @@ persisted. See `examples/06_qianwenai_push_to_talk/README.md` §7.
 ```bash
 tools/dev.sh build 07_qianwen_realtime_harness
 tools/dev.sh flash 07_qianwen_realtime_harness
-tools/dev.sh monitor
+tools/dev.sh monitor 07_qianwen_realtime_harness
 ```
 
 The screen shows the current step, the link state/IP, the recognised user
-utterance and the model transcript. The log prints `turn: listen`,
-`turn: reply`, `turn: done (N samples)` and the transcript.
+utterance and the model transcript. The log prints `turn: capture`,
+`turn: release`, `turn: done (N samples)` and the transcript.
 
 > **Needs a human:** the actual voice quality, latency and turn-taking feel
 > cannot be verified from the log. The log proves the pipeline runs, not that

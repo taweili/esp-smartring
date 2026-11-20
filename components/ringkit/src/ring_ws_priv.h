@@ -7,6 +7,12 @@
  * turn JSON, uplink). This header is the shared contract between them.
  *
  * Not part of the public API — applications include ringkit/ring_ws.h only.
+ *
+ * Threading: the WS client task only copies fragments into `reasm` and pushes
+ * to `msg_queue`; `ring-ws-worker` does JSON/base64 and only *enqueues* events;
+ * `ring-ws-event` is the only task that calls application callbacks, so they
+ * may take the LVGL lock. The event queue stores transitions, not a state
+ * cell, so a burst of READY -> LISTENING -> SPEAKING is delivered whole.
  */
 #pragma once
 
@@ -82,6 +88,31 @@
 #define RING_WS_WORKER_PRIO   5
 #define RING_WS_EVENT_STACK   6144
 #define RING_WS_EVENT_PRIO    4
+
+/* ------------------------------------------------------------- events */
+
+#define RING_WS_EV_TEXT_MAX   256
+#define RING_WS_EV_TOOL_NAME  64
+#define RING_WS_EV_TOOL_ARGS  512
+#define RING_WS_EVENT_DEPTH   24
+
+typedef enum {
+    RING_WS_EV_STATE = 0,
+    RING_WS_EV_TEXT,
+    RING_WS_EV_TOOL,
+} ring_ws_ev_kind_t;
+
+typedef struct {
+    uint8_t             kind;      /* ring_ws_ev_kind_t */
+    uint8_t             is_user;
+    uint8_t             final;
+    uint8_t             clipped;
+    ring_ws_state_t     state;     /* EV_STATE */
+    uint16_t            len;       /* EV_TEXT */
+    char                text[RING_WS_EV_TEXT_MAX];
+    char                tool_name[RING_WS_EV_TOOL_NAME];  /* EV_TOOL */
+    char                tool_args[RING_WS_EV_TOOL_ARGS];  /* EV_TOOL */
+} ring_ws_event_t;
 
 /* ------------------------------------------------------------- messages */
 
@@ -168,7 +199,7 @@ typedef struct {
     char                     last_error_type[64];
     char                     last_error_param[128];
 
-    /* Event marshalling: a single-slot queue of state values. */
+    /* Event marshalling: a queue of transitions/text/tool callbacks. */
     QueueHandle_t            event_queue;
     SemaphoreHandle_t        state_mutex;
 } ring_ws_ctx_t;
@@ -182,6 +213,12 @@ extern ring_ws_ctx_t ring_ws_s;
 uint32_t ring_ws_now_ms(void);
 void ring_ws_state_set(ring_ws_state_t st);
 void ring_ws_response_watchdog(void);
+
+/* Queue a transcript fragment / tool call for the event task. Called on the
+ * worker task; never calls application code. */
+void ring_ws_emit_text(const char *text, size_t len, bool is_user, bool final,
+                       bool clipped);
+void ring_ws_emit_tool(const char *name, const char *args_json);
 
 void ring_ws_dl_push(const uint8_t *pcm, size_t len);
 size_t ring_ws_dl_pop(uint8_t *pcm, size_t len);

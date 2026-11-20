@@ -8,7 +8,7 @@ This is an **ESP-IDF** project for the **VIEWE "Smart Ring Plus"** — a round, 
 
 Today it is structured as a **generic skeleton plus interchangeable applications**: `components/ringkit/` wraps the whole BSP, and each app under `examples/<name>/` is selected at build time with `RING_APP`.
 
-Default firmware (`00_glyph_grid_reveal`): a full-screen 13×13 glyph grid with a layered center-out reveal and hue-cycling accents.
+Default firmware (`00_glyph_grid_reveal`): a full-screen 13×13 glyph grid with a layered center-out reveal driven by the ring's gyro.
 
 ## Environment
 
@@ -126,15 +126,24 @@ EOF
 │   └── 13_button_probe/         # BOOT-button (GPIO0) event probe: press/long/click/double (README)
 ├── scripts/
 │   ├── test_qianwen_realtime.py # host-side Qianwen WebRTC test client
-│   └── assets/test_clip.pcm     # clip for its --clip mode (no mic needed)
+│   ├── test_qianwen_ws.py      # host-side Qianwen WebSocket test client
+│   ├── test_qianwen_ws_keepalive.py # WS session-lifetime probe
+│   ├── test_geodis_api.py      # GEODIS Voice Agent API verifier
+│   └── assets/test_clip.pcm    # clip for the --clip modes (no mic needed)
 ├── tests/                       # HOST UNIT TESTS — pure-logic ringkit modules (README)
 ├── tools/
 │   ├── dev.sh                   # build/flash/monitor wrapper (secrets + IDF env)
-│   └── lvgl_img_pack.py         # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
+│   ├── lvgl_img_pack.py         # RGB888(+A8) -> lv_image_dsc_t C file (gbuddy assets)
+│   ├── gen_ws_resampler.py      # regenerates ring_resample_coeffs.c
+│   ├── gen_geodis_mock_clip.py  # regenerates the geodis mock PCM asset
+│   └── check_docs.py            # docs/repo consistency checks (dangling refs, app tables, fences, secret -D)
 └── notes/
     ├── hardware-bsp-reference.md     # hardware + BSP reference (product, BSP API, pin map)
     ├── networking-https-webrtc.md    # ESP-IDF v6.1 networking/HTTPS/WebRTC reference
     ├── qianwen-ai-platform.md        # 千问 AI platform model catalog + API surface
+    ├── geodis-ai-api.md              # GEODIS Voice Agent API reference
+    ├── geodis-push-to-talk-plan.md   # planned 14_geodis_push_to_talk app
+    ├── geodis-code-review.md         # ring_geodis design review
     ├── research-meta-muse.md         # research: Meta Muse gadget path (no code yet)
     └── research-xiaozhi.md           # research: open-source Xiaozhi assistant (no code yet)
 ```
@@ -230,7 +239,7 @@ visible. UI design must account for this:
 - Button: `ring_button_init()`, `ring_button_deinit()`, `ring_button_is_pressed()`,
   `ring_button_held_ms()` (BOOT button on GPIO0; press / long-press / click / double-click)
 - Audio: `ring_audio_codec()`, `ring_audio_read()`, `ring_audio_write()`, `ring_audio_set_mute()`,
-  `ring_audio_stereo_to_mono()`, `ring_audio_mono_to_stereo()` (the codec is stereo; voice work is mono)
+  `ring_audio_stereo_to_mono()`, `ring_audio_mono_to_stereo()`, `ring_audio_level_pct()` (the codec is stereo; voice work is mono)
 - IMU: `ring_imu_accel()`, `ring_imu_tilt()`, `ring_imu_calib_start/poll/info()`,
   `ring_imu_gyro()`, `ring_imu_temp()` (the last two come from the vendored BSP override)
 - SD: `ring_sd_list()`, `ring_sd_free_list()`, `ring_sd_is_mounted()`, `ring_sd_card()`, `ring_sd_deinit()`
@@ -238,7 +247,8 @@ visible. UI design must account for this:
 - Wi-Fi: `ring_wifi_init()`, `ring_wifi_start()`, `ring_wifi_wait_connected()`, `ring_wifi_get_ip()`,
   `ring_wifi_get_credentials()`, `ring_wifi_state()`
 - BT: `ring_bt_init()`, `ring_bt_start_advertising()`, `ring_bt_stop_advertising()`,
-  `ring_bt_notify()`, `ring_bt_state()`, `ring_bt_is_connected()`, `ring_bt_set_name()`
+  `ring_bt_notify()`, `ring_bt_state()`, `ring_bt_is_connected()`, `ring_bt_set_name()`,
+  `ring_bt_demo_db()`, `ring_bt_demo_last_command()`
 - WS/voice (`ring_ws.h`): `ring_ws_init()`, `ring_ws_start(model, key, cfg)`, `ring_ws_stop()`,
   `ring_ws_set_listening()`, `ring_ws_send_audio()`, `ring_ws_read_audio()`, `ring_ws_commit()`,
   `ring_ws_state()`, `ring_ws_get_stats()`
@@ -253,12 +263,13 @@ visible. UI design must account for this:
 - Shared infra: `ring_ca_pem()`, `ring_time_sync()`, `ring_nvs_init()`, `ring_nvs_get_str()`,
   `ring_nvs_set_str()`, `ring_json_get_str()`, `ring_json_append()`, `ring_json_append_string()`,
   `ring_byte_ring_*()`, `ring_resample_*()`, `ring_http_init()`, `ring_http_init_bundle()`,
-  `ring_http_read_body()`, `ring_http_sse_line()`
+  `ring_http_read_body()`, `ring_http_read_body_ex()`, `ring_http_sse_init/next/deinit()`
 - RNG: `ring_rand_seed()`, `ring_rand_u32()`, `ring_rand_below()`, `ring_rand_bool()` — do **not**
   replace with `esp_random()`; determinism is the point (a plain LCG breaks `% n` / `& 1`).
 - Secrets: `ring_secret_get(ns, key, build_fallback, out, len)` — NVS wins, else the
   build-time value from `ring_secrets.h`, which is then persisted. Replaces the
-  per-app `load_api_key()` copies.
+  per-app `load_api_key()` copies; `ring_secret_api_key()` is the ready-made
+  `qianwen`/`api_key` wrapper used by the voice apps.
 
 ## Critical fixes already applied — DO NOT revert
 
@@ -414,12 +425,12 @@ that must stay committed are the override *copies* in `components/`
   after reset — `ring_button` reads the BOOT button on it (active-low). Holding it
   at power-up/reset still enters download mode.
 - **`09_hello_smoke_test` is bigger than `00_glyph_grid_reveal`** (~804 KB vs ~733 KB). Not a regression: it is
-  the only app using `lv_font_montserrat_48`, which pulls in the 48 px font tables — but
+  one of several apps using `lv_font_montserrat_48`, which pulls in the 48 px font tables — but
   think before adding another large font.
-- **Image sizes are large and the partition is 3000K.** Measured: `12` 2708 KB, `07` 2604 KB,
-  `06` 1493 KB, `05` 1558 KB, `01` 1127 KB, `08` 1056 KB. `07`/`12` have only ~300–400 KB of
-  headroom, so check `idf.py -B build/<app> size` before adding a dependency that every app
-  links (WebRTC, Opus, a TLS stack).
+- **Image sizes are large and the partition is 3000K.** Measured 2026-11-20 from
+  `build/*/smartring.bin`: `12` 2711 KB, `07` 2642 KB, `06` 1493 KB, `01` 1127 KB.
+  `07`/`12` have only ~300–400 KB of headroom, so check `idf.py -B build/<app> size`
+  before adding a dependency that every app links (WebRTC, Opus, a TLS stack).
 - **A `ringkit` change reaches every app.** `ringkit`'s `PRIV_REQUIRES` still links `esp_peer`,
   `esp_audio_codec`, `esp_http_client` and `esp-tls` into every app (phase 3 moved them out of
   `REQUIRES`, but they are still linked); adding to it grows every image. Module code itself is
@@ -454,6 +465,10 @@ that must stay committed are the override *copies* in `components/`
   over WebSocket, Realtime over WebRTC).
 - `notes/qianwen-ai-platform.md` — 千问 AI 平台 (qianwenai.com) reference: model catalog by category and the API surface
   (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async/batch).
+- `notes/geodis-ai-api.md` — GEODIS Voice Agent API reference (`/token`, Azure Realtime SDP, session schema, tool call).
+- `notes/geodis-push-to-talk-plan.md` — the planned `14_geodis_push_to_talk` app: protocol, state machine, verification.
+- `notes/geodis-code-review.md` — `ring_geodis` design review and the transport ownership model shared with `ring_net`/`ring_ws`.
+- `scripts/README.md` — the four host-side API test clients and their modes.
 - `examples/06_qianwenai_push_to_talk/README.md` — hold-to-talk STT→LLM→TTS cascade (`ring_chat`):
   the three HTTPS stages, audio pipeline, task/memory layout, latency tradeoffs.
 - `examples/10_qianwen_ws_voice_chat/README.md` — WebSocket voice chat: the PCM 16 kHz in / 24 kHz out

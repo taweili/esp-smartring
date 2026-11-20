@@ -47,6 +47,11 @@ CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
 CONFIG_MBEDTLS_X509_CREATE_C=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+# Without this, mbedtls compiles out the certificate expiry / not-before
+# checks (x509_crt.c guards them on MBEDTLS_HAVE_TIME_DATE), so an expired
+# or not-yet-valid server certificate is accepted. SNTP still has to run
+# first — the check compares against the wall clock.
+CONFIG_MBEDTLS_HAVE_TIME_DATE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 # Some CAs (e.g. GlobalSign, used by baidu.com) serve a cross-signed root
 # whose issuer is an older root that is not in the bundle. The default
@@ -59,14 +64,20 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=3
 # --- Bluetooth LE (NimBLE). Only pulled in when an app calls ring_bt_init();
 #     the BT controller/host code is linked into every app but allocates no
 #     RAM at runtime unless the host is started. NimBLE is the lightweight,
-#     BLE-only host; ESP32-S3 has no Bluetooth Classic. See notes/bluetooth.md.
+#     BLE-only host; ESP32-S3 has no Bluetooth Classic. See
+#     examples/08_ble_peripheral/README.md.
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 # CONFIG_BT_BLUEDROID_ENABLED is not set
 CONFIG_BT_CONTROLLER_ENABLED=y
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
 CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=y
-# Persist bonding keys across reboots (needed for "pair once, reconnect".
+# LE Secure Connections only: legacy pairing (unauthenticated TK, no MITM)
+# defeats the `secure_conn = true` intent of the BLE example. Note this symbol
+# is an int (0/1), not a bool.
+CONFIG_BT_NIMBLE_SM_LEGACY=n
+CONFIG_BT_NIMBLE_SM_SC_ONLY=1
+# Persist bonding keys across reboots (needed for "pair once, reconnect").
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
 CONFIG_BT_NIMBLE_MAX_BONDS=3
 

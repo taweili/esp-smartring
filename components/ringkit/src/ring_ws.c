@@ -12,8 +12,10 @@
  *    executes on that task. So the callback does ONLY fragment copies into a
  *    PSRAM reassembly buffer and pushes completed messages to a worker queue
  *    — no JSON, no base64, no LVGL, no flash. A dedicated ring-ws-worker
- *    task drains the queue and does the heavy work; state changes and
- *    transcripts are marshalled to a ring-ws-event task exactly like ring_net.
+ *    task drains the queue and does the heavy work; state changes, transcripts
+ *    and tool calls are marshalled to a ring-ws-event task exactly like
+ *    ring_net / ring_geodis, so application callbacks never run on the WS or
+ *    worker task.
  *  - The session protocol is sequential: connect → session.created → send
  *    session.update → session.updated → READY. Turn mode, voice and audio
  *    format are IDLE-only, so the smart_turn_v2 → server_vad fallback must
@@ -78,7 +80,7 @@ uint32_t ring_ws_now_ms(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-/* State change with event-task notification (same pattern as ring_net). */
+/* State change with event-task notification. Safe from any task. */
 void ring_ws_state_set(ring_ws_state_t st)
 {
     if (ring_ws_s.state_mutex != NULL) {
@@ -95,11 +97,62 @@ void ring_ws_state_set(ring_ws_state_t st)
         xSemaphoreGive(ring_ws_s.state_mutex);
     }
     ESP_LOGI(TAG, "state -> %s", ring_ws_state_name(st));
-    if (ring_ws_s.event_queue) {
-        xQueueOverwrite(ring_ws_s.event_queue, &st);
-        if (ring_ws_s.event_task) {
-            xTaskNotifyGive(ring_ws_s.event_task);
-        }
+
+    if (ring_ws_s.event_queue == NULL) {
+        return;
+    }
+    ring_ws_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = RING_WS_EV_STATE;
+    ev.state = st;
+    if (xQueueSend(ring_ws_s.event_queue, &ev, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "event queue full, state %s not delivered",
+                 ring_ws_state_name(st));
+    }
+}
+
+void ring_ws_emit_text(const char *text, size_t len, bool is_user, bool final,
+                       bool clipped)
+{
+    if (ring_ws_s.event_queue == NULL || text == NULL || len == 0) {
+        return;
+    }
+    ring_ws_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = RING_WS_EV_TEXT;
+    ev.is_user = is_user ? 1 : 0;
+    ev.final = final ? 1 : 0;
+    ev.clipped = clipped ? 1 : 0;
+    if (len > sizeof(ev.text) - 1) {
+        len = sizeof(ev.text) - 1;
+        ev.clipped = 1;
+    }
+    memcpy(ev.text, text, len);
+    ev.text[len] = '\0';
+    ev.len = (uint16_t)len;
+
+    if (xQueueSend(ring_ws_s.event_queue, &ev, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "event queue full, transcript fragment dropped (%u B)",
+                 (unsigned)len);
+    }
+}
+
+void ring_ws_emit_tool(const char *name, const char *args_json)
+{
+    if (ring_ws_s.event_queue == NULL) {
+        return;
+    }
+    ring_ws_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = RING_WS_EV_TOOL;
+    if (name != NULL) {
+        snprintf(ev.tool_name, sizeof(ev.tool_name), "%s", name);
+    }
+    if (args_json != NULL) {
+        snprintf(ev.tool_args, sizeof(ev.tool_args), "%s", args_json);
+    }
+    if (xQueueSend(ring_ws_s.event_queue, &ev, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "event queue full, tool call dropped");
     }
 }
 
@@ -108,11 +161,31 @@ void ring_ws_state_set(ring_ws_state_t st)
 static void event_task(void *arg)
 {
     (void)arg;
+    ring_ws_event_t ev;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        ring_ws_state_t st;
-        if (xQueuePeek(ring_ws_s.event_queue, &st, 0) == pdTRUE && ring_ws_s.state_cb) {
-            ring_ws_s.state_cb(st, ring_ws_s.user);
+        if (xQueueReceive(ring_ws_s.event_queue, &ev, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        switch (ev.kind) {
+        case RING_WS_EV_STATE:
+            if (ring_ws_s.state_cb != NULL) {
+                ring_ws_s.state_cb(ev.state, ring_ws_s.user);
+            }
+            break;
+        case RING_WS_EV_TEXT:
+            if (ring_ws_s.text_cb != NULL) {
+                ring_ws_s.text_cb(ev.text, ev.len, ev.is_user != 0,
+                                  ev.final != 0, ev.clipped != 0,
+                                  ring_ws_s.user);
+            }
+            break;
+        case RING_WS_EV_TOOL:
+            if (ring_ws_s.tool_cb != NULL) {
+                ring_ws_s.tool_cb(ev.tool_name, ev.tool_args, ring_ws_s.user);
+            }
+            break;
+        default:
+            break;
         }
     }
 }
@@ -124,7 +197,7 @@ static void event_task(void *arg)
 static void ws_release(void)
 {
     if (ring_ws_s.msg_queue) { vQueueDelete(ring_ws_s.msg_queue); ring_ws_s.msg_queue = NULL; }
-    if (ring_ws_s.event_queue) { vQueueDelete(ring_ws_s.event_queue); ring_ws_s.event_queue = NULL; }
+    if (ring_ws_s.event_queue) { vQueueDeleteWithCaps(ring_ws_s.event_queue); ring_ws_s.event_queue = NULL; }
     if (ring_ws_s.state_mutex) { vSemaphoreDelete(ring_ws_s.state_mutex); ring_ws_s.state_mutex = NULL; }
     if (ring_ws_s.reasm_ack) { vSemaphoreDelete(ring_ws_s.reasm_ack); ring_ws_s.reasm_ack = NULL; }
     if (ring_ws_s.worker_task) { vTaskDelete(ring_ws_s.worker_task); ring_ws_s.worker_task = NULL; }
@@ -150,7 +223,11 @@ esp_err_t ring_ws_init(ring_ws_state_cb_t state_cb,
     ring_ws_s.user = user;
 
     ring_ws_s.msg_queue = xQueueCreate(16, sizeof(ring_ws_msg_t));
-    ring_ws_s.event_queue = xQueueCreate(1, sizeof(ring_ws_state_t));
+    /* ~14 KB of events: PSRAM, because internal RAM is where the panel buffers
+     * and the IMU task's stack live. */
+    ring_ws_s.event_queue = xQueueCreateWithCaps(RING_WS_EVENT_DEPTH,
+                                                 sizeof(ring_ws_event_t),
+                                                 MALLOC_CAP_SPIRAM);
     ring_ws_s.state_mutex = xSemaphoreCreateMutex();
     ring_ws_s.reasm_ack = xSemaphoreCreateBinary();
     if (ring_ws_s.msg_queue == NULL || ring_ws_s.event_queue == NULL ||
@@ -160,13 +237,13 @@ esp_err_t ring_ws_init(ring_ws_state_cb_t state_cb,
     }
 
     if (ring_byte_ring_init(&ring_ws_s.dl_ring, RING_WS_DL_BYTES, MALLOC_CAP_SPIRAM) != ESP_OK) {
-        ESP_LOGW(TAG, "downlink ring alloc failed (%d bytes)", RING_WS_DL_BYTES);
+        ESP_LOGE(TAG, "downlink ring alloc failed (%d bytes)", RING_WS_DL_BYTES);
         ws_release();
         return ESP_ERR_NO_MEM;
     }
     ring_ws_s.reasm = heap_caps_malloc(RING_WS_REASM_BYTES, MALLOC_CAP_SPIRAM);
     if (ring_ws_s.reasm == NULL) {
-        ESP_LOGW(TAG, "reassembly alloc failed (%d bytes)", RING_WS_REASM_BYTES);
+        ESP_LOGE(TAG, "reassembly alloc failed (%d bytes)", RING_WS_REASM_BYTES);
         ws_release();
         return ESP_ERR_NO_MEM;
     }
@@ -177,7 +254,7 @@ esp_err_t ring_ws_init(ring_ws_state_cb_t state_cb,
     ring_ws_s.pcm24_cap = RING_WS_PCM24_MAX;
     ring_ws_s.pcm24_scratch = heap_caps_malloc(ring_ws_s.pcm24_cap, MALLOC_CAP_SPIRAM);
     if (ring_ws_s.b64_text == NULL || ring_ws_s.pcm24_scratch == NULL) {
-        ESP_LOGW(TAG, "delta scratch alloc failed (%u + %u bytes)",
+        ESP_LOGE(TAG, "delta scratch alloc failed (%u + %u bytes)",
                  (unsigned)ring_ws_s.b64_cap, (unsigned)ring_ws_s.pcm24_cap);
         ws_release();
         return ESP_ERR_NO_MEM;
@@ -186,10 +263,20 @@ esp_err_t ring_ws_init(ring_ws_state_cb_t state_cb,
     ring_resample_decim_init(&ring_ws_s.decim);
     ring_resample_interp_init(&ring_ws_s.interp);
 
-    xTaskCreate(ring_ws_worker_task, "ring-ws-worker", RING_WS_WORKER_STACK, NULL,
-                RING_WS_WORKER_PRIO, &ring_ws_s.worker_task);
-    xTaskCreate(event_task, "ring-ws-event", RING_WS_EVENT_STACK, NULL,
-                RING_WS_EVENT_PRIO, &ring_ws_s.event_task);
+    BaseType_t ok = xTaskCreate(ring_ws_worker_task, "ring-ws-worker",
+                                RING_WS_WORKER_STACK, NULL,
+                                RING_WS_WORKER_PRIO, &ring_ws_s.worker_task);
+    if (ok == pdPASS) {
+        ok = xTaskCreate(event_task, "ring-ws-event", RING_WS_EVENT_STACK,
+                         NULL, RING_WS_EVENT_PRIO, &ring_ws_s.event_task);
+    }
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "task creation failed");
+        if (ring_ws_s.worker_task) { vTaskDelete(ring_ws_s.worker_task); ring_ws_s.worker_task = NULL; }
+        if (ring_ws_s.event_task) { vTaskDelete(ring_ws_s.event_task); ring_ws_s.event_task = NULL; }
+        ws_release();
+        return ESP_ERR_NO_MEM;
+    }
 
     ESP_LOGI(TAG, "initialised");
     return ESP_OK;
@@ -228,6 +315,16 @@ esp_err_t ring_ws_start(const char *model, const char *api_key,
     ring_resample_decim_init(&ring_ws_s.decim);
     ring_resample_interp_init(&ring_ws_s.interp);
     ring_byte_ring_reset(&ring_ws_s.dl_ring);
+
+    /* Drop anything the previous client left behind: a stale DISCONNECTED in
+     * msg_queue would be handled after the reconnect and fail the new session
+     * while it is still CONNECTING, and stale events would confuse the UI. */
+    if (ring_ws_s.msg_queue != NULL) {
+        xQueueReset(ring_ws_s.msg_queue);
+    }
+    if (ring_ws_s.event_queue != NULL) {
+        xQueueReset(ring_ws_s.event_queue);
+    }
 
     /* Tear down any previous client first (B-3). */
     if (ring_ws_s.client != NULL) {
@@ -338,6 +435,9 @@ esp_err_t ring_ws_stop(void)
     ring_byte_ring_reset(&ring_ws_s.dl_ring);
     ring_resample_decim_init(&ring_ws_s.decim);
     ring_resample_interp_init(&ring_ws_s.interp);
+    if (ring_ws_s.event_queue != NULL) {
+        xQueueReset(ring_ws_s.event_queue);
+    }
     ring_ws_state_set(RING_WS_OFF);
     return ESP_OK;
 }

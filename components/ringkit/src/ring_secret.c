@@ -9,6 +9,16 @@
 #include "esp_log.h"
 #include "nvs.h"   /* ESP_ERR_NVS_NOT_FOUND */
 
+/* Optional generated header (build/<app>/config/ring_secrets.h). */
+#if defined(__has_include)
+#  if __has_include("ring_secrets.h")
+#    include "ring_secrets.h"
+#  endif
+#endif
+#ifndef QIANWEN_API_KEY
+#define QIANWEN_API_KEY ""
+#endif
+
 #define TAG "ring_secret"
 
 esp_err_t ring_secret_get(const char *ns, const char *key,
@@ -44,4 +54,9 @@ esp_err_t ring_secret_get(const char *ns, const char *key,
                  esp_err_to_name(err));
     }
     return ESP_OK;
+}
+
+esp_err_t ring_secret_api_key(char *out, size_t len)
+{
+    return ring_secret_get("qianwen", "api_key", QIANWEN_API_KEY, out, len);
 }

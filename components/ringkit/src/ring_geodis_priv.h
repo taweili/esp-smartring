@@ -107,6 +107,7 @@ typedef struct {
     uint8_t             kind;      /* ring_geodis_ev_kind_t */
     uint8_t             is_user;
     uint8_t             final;
+    uint8_t             clipped;
     ring_geodis_state_t state;     /* EV_STATE */
     uint16_t            len;       /* EV_TEXT  */
     char                text[RING_GEODIS_EV_TEXT_MAX];
@@ -226,11 +227,16 @@ typedef struct {
  * task, including the peer task; never calls application code. */
 void ring_geodis_state_set(ring_geodis_state_t st);
 
-/* Queue a transcript fragment for the event task. called on the peer task. */
-void ring_geodis_emit_text(const char *text, size_t len, bool is_user, bool final);
+/* Queue a transcript fragment for the event task. Called on the peer task. */
+void ring_geodis_emit_text(const char *text, size_t len, bool is_user, bool final,
+                           bool clipped);
 
 /* Push decoded downlink PCM onto the ring (defined in ring_geodis_codec.c). */
 void ring_geodis_dl_push(const uint8_t *pcm, size_t len);
+
+/* Feed a synthetic DataChannel frame through the real protocol handler.
+ * Used by the mock transport and host tests. */
+void ring_geodis_dispatch_data_frame(const char *json);
 
 /* Open the Opus encoder/decoder (defined in ring_geodis_codec.c). */
 esp_err_t ring_geodis_opus_open(void);

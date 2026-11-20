@@ -19,9 +19,9 @@
  * Audio: ring_audio is 48 kHz / 16-bit / stereo interleaved; ring_ws is
  * 48 kHz / 16-bit / mono. This file only does the stereo <-> mono fold.
  *
- * Task structure:
- *   qw-connect  8192 B internal  — Wi-Fi + SNTP + WS session + reconnects
- *   qw-talk     8192 B internal  — PTT worker (sequential capture + play)
+ * Task structure (xTaskCreate stacks are in words, so 8192 = 32 KB):
+ *   qw-connect  32 KB internal  — Wi-Fi + SNTP + WS session + reconnects
+ *   qw-talk     32 KB internal  — PTT worker (sequential capture + play)
  *   LVGL task   stats timer      — 1 Hz wire/battery readout
  */
 #include "ring_example.h"
@@ -41,14 +41,6 @@
 #include <string.h>
 
 #define TAG "10_qianwen_ws_voice_chat"
-
-/* ------------------------------------------------------------- config */
-
-#include "ring_secrets.h"
-
-#ifndef QIANWEN_API_KEY
-#define QIANWEN_API_KEY ""
-#endif
 
 #define QIANWEN_MODEL "qwen-audio-3.1-realtime-flash"
 
@@ -141,6 +133,9 @@ static int s_cfg_voice;
 static int s_cfg_rate = 1;   /* index into kRates: 1.0 = normal speed */
 static int s_cfg_lang;
 static volatile bool s_cfg_dirty;
+/* Set by the LVGL callback, consumed by the connect task: an NVS commit must
+ * not run on the LVGL task (it stalls rendering). */
+static volatile bool s_cfg_save_needed;
 
 /* ------------------------------------------------------------- state */
 
@@ -241,16 +236,37 @@ static void ui_level(uint8_t pct, lv_color_t color)
 
 static void ui_talk_transcript(void)
 {
+    /* Copy under the state mutex, release it, then take the LVGL lock. The
+     * talk worker and the ws-event task both write these buffers; holding the
+     * mutex across an LVGL call would invert the lock order. */
+    char user[CHAT_TEXT_MAX];
+    char model[CHAT_TEXT_MAX];
+    xSemaphoreTake(s_state_mtx, portMAX_DELAY);
+    memcpy(user, s_talk_user_buf, sizeof(user));
+    memcpy(model, s_talk_model_buf, sizeof(model));
+    xSemaphoreGive(s_state_mtx);
+
     RING_UI_LOCKED(-1) {
-        lv_label_set_text(s_talk_user, s_talk_user_buf);
-        if (s_talk_model_buf[0]) {
-            lv_label_set_text(s_talk_model, s_talk_model_buf);
-        } else if (s_talk_user_buf[0] == '\0') {
+        lv_label_set_text(s_talk_user, user);
+        if (model[0]) {
+            lv_label_set_text(s_talk_model, model);
+        } else if (user[0] == '\0') {
             lv_label_set_text(s_talk_model, "hold = talk · release = reply");
         } else {
             lv_label_set_text(s_talk_model, "");
         }
     }
+}
+
+/* Start-of-turn reset. The ws-event task may still deliver a final delta for
+ * the previous turn, so this and the callback share s_state_mtx. */
+static void talk_transcript_clear(void)
+{
+    xSemaphoreTake(s_state_mtx, portMAX_DELAY);
+    s_talk_user_buf[0] = '\0';
+    s_talk_model_buf[0] = '\0';
+    s_user_streaming = s_model_streaming = false;
+    xSemaphoreGive(s_state_mtx);
 }
 
 static void ui_netinfo(const char *text, lv_color_t color)
@@ -314,6 +330,10 @@ static void ui_idle(const char *status)
 
 /* ------------------------------------------------------------- chat log */
 
+/* Keep the scrollback bounded: an unbounded list of labels grows LVGL's
+ * object and memory use for the whole session. */
+#define CHAT_MAX_LABELS 60
+
 static void chat_append(bool is_user, const char *text)
 {
     if (!s_ui_ready || text[0] == '\0') {
@@ -328,6 +348,12 @@ static void chat_append(bool is_user, const char *text)
         lv_label_set_text(lbl, text);
         lv_obj_update_layout(s_chat_box);
         lv_obj_scroll_to_y(s_chat_box, LV_COORD_MAX, LV_ANIM_OFF);
+
+        lv_obj_t *oldest = lv_obj_get_child(s_chat_box, 0);
+        while (oldest != NULL && lv_obj_get_child_cnt(s_chat_box) > CHAT_MAX_LABELS) {
+            lv_obj_delete(oldest);
+            oldest = lv_obj_get_child(s_chat_box, 0);
+        }
     }
 }
 
@@ -427,7 +453,7 @@ static void settings_cycle(int row)
     default:
         return;
     }
-    settings_save();
+    s_cfg_save_needed = true;
     s_cfg_dirty = true;
     settings_refresh();
 }
@@ -584,12 +610,21 @@ static void ws_state_cb(ring_ws_state_t st, void *user)
 }
 
 static void ws_text_cb(const char *text, size_t len, bool is_user, bool final,
-                       void *user)
+                       bool clipped, void *user)
 {
     (void)user;
     if (!s_ui_ready) {
         return;
     }
+    if (clipped) {
+        ESP_LOGW(TAG, "%s transcript clipped at %u bytes",
+                 is_user ? "user" : "model", (unsigned)len);
+    }
+
+    char append_buf[CHAT_TEXT_MAX];
+    bool need_append = false;
+
+    xSemaphoreTake(s_state_mtx, portMAX_DELAY);
     char *buf = is_user ? s_talk_user_buf : s_talk_model_buf;
     bool *streaming = is_user ? &s_user_streaming : &s_model_streaming;
 
@@ -599,7 +634,8 @@ static void ws_text_cb(const char *text, size_t len, bool is_user, bool final,
         memcpy(buf, text, n);
         buf[n] = '\0';
         *streaming = false;
-        chat_append(is_user, buf);
+        memcpy(append_buf, buf, CHAT_TEXT_MAX);
+        need_append = true;
     } else {
         /* Streaming deltas are incremental. */
         if (!*streaming) {
@@ -613,27 +649,17 @@ static void ws_text_cb(const char *text, size_t len, bool is_user, bool final,
             buf[cur + n] = '\0';
         }
     }
+    xSemaphoreGive(s_state_mtx);
+
+    if (need_append) {
+        chat_append(is_user, append_buf);
+    }
     ui_talk_transcript();
 }
 
 /* ------------------------------------------------------------- level meter */
 
-static uint8_t level_of(const int16_t *pcm, size_t samples)
-{
-    if (samples == 0) {
-        return 0;
-    }
-    uint32_t acc = 0;
-    for (size_t i = 0; i < samples; i++) {
-        int32_t v = pcm[i];
-        acc += (uint32_t)(v < 0 ? -v : v);
-    }
-    uint32_t avg = acc / (uint32_t)samples;
-    if (avg > 8000) {
-        return 100;
-    }
-    return (uint8_t)(avg * 100 / 8000);
-}
+/* The level meter lives in ringkit (ring_audio_level_pct). */
 
 /* ------------------------------------------------------------- talk turn (PTT) */
 
@@ -700,7 +726,7 @@ static void play_reply(void)
             TickType_t now = xTaskGetTickCount();
             if (now - last_level >= pdMS_TO_TICKS(LEVEL_UPDATE_MS)) {
                 last_level = now;
-                ui_level(level_of(s_reply, got), COL_WS);
+                ui_level(ring_audio_level_pct(s_reply, got), COL_WS);
             }
         } else {
             /* Draining after response.done: stop once the ring is empty. */
@@ -745,9 +771,7 @@ static void talk_worker(void *arg)
     (void)arg;
 
     ESP_LOGI(TAG, "turn: capture");
-    s_talk_user_buf[0] = '\0';
-    s_talk_model_buf[0] = '\0';
-    s_user_streaming = s_model_streaming = false;
+    talk_transcript_clear();
     ui_talk_transcript();
 
     /* Uplink: one 20 ms frame at a time until released. */
@@ -767,12 +791,12 @@ static void talk_worker(void *arg)
         }
         if ((frames++ % 50) == 0) {
             ESP_LOGI(TAG, "uplink frame %u, mic level %u",
-                     (unsigned)frames, level_of(s_mono, FRAME_SAMPLES));
+                     (unsigned)frames, ring_audio_level_pct(s_mono, FRAME_SAMPLES));
         }
         TickType_t now = xTaskGetTickCount();
         if (now - last_level >= pdMS_TO_TICKS(LEVEL_UPDATE_MS)) {
             last_level = now;
-            ui_level(level_of(s_mono, FRAME_SAMPLES), COL_TALK);
+            ui_level(ring_audio_level_pct(s_mono, FRAME_SAMPLES), COL_TALK);
         }
     }
 
@@ -912,9 +936,8 @@ static void btn_cb(lv_event_t *e)
 
 static void load_api_key(void)
 {
-    if (ring_secret_get("qianwen", "api_key", QIANWEN_API_KEY,
-                        s_api_key, sizeof(s_api_key)) != ESP_OK) {
-        ESP_LOGE(TAG, "no API key: set QIANWEN_API_KEY");
+    if (ring_secret_api_key(s_api_key, sizeof(s_api_key)) != ESP_OK) {
+        ESP_LOGE(TAG, "no API key: see README");
     }
 }
 
@@ -959,6 +982,12 @@ static void connect_task(void *arg)
     ui_status("connecting to model…", COL_DIM);
 
     for (;;) {
+        /* Persist setting changes from the connect task, never the LVGL task:
+         * nvs_commit() can block for the duration of a flash write. */
+        if (s_cfg_save_needed) {
+            s_cfg_save_needed = false;
+            settings_save();
+        }
         settings_apply();
         if (ring_ws_start(QIANWEN_MODEL, s_api_key, &s_ws_cfg) == ESP_OK) {
             ESP_LOGI(TAG, "session up — supervising");

@@ -132,7 +132,7 @@ static void mock_task_entry(void *arg)
 
         /* The user's utterance arrives transcribed before the reply does. */
         ring_geodis_emit_text(k_mock_user_line, strlen(k_mock_user_line),
-                              true, true);
+                              true, true, false);
 
         ring_geodis_s.speaking = true;
         ring_geodis_state_set(RING_GEODIS_SPEAKING);
@@ -143,7 +143,15 @@ static void mock_task_entry(void *arg)
         uint32_t tool_ms = mock_ms(mock_cfg.tool_ms, MOCK_TOOL_MS);
         if (tool_ms > 0) {
             vTaskDelay(pdMS_TO_TICKS(tool_ms));
-            ring_geodis_emit_text("Je vérifie votre colis…", 22, false, false);
+            ring_geodis_emit_text("Je vérifie votre colis…", 22, false, false,
+                                  false);
+            /* Drive the real protocol handler so the tool task, tool_cb and
+             * the lookup_unavailable path all run under the mock. */
+            ring_geodis_dispatch_data_frame(
+                "{\"type\":\"response.function_call_arguments.done\","
+                "\"call_id\":\"mock-call-1\","
+                "\"name\":\"rechercher_base_geodis\","
+                "\"arguments\":\"{\\\"question\\\":\\\"où est mon colis ?\\\"}\"}");
         }
 
         mock_play_reply();
@@ -156,7 +164,7 @@ static void mock_task_entry(void *arg)
             ring_geodis_state_set(RING_GEODIS_READY);
         }
         ring_geodis_emit_text(k_mock_reply_line, strlen(k_mock_reply_line),
-                              false, true);
+                              false, true, false);
         ESP_LOGI(TAG, "mock: turn complete");
     }
 }

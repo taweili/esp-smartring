@@ -219,23 +219,14 @@ int ring_bt_gap_event(struct ble_gap_event *event, void *arg)
     }
 
     case BLE_GAP_EVENT_PASSKEY_ACTION: {
-        struct ble_sm_io pkey = {0};
-        pkey.action = event->passkey.params.action;
-        switch (event->passkey.params.action) {
-        case BLE_SM_IOACT_DISP:
-            /* Show on the peer (or here) — inject a fixed demo passkey. */
-            pkey.passkey = 123456;
-            ble_sm_inject_io(event->passkey.conn_handle, &pkey);
-            ESP_LOGI(TAG, "passkey 123456 injected");
-            break;
-        case BLE_SM_IOACT_NUMCMP:
-            /* Auto-accept numeric comparison for a button-less ring. */
-            pkey.numcmp_accept = 1;
-            ble_sm_inject_io(event->passkey.conn_handle, &pkey);
-            break;
-        default:
-            break;
-        }
+        /* The ring has no display or keypad, so it cannot show or enter a
+         * passkey. Injecting a fixed value (or auto-accepting numeric
+         * comparison) would make the association model trivially defeatable;
+         * leave the request unanswered so the host fails the pairing. With
+         * the example's NO_IO capability this callback never fires. */
+        ESP_LOGW(TAG, "passkey action %d requested but the device has no IO "
+                       "capability; failing pairing",
+                 (int)event->passkey.params.action);
         return 0;
     }
 

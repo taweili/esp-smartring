@@ -7,6 +7,14 @@
  * This header is the shared contract between them.
  *
  * Not part of the public API — applications include ringkit/ring_net.h only.
+ *
+ * Ownership model (mirrors ring_geodis):
+ *  - `ring-net-peer` is the ONLY task that calls esp_peer_open()/close().
+ *    Everybody else touches the handle under peer_lock and asks for teardown
+ *    via peer_close_req, waiting on peer_gone. Without this, stop()/retry
+ *    frees the DTLS/SRTP state while esp_peer_main_loop() is inside it.
+ *  - The peer task may only ever *enqueue* events; application callbacks run
+ *    on `ring-net-event`, which owns the LVGL lock.
  */
 #pragma once
 
@@ -62,6 +70,35 @@
 #define RING_NET_HTTP_TIMEOUT_MS        10000
 #define RING_NET_SNTP_TIMEOUT_MS        15000
 #define RING_NET_SESSION_TIMEOUT_MS     20000
+/* A peer that will not let go within this window is wedged; start()/stop()
+ * report it rather than blocking the caller for ever. */
+#define RING_NET_PEER_CLOSE_TIMEOUT_MS  3000
+
+/* ------------------------------------------------------------- events
+ *
+ * Everything the application is told arrives as one of these, on the
+ * `ring-net-event` task. The queue is the ordering: a burst of
+ * READY -> LISTENING -> SPEAKING is three events, not one overwritten cell.
+ * The peer task may only ever enqueue; it never calls application code.
+ */
+
+#define RING_NET_EV_TEXT_MAX  256
+#define RING_NET_EVENT_DEPTH  24
+
+typedef enum {
+    RING_NET_EV_STATE = 0,
+    RING_NET_EV_TEXT,
+} ring_net_ev_kind_t;
+
+typedef struct {
+    uint8_t             kind;      /* ring_net_ev_kind_t */
+    uint8_t             is_user;
+    uint8_t             final;
+    uint8_t             clipped;
+    ring_net_state_t    state;     /* EV_STATE */
+    uint16_t            len;       /* EV_TEXT */
+    char                text[RING_NET_EV_TEXT_MAX];
+} ring_net_event_t;
 
 /* ------------------------------------------------------------- state */
 
@@ -78,6 +115,21 @@ typedef struct {
 
     char                     model[64];
     char                     api_key[128];
+
+    /* Peer ownership. Only `ring-net-peer` calls esp_peer_open()/
+     * esp_peer_close(); everybody else uses the handle under peer_lock and
+     * requests teardown via peer_close_req. */
+    SemaphoreHandle_t        peer_lock;
+    SemaphoreHandle_t        peer_gone;
+    volatile bool            peer_close_req;
+    /* Set once esp_peer_new_connection() has returned: the main loop must not
+     * run against a connection that is still being built. */
+    volatile bool            peer_ready;
+
+    /* Bumped per session. The signal task stamps its POST with the generation
+     * it started under and drops the answer if a new session began meanwhile. */
+    volatile uint32_t        session_gen;
+    esp_err_t                last_err;
 
     /* SCTP stream the server's event channel ('txt') uses. The server pushes
      * session events on its own channel and expects replies on the same one,
@@ -107,7 +159,7 @@ typedef struct {
     /* Downlink PCM ring buffer (48 kHz mono). */
     ring_byte_ring_t         dl_ring;
 
-    QueueHandle_t            event_queue;
+    QueueHandle_t            event_queue;   /* ring_net_event_t */
     SemaphoreHandle_t        state_mutex;
     volatile bool            speaking;
 
@@ -121,8 +173,13 @@ extern ring_net_ctx_t ring_net_s;
  *
  * Defined in ring_net.c unless noted. */
 
-/* Update the state and notify the event task (safe from any task). */
+/* Update the state and queue a transition for the event task. Safe from any
+ * task, including the peer task; never calls application code. */
 void ring_net_state_set(ring_net_state_t st);
+
+/* Queue a transcript fragment for the event task. Called on the peer task. */
+void ring_net_emit_text(const char *text, size_t len, bool is_user, bool final,
+                        bool clipped);
 
 /* Push decoded downlink PCM onto the ring (defined in ring_net_codec.c). */
 void ring_net_dl_push(const uint8_t *pcm, size_t len);
@@ -130,8 +187,11 @@ void ring_net_dl_push(const uint8_t *pcm, size_t len);
 /* Open the Opus encoder/decoder (defined in ring_net_codec.c). */
 esp_err_t ring_net_opus_open(void);
 
-/* Peer bring-up (defined in ring_net_signaling.c). */
+/* Peer bring-up and SDP exchange (defined in ring_net_signaling.c). */
 esp_err_t ring_net_peer_open(void);
+esp_err_t ring_net_peer_close(void);
+esp_err_t ring_net_peer_connect(void);
+esp_err_t ring_net_peer_disconnect(void);
 
 /* Task entry points (defined where their work lives). */
 void ring_net_signal_task(void *arg);   /* ring_net_signaling.c */

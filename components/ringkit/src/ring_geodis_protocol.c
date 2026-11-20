@@ -217,24 +217,26 @@ static void handle_event(const char *json)
         ESP_LOGW(TAG, "model error: %s%s%s", code[0] ? code : "?",
                  msg[0] ? " — " : "", msg);
     } else if (ring_json_type_is(json, "conversation.item.input_audio_transcription.completed")) {
-        char text[256];
+        char text[RING_GEODIS_TEXT_MAX];
         size_t len = 0;
-        if (ring_json_get_str(json, "transcript", text, sizeof(text), &len)) {
-            ring_geodis_emit_text(text, len, true, true);
+        bool trunc = false;
+        if (ring_json_get_str_ex(json, "transcript", text, sizeof(text),
+                                 &len, &trunc)) {
+            ring_geodis_emit_text(text, len, true, true, trunc);
         }
     } else if (ring_json_type_is(json, "response.output_audio_transcript.delta")) {
         char text[RING_GEODIS_TEXT_MAX];
         size_t len = 0;
         bool trunc = false;
         if (ring_json_get_str_ex(json, "delta", text, sizeof(text), &len, &trunc)) {
-            ring_geodis_emit_text(text, len, false, false);
+            ring_geodis_emit_text(text, len, false, false, trunc);
         }
     } else if (ring_json_type_is(json, "response.output_audio_transcript.done")) {
         char text[RING_GEODIS_TEXT_MAX];
         size_t len = 0;
         bool trunc = false;
         if (ring_json_get_str_ex(json, "transcript", text, sizeof(text), &len, &trunc)) {
-            ring_geodis_emit_text(text, len, false, true);
+            ring_geodis_emit_text(text, len, false, true, trunc);
             if (trunc) {
                 ESP_LOGW(TAG, "assistant transcript longer than %d B, clipped",
                          RING_GEODIS_TEXT_MAX - 1);
@@ -245,10 +247,18 @@ static void handle_event(const char *json)
     }
 }
 
+/* Entry point for the mock transport (and host tests): feed a synthetic
+ * DataChannel frame through the real protocol handler. */
+void ring_geodis_dispatch_data_frame(const char *json)
+{
+    if (json != NULL) {
+        handle_event(json);
+    }
+}
+
 /* DataChannel frames arrive as JSON strings. */
 int ring_geodis_on_data_frame(esp_peer_data_frame_t *frame, void *ctx)
-{
-    (void)ctx;
+{    (void)ctx;
     if (frame == NULL || frame->data == NULL || frame->size <= 0) {
         return 0;
     }
@@ -339,6 +349,11 @@ esp_err_t ring_geodis_cancel(void)
     /* Drop the audio already decoded into the playback buffer, or the ring
      * keeps talking after it was cancelled (and feeds its own microphone). */
     ring_byte_ring_reset(&ring_geodis_s.dl_ring);
+    /* Back to READY even if the cancel send failed or response.done is lost:
+     * the alternative is a session stuck in SPEAKING with the uplink closed. */
+    if (ring_geodis_state() == RING_GEODIS_SPEAKING) {
+        ring_geodis_state_set(RING_GEODIS_READY);
+    }
     return ret;
 }
 

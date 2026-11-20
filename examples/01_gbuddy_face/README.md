@@ -48,12 +48,12 @@ That script + `tools/lvgl_img_pack.py` produce `lv_image_dsc_t` C files
 | `eye_open` / `eye_joy` / `eye_sad` (L,R) | `180x230+769+356`, `180x230+1093+356` | 118×150 | 53,100 each |
 | `mouth_smile` / `_o` / `_frown` / `_grin` | `168x122+940+543` | 110×80 | 26,400 each |
 
-**Assets: 424,200 B** (6 eyes + 4 mouths). `smartring.bin` = **1,153,600 B**, leaving
-**382,912 B** free in the 1500 KiB partition. Adding moods costs ~53 KB (eye pair) + 26 KB
+**Assets: 424,200 B** (6 eyes + 4 mouths). `smartring.bin` = **1,153,808 B**, leaving
+**~1.9 MB** free in the 3000K factory partition (`partitions.csv`). Adding moods costs ~53 KB (eye pair) + 26 KB
 (mouth) of flash per expression.
 
-Labels live on a `face` container (360×222 at panel `y = 69`) holding `eye_l` at (15,24),
-`eye_r` at (227,24) and `mouth` at (125,153) — container-relative, so a whole-face motion
+Labels live on a `face` container (360×222 at panel `y = 69`) holding `eye_l` at (12,24),
+`eye_r` at (224,24) and `mouth` at (124,146) — container-relative, so a whole-face motion
 is one handle and no ±69 offsets leak into timer callbacks.
 
 ### Cutting a sprite
@@ -97,20 +97,18 @@ Palette (`I8`/`I4`) images are **not** drawable by this LVGL SW renderer, so
 | Animation | Period / duration | Mechanism |
 |---|---|---|
 | idle blink | every 2.5–6 s, 110 ms | swap to the `eye_joy` sprite |
-| saccade | every 0.8–3 s, 60–140 ms | `translate_x/y`, ±6 px x / ±3 px y |
-| breathing | 4.2 s | ±1.5 px y on eyes, ±1 px on the container |
-| mood change | 180 ms | sprite swap + short scale/alpha |
-| boot | 900 ms | eyes fade in, mouth scale 0.8→1.0 |
+| boot fade | 700 ms, once at start | eyes + mouth opacity 0→255 |
+| gaze (tilt) | 40 ms tick | `translate_x/y` toward the low side, ±8 px x / ±3 px y, low-passed |
+| gaze (twist) | 40 ms tick | integrated gyro Z throws the gaze, decays when still |
 
 | Trigger | Effect |
 |---|---|
-| tap (`LV_EVENT_CLICKED`) | next mood; back to idle after 2.5 s |
+| tap (`LV_EVENT_SHORT_CLICKED`) | next mood |
 | long-press | sleep: eyes shut, backlight 100→20 % |
-| any press while asleep | wake, happy, restore backlight **before** the next mood change |
+| tap or long-press while asleep | wake, restore backlight, keep the current mood |
 | IMU tilt | both eyes drift to the low side, low-passed, clamped |
 | gyro twist (z) | fast glance sideways, returns on stop |
-| battery ≤ 15 % | forced sad, polled every ~10 s |
-| charging | glow pulse ×2 |
+| battery ≤ 15 % (not charging) | forced sad, polled every 5 s |
 
 `lv_timer`/`lv_anim` callbacks run on the adapter task, which already holds the
 (recursive) LVGL lock; the app still uses `RING_UI_LOCKED(-1)` for its own discipline.

@@ -49,16 +49,34 @@ esp_http_client_handle_t ring_http_init_bundle(const char *url, int timeout_ms,
 /** Set `Authorization: Bearer <key>`. */
 esp_err_t ring_http_set_bearer(esp_http_client_handle_t c, const char *api_key);
 
+/** Longest API key ring_http_set_bearer() will put into the header. */
+#define RING_HTTP_MAX_BEARER_KEY  160
+
 /**
  * @brief Read the whole response body (chunked-safe) into @p buf.
+ *
+ * A negative return from `esp_http_client_read()` is a transport error, not
+ * end-of-stream: it is reported as ESP_ERR_INVALID_RESPONSE rather than being
+ * silently treated as a short (but successful) body.
  *
  * @param buf      Destination (NUL-terminated).
  * @param cap      Capacity.
  * @param out_len  Optional: bytes read.
- * @return ESP_OK when at least one byte was read.
+ * @return ESP_OK when at least one byte was read, ESP_ERR_INVALID_RESPONSE on
+ *         a transport error or an empty body.
  */
 esp_err_t ring_http_read_body(esp_http_client_handle_t c,
                               char *buf, size_t cap, int *out_len);
+
+/**
+ * @brief Same as ring_http_read_body(), plus an explicit truncation flag.
+ *
+ * @param truncated  Optional; set when the body did not fit in @p buf (the
+ *                   stored text is then a prefix, not the whole body).
+ */
+esp_err_t ring_http_read_body_ex(esp_http_client_handle_t c,
+                                 char *buf, size_t cap, int *out_len,
+                                 bool *truncated);
 
 /**
  * @brief Buffered SSE reader.
@@ -74,7 +92,8 @@ typedef struct {
     size_t carry_cap;
     char  *line;         /**< growable line buffer */
     size_t line_cap;
-    bool   eof;
+    bool   eof;          /**< clean end of stream (read returned 0) */
+    bool   err;          /**< transport error (read returned < 0) */
 } ring_http_sse_t;
 
 /**
@@ -93,9 +112,9 @@ void ring_http_sse_deinit(ring_http_sse_t *s);
  * The returned pointer is valid until the next call. CR is stripped.
  *
  * @param s          Reader.
- * @param truncated  Optional; set when the line had to be truncated.
- * @return the line, or NULL at the end of the stream (or on allocation
- *         failure, with @p truncated set).
+ * @param truncated  Optional; set when a scratch buffer could not be grown.
+ * @return the line, or NULL at the end of the stream. A transport error also
+ *         returns NULL; check @c s->err afterwards to tell the two apart.
  */
 const char *ring_http_sse_next(ring_http_sse_t *s, bool *truncated);
 

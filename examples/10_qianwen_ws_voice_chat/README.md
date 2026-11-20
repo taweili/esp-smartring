@@ -211,7 +211,7 @@ touch ──► LVGL task ──► 10_qianwen_ws_voice_chat
 
 | | 07 (`ring_net`) | 10 (`ring_ws`) |
 |---|---|---|
-| Audio task stack | **64 KB**, PSRAM (`xTaskCreateWithCaps`) — stereo Opus | **8 KB**, internal RAM — no codec |
+| Audio task stack | **128 KB**, PSRAM (`xTaskCreateWithCaps`) — stereo Opus | **32 KB**, internal RAM — no codec |
 | Downlink ring | 4 s / 384 KB PSRAM (`RING_NET_DL_BYTES`), newest-wins | 4 s / 192 KB PSRAM (24 kHz mono), newest-wins |
 | Uplink scratch | 20 ms mono→stereo up-mix | 20 ms 48k→16k decimate |
 | Reassembly | n/a | 64 KB PSRAM |
@@ -224,13 +224,14 @@ FreeRTOS stacks come from internal RAM only, which is why 07 needs
 ## Build & flash
 
 ```bash
-idf.py -DRING_APP=10_qianwen_ws_voice_chat -DQIANWEN_API_KEY="sk-ws-..." \
-       -B build/10_qianwen_ws_voice_chat build
-idf.py -B build/10_qianwen_ws_voice_chat -p /dev/ttyACM0 flash
-idf.py -B build/10_qianwen_ws_voice_chat -p /dev/ttyACM0 monitor
+# with QIANWEN_API_KEY in ./secrets.local:
+tools/dev.sh build 10_qianwen_ws_voice_chat
+tools/dev.sh flash 10_qianwen_ws_voice_chat
+tools/dev.sh monitor 10_qianwen_ws_voice_chat
 ```
 
-Use the **same `-B`** for build/flash/monitor.
+Use the **same app/build dir** for build/flash/monitor. Never pass the key as a
+CMake `-D`: it would be cached in `CMakeCache.txt` in plaintext.
 
 ## Configuration
 
@@ -354,9 +355,11 @@ Decisions that are easy to get wrong when modifying this path:
   the user.
 - **Bandwidth ~120 KB/s** (16 kHz PCM + 33% base64 overhead) vs ~32 kbps for
   Opus. The Chat screen makes the cost visible.
-- **No function calling yet** (planned for a later phase).
-- **Transcript buffers are 256 B.** Longer replies are truncated on screen;
-  the full text is in the log.
+- **Function calling** is implemented in `ring_ws` (`response.function_call_arguments.done`
+  → `tool_cb`), but this app passes `tool_cb = NULL`; wiring it to the UI is a
+  later phase.
+- **Transcript buffers are 256 B.** Longer replies are clipped: the callback's
+  `clipped` flag is set and a warning is logged.
 
 ## Verification checklist
 

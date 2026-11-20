@@ -42,6 +42,18 @@ extern "C" {
 esp_err_t ring_secret_get(const char *ns, const char *key,
                           const char *build_fallback, char *out, size_t len);
 
+/**
+ * @brief Load the Qianwen API key (NVS `qianwen`/`api_key`, else the build-time
+ *        `QIANWEN_API_KEY` from the generated `ring_secrets.h`).
+ *
+ * Convenience wrapper so the voice examples do not each carry the
+ * `ring_secrets.h` include + fallback block.
+ *
+ * @return ESP_OK, or ESP_ERR_NOT_FOUND when neither NVS nor the build supplied
+ *         a key.
+ */
+esp_err_t ring_secret_api_key(char *out, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

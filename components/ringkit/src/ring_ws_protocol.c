@@ -234,37 +234,39 @@ void ring_ws_worker_handle_text(const char *json, int len)
     }
     if (ring_json_type_is(json, "response.audio_transcript.delta") ||
         ring_json_type_is(json, "response.text.delta")) {
-        if (ring_ws_s.text_cb) {
-            char text[256];
-            size_t tlen = 0;
-            if (ring_json_get_str(json, "delta", text, sizeof(text), &tlen)) {
-                ring_ws_s.text_cb(text, tlen, false, false, ring_ws_s.user);
-            }
+        char text[RING_WS_EV_TEXT_MAX];
+        size_t tlen = 0;
+        bool trunc = false;
+        if (ring_json_get_str_ex(json, "delta", text, sizeof(text),
+                                 &tlen, &trunc)) {
+            ring_ws_emit_text(text, tlen, false, false, trunc);
         }
         return;
     }
     if (ring_json_type_is(json, "response.audio_transcript.done")) {
-        char text[256];
+        char text[RING_WS_EV_TEXT_MAX];
         size_t tlen = 0;
+        bool trunc = false;
         /* The Qianwen/OpenAI shape calls the finished string "transcript";
          * "text" is accepted as a fallback. */
-        if (ring_json_get_str(json, "transcript", text, sizeof(text), &tlen) ||
-            ring_json_get_str(json, "text", text, sizeof(text), &tlen)) {
-            ESP_LOGI(TAG, "reply: %s", text);
-            if (ring_ws_s.text_cb) {
-                ring_ws_s.text_cb(text, tlen, false, true, ring_ws_s.user);
-            }
+        bool got = ring_json_get_str_ex(json, "transcript", text, sizeof(text),
+                                        &tlen, &trunc) ||
+                   ring_json_get_str_ex(json, "text", text, sizeof(text),
+                                        &tlen, &trunc);
+        if (got) {
+            ESP_LOGI(TAG, "reply: %s%s", text, trunc ? " (clipped)" : "");
+            ring_ws_emit_text(text, tlen, false, true, trunc);
         }
         return;
     }
     if (ring_json_type_is(json, "conversation.item.input_audio_transcription.completed")) {
-        char text[256];
+        char text[RING_WS_EV_TEXT_MAX];
         size_t tlen = 0;
-        if (ring_json_get_str(json, "transcript", text, sizeof(text), &tlen)) {
-            ESP_LOGI(TAG, "heard: %s", text);
-            if (ring_ws_s.text_cb) {
-                ring_ws_s.text_cb(text, tlen, true, true, ring_ws_s.user);
-            }
+        bool trunc = false;
+        if (ring_json_get_str_ex(json, "transcript", text, sizeof(text),
+                                 &tlen, &trunc)) {
+            ESP_LOGI(TAG, "heard: %s%s", text, trunc ? " (clipped)" : "");
+            ring_ws_emit_text(text, tlen, true, true, trunc);
         }
         return;
     }
@@ -274,15 +276,17 @@ void ring_ws_worker_handle_text(const char *json, int len)
         size_t nl = 0, al = 0;
         ring_json_get_str(json, "name", name, sizeof(name), &nl);
         ring_json_get_str(json, "arguments", args, sizeof(args), &al);
-        if (ring_ws_s.tool_cb) {
-            if (nl > 0) {
-                ring_ws_s.tool_cb(name, args, ring_ws_s.user);
+        if (nl > 0) {
+            if (ring_ws_s.tool_cb == NULL) {
+                /* Without a handler the model waits forever for a
+                 * function_call_output; say so instead of failing silently. */
+                ESP_LOGW(TAG, "function call '%s' (%u B args) but no tool_cb registered",
+                         name, (unsigned)al);
             }
-        } else if (nl > 0) {
-            /* Without a handler the model waits forever for a
-             * function_call_output; say so instead of failing silently. */
-            ESP_LOGW(TAG, "function call '%s' (%u B args) but no tool_cb registered",
-                     name, (unsigned)al);
+            ring_ws_emit_tool(name, args);
+        } else {
+            ESP_LOGW(TAG, "function call (%u B args) without a name",
+                     (unsigned)al);
         }
         return;
     }

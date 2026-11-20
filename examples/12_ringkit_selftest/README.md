@@ -6,7 +6,7 @@ result on the round screen and in the serial log.
 `main.c` already brings the board up (display, battery, power, audio, SD, IMU)
 and logs the `ringkit:` summary. This app goes one level deeper: it probes each
 peripheral through the ringkit API, then initialises the optional modules
-(Wi-Fi, BLE, and the three voice modules) and tears the voice sessions back
+(Wi-Fi, BLE, and the four voice modules) and tears the voice sessions back
 down.
 
 ## What it checks
@@ -24,6 +24,7 @@ down.
 | `ring_net` | `ring_net_init` → `ring_net_stop` |
 | `ring_ws` | `ring_ws_init` → `ring_ws_stop` |
 | `ring_chat` | `ring_chat_init` (no network call) |
+| `ring_geodis` | `ring_geodis_init` → `ring_geodis_stop` |
 
 The voice modules are only initialised and stopped — a full voice turn needs a
 network and a human (see `06`, `07`, `10`). `ring_net` and `ring_ws` have no
@@ -43,7 +44,7 @@ Or, with the secrets/env wrapper:
 ```bash
 tools/dev.sh build 12_ringkit_selftest
 tools/dev.sh flash 12_ringkit_selftest
-tools/dev.sh monitor
+tools/dev.sh monitor 12_ringkit_selftest
 ```
 
 ## Expected log

@@ -6,7 +6,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 
 | App | Description |
 |-----|-------------|
-| `00_glyph_grid_reveal` | Full-screen glyph grid with a layered center-out reveal and hue-cycling accents. Touch to open/close. |
+| `00_glyph_grid_reveal` | Full-screen 13×13 glyph grid with a layered center-out reveal driven by the ring's gyro; tap resets to the idle core. |
 | `01_gbuddy_face` | The GEODIS buddy face: four expressions cut out of `medias/gbuddy-00N.png` as alpha sprites — blinks, IMU gaze, twist look, sleep on hold, battery mood. See `01_gbuddy_face/README.md`. |
 | `02_imu_dashboard` | Live IMU dashboard: bubble level (tilt) + accel (m/s²) + gyro (°/s) + temperature + level calibration. Tap to calibrate. See `02_imu_dashboard/README.md`. |
 | `03_gesture_probe` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. See `03_gesture_probe/README.md`. |
@@ -66,6 +66,7 @@ examples/10_my_app/
 ├── CMakeLists.txt          # sets RING_EXAMPLE_SRCS / _INCLUDE_DIRS / _REQUIRES
 ├── include/ring_example.h  # copy from an existing example (identical)
 └── my_app.c                # ring_example_start() + ring_example_name()
+```
 
 ## Adding a dependency
 
@@ -73,7 +74,6 @@ If your app needs a component that ringkit doesn't already require (e.g.
 `esp_websocket_client`), add it to `main/idf_component.yml` — the single
 manifest used by every app. Do **not** add an `idf_component.yml` under
 examples/.
-```
 
 `examples/10_my_app/CMakeLists.txt` is three lines:
 
@@ -89,7 +89,9 @@ Rules:
 
 - Use the directory name for the app: `NN_short_description` (e.g.
   `10_my_app`), `[a-z0-9_]+`. The two-digit prefix fixes the order in this
-  README and in `ls`; pick the next free number.
+  README and in `ls`; pick the next free number. (`11` is skipped on purpose:
+  it was reserved for a QUIC transport that was dropped before it existed, so
+  the next free number is `14`.)
 - **Do not** add an `idf_component.yml` per example. Managed dependencies live
   in `main/idf_component.yml`.
 - An app may carry its own `README.md` for a design/spec (see
@@ -103,7 +105,8 @@ Rules:
 
 `components/ringkit/` wraps the whole BSP: `ring_board`, `ring_display`,
 `ring_touch`, `ring_battery`, `ring_power`, `ring_button`, `ring_audio`,
-`ring_imu`, `ring_sd`, `ring_wifi`, `ring_bt`, the three voice transports
-(`ring_chat` HTTPS cascade, `ring_ws` WebSocket, `ring_net` WebRTC),
-`ring_secret`, plus `ring_ui` (lock/helpers), `ring_theme` (colours, geometry,
-timings) and `ring_rand` (deterministic xorshift32).
+`ring_imu`, `ring_sd`, `ring_wifi`, `ring_bt`, the four voice transports
+(`ring_chat` HTTPS cascade, `ring_ws` WebSocket, `ring_net` WebRTC,
+`ring_geodis` GEODIS/Azure WebRTC), `ring_secret`, plus `ring_ui` (lock/helpers),
+`ring_theme` (colours, geometry, timings) and `ring_rand` (deterministic
+xorshift32).

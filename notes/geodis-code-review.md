@@ -21,7 +21,7 @@ tests.
 
 ## 0. The missing piece: there is no example
 
-`examples/14_geodis_voice_chat/README.md` was deleted in `e74209e` ("drop the planned … example READMEs"), and the app itself never existed. So:
+`examples/14_geodis_voice_chat/README.md` was deleted in `e74209e` ("drop the planned … example READMEs"), and the app itself never existed. So: <!-- docs-ignore -->
 
 - `components/ringkit/README.md:47` still points at **`examples/14`** — a phantom.
 - `notes/geodis-push-to-talk-plan.md` §5 specifies `examples/14_geodis_push_to_talk` as if it were next.

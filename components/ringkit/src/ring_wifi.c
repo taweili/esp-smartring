@@ -232,6 +232,10 @@ esp_err_t ring_wifi_start(void)
     snprintf((char *)wc.sta.ssid, sizeof(wc.sta.ssid), "%s", ssid);
     snprintf((char *)wc.sta.password, sizeof(wc.sta.password), "%s", pass);
     wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    /* Protected Management Frames: without them an unauthenticated
+     * deauth/disassoc frame can kick the station off the AP. */
+    wc.sta.pmf_cfg.capable = true;
+    wc.sta.pmf_cfg.required = false;
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "set_mode failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wc), TAG, "set_config failed");

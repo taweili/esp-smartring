@@ -108,7 +108,8 @@ void ring_geodis_state_set(ring_geodis_state_t st)
     }
 }
 
-void ring_geodis_emit_text(const char *text, size_t len, bool is_user, bool final)
+void ring_geodis_emit_text(const char *text, size_t len, bool is_user, bool final,
+                           bool clipped)
 {
     if (ring_geodis_s.event_queue == NULL || text == NULL || len == 0) {
         return;
@@ -118,8 +119,10 @@ void ring_geodis_emit_text(const char *text, size_t len, bool is_user, bool fina
     ev.kind = RING_GEODIS_EV_TEXT;
     ev.is_user = is_user ? 1 : 0;
     ev.final = final ? 1 : 0;
+    ev.clipped = clipped ? 1 : 0;
     if (len > sizeof(ev.text) - 1) {
         len = sizeof(ev.text) - 1;
+        ev.clipped = 1;
     }
     memcpy(ev.text, text, len);
     ev.text[len] = '\0';
@@ -150,7 +153,8 @@ static void event_task(void *arg)
         } else if (ev.kind == RING_GEODIS_EV_TEXT) {
             if (ring_geodis_s.text_cb != NULL) {
                 ring_geodis_s.text_cb(ev.text, ev.len, ev.is_user != 0,
-                                      ev.final != 0, ring_geodis_s.user);
+                                      ev.final != 0, ev.clipped != 0,
+                                      ring_geodis_s.user);
             }
         }
     }
@@ -215,10 +219,14 @@ esp_err_t ring_geodis_init(ring_geodis_state_cb_t state_cb,
         return ESP_ERR_NO_MEM;
     }
 
-    /* The downlink buffer is 384 KB: it must live in PSRAM, not internal RAM. */
+    /* The downlink buffer is 384 KB: it must live in PSRAM, not internal RAM.
+     * Without it the session reports READY but never plays anything, so fail
+     * init rather than continue silently. */
     if (ring_byte_ring_init(&ring_geodis_s.dl_ring, RING_GEODIS_DL_BYTES, MALLOC_CAP_SPIRAM) != ESP_OK) {
-        ESP_LOGW(TAG, "downlink ring allocation failed (%d bytes)",
+        ESP_LOGE(TAG, "downlink ring allocation failed (%d bytes)",
                  RING_GEODIS_DL_BYTES);
+        geodis_release();
+        return ESP_ERR_NO_MEM;
     }
 
     esp_err_t err = ring_geodis_opus_open();

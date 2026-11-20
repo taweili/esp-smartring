@@ -19,6 +19,7 @@
 #include "ring_bt_priv.h"
 
 #include "ringkit/ring_nvs.h"
+#include "ringkit/ring_battery.h"
 
 #include <string.h>
 
@@ -242,4 +243,84 @@ uint16_t ring_bt_conn_handle(void)
     h = s_ctx.conn_handle;
     ring_bt_state_unlock();
     return h;
+}
+
+/* ------------------------------------------------------------- demo DB */
+
+static char s_demo_cmd[32] = "";
+
+static esp_err_t demo_access(uint16_t conn_handle, uint16_t chr_uuid,
+                             bool is_read, const uint8_t *data, size_t len,
+                             uint8_t *out, size_t *out_len, void *user)
+{
+    (void)conn_handle; (void)user;
+
+    if (chr_uuid == RING_BT_DEMO_CHR_NAME && is_read) {
+        const char *name = "SmartRing";
+        size_t n = strlen(name);
+        if (out_len != NULL && *out_len < n) {
+            n = *out_len;
+        }
+        memcpy(out, name, n);
+        if (out_len != NULL) {
+            *out_len = n;
+        }
+        return ESP_OK;
+    }
+
+    if (chr_uuid == RING_BT_DEMO_CHR_BATTERY && is_read) {
+        if (out_len != NULL && *out_len >= 1) {
+            out[0] = (uint8_t)ring_battery_percent();
+            *out_len = 1;
+            return ESP_OK;
+        }
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (chr_uuid == RING_BT_DEMO_CHR_COMMAND && !is_read) {
+        size_t n = len < sizeof(s_demo_cmd) - 1 ? len : sizeof(s_demo_cmd) - 1;
+        memcpy(s_demo_cmd, data, n);
+        s_demo_cmd[n] = '\0';
+        ESP_LOGI(TAG, "demo command received: '%.*s' (%u B)",
+                 (int)n, s_demo_cmd, (unsigned)len);
+        const char ok[] = "ok";
+        ring_bt_notify(RING_BT_DEMO_CHR_COMMAND, ok, sizeof(ok) - 1);
+        return ESP_OK;
+    }
+
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+static const ring_bt_chr_t demo_chars[] = {
+    { .uuid = RING_BT_DEMO_CHR_NAME,    .flags = RING_BT_CHR_READ,
+      .max_len = 32, .cb = demo_access },
+    { .uuid = RING_BT_DEMO_CHR_BATTERY, .flags = RING_BT_CHR_READ | RING_BT_CHR_NOTIFY,
+      .max_len = 1,  .cb = demo_access },
+    { .uuid = RING_BT_DEMO_CHR_COMMAND, .flags = RING_BT_CHR_WRITE | RING_BT_CHR_NOTIFY,
+      .max_len = 64, .cb = demo_access },
+    { .uuid = 0 },
+};
+
+static const ring_bt_svc_t demo_svcs[] = {
+    { .svc_uuid = RING_BT_DEMO_SVC_UUID, .chars = demo_chars },
+    { .svc_uuid = 0 },
+};
+
+const ring_bt_svc_t *ring_bt_demo_db(void)
+{
+    return demo_svcs;
+}
+
+size_t ring_bt_demo_last_command(char *buf, size_t len)
+{
+    if (buf == NULL || len == 0) {
+        return 0;
+    }
+    size_t n = strlen(s_demo_cmd);
+    if (n > len - 1) {
+        n = len - 1;
+    }
+    memcpy(buf, s_demo_cmd, n);
+    buf[n] = '\0';
+    return n;
 }

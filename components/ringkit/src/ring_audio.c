@@ -49,3 +49,21 @@ void ring_audio_mono_to_stereo(const int16_t *mono, int16_t *stereo,
         stereo[2 * i + 1] = mono[i];
     }
 }
+
+uint8_t ring_audio_level_pct(const int16_t *pcm, size_t samples)
+{
+    if (pcm == NULL || samples == 0) {
+        return 0;
+    }
+    uint32_t acc = 0;
+    for (size_t i = 0; i < samples; i++) {
+        int32_t v = pcm[i];
+        acc += (uint32_t)(v < 0 ? -v : v);
+    }
+    uint32_t avg = acc / (uint32_t)samples;
+    if (avg < 80) {
+        return 0;
+    }
+    uint32_t pct = (avg - 80) * 100 / 2000;
+    return (uint8_t)(pct > 100 ? 100 : pct);
+}

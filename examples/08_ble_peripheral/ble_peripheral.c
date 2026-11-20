@@ -28,12 +28,6 @@
 
 #define UI_PERIOD_MS 500    /* 2 Hz status + battery refresh */
 
-/* Vendor service + characteristics (see examples/08_ble_peripheral/README.md §1, §6). */
-#define BT_SVC_UUID     0xFFE0
-#define BT_CHR_NAME     0xFFE1
-#define BT_CHR_BATTERY  0xFFE2
-#define BT_CHR_COMMAND  0xFFE3
-
 /* --- UI handles ----------------------------------------------------------- */
 
 static lv_obj_t *s_state_label;
@@ -42,77 +36,7 @@ static lv_obj_t *s_batt_label;
 static lv_obj_t *s_cmd_label;
 static uint32_t  s_ticks;
 
-/* --- last command (written by the host task, read by the UI timer) --------- */
-
-static char     s_last_cmd[32] = "-";
-static uint8_t  s_last_cmd_bat = 0;   /* battery % at last command, for notify */
-static SemaphoreHandle_t s_cmd_mutex;
-
-/* --- GATT access callback --------------------------------------------------- */
-
-/**
- * Called in the NimBLE host task for every read/write on our characteristics.
- * Keep it short: it must not touch LVGL. We copy the command out and let the
- * UI timer render it; ring_bt_notify() below echoes back.
- */
-static esp_err_t bt_access(uint16_t conn_handle, uint16_t chr_uuid,
-                           bool is_read, const uint8_t *data, size_t len,
-                           uint8_t *out, size_t *out_len, void *user)
-{
-    (void)conn_handle; (void)user;
-
-    if (chr_uuid == BT_CHR_NAME && is_read) {
-        const char *name = "SmartRing";
-        size_t n = strlen(name);
-        if (n > *out_len) n = *out_len;
-        memcpy(out, name, n);
-        *out_len = n;
-        return ESP_OK;
-
-    } else if (chr_uuid == BT_CHR_BATTERY && is_read) {
-        uint8_t bat = (uint8_t)ring_battery_percent();
-        if (out_len && *out_len >= 1) {
-            out[0] = bat;
-            *out_len = 1;
-            return ESP_OK;
-        }
-        return ESP_ERR_INVALID_SIZE;
-
-    } else if (chr_uuid == BT_CHR_COMMAND && !is_read) {
-        /* Copy the command for the UI, then reply with a notification. */
-        if (s_cmd_mutex) xSemaphoreTake(s_cmd_mutex, portMAX_DELAY);
-        size_t n = len < sizeof(s_last_cmd) - 1 ? len : sizeof(s_last_cmd) - 1;
-        memcpy(s_last_cmd, data, n);
-        s_last_cmd[n] = '\0';
-        s_last_cmd_bat = (uint8_t)ring_battery_percent();
-        if (s_cmd_mutex) xSemaphoreGive(s_cmd_mutex);
-
-        ESP_LOGI(TAG, "command received: '%.*s' (%u B)", (int)n, s_last_cmd, (unsigned)len);
-
-        /* Echo an "ok" notification to the subscribed peer. */
-        const char ok[] = "ok";
-        ring_bt_notify(BT_CHR_COMMAND, ok, sizeof(ok) - 1);
-        return ESP_OK;
-    }
-
-    return ESP_ERR_NOT_SUPPORTED;
-}
-
 /* --- GATT database ----------------------------------------------------------- */
-
-static const ring_bt_chr_t bt_chrs[] = {
-    { .uuid = BT_CHR_NAME,    .flags = RING_BT_CHR_READ,           .max_len = 32,  .cb = bt_access },
-    { .uuid = BT_CHR_BATTERY, .flags = RING_BT_CHR_READ | RING_BT_CHR_NOTIFY,
-                                                                    .max_len = 1,   .cb = bt_access },
-    { .uuid = BT_CHR_COMMAND, .flags = RING_BT_CHR_WRITE | RING_BT_CHR_NOTIFY,
-                                                                    .max_len = 64,  .cb = bt_access },
-    { .uuid = 0 },
-};
-
-static const ring_bt_svc_t bt_svcs[] = {
-    { .svc_uuid = BT_SVC_UUID, .chars = bt_chrs },
-    { .svc_uuid = 0 },
-};
 
 static void bt_on_connect(uint16_t conn_handle, void *user)
 {
@@ -126,10 +50,12 @@ static void bt_on_disconnect(uint16_t conn_handle, void *user)
     ESP_LOGI(TAG, "peer disconnected (handle %d)", conn_handle);
 }
 
-static const ring_bt_config_t bt_cfg = {
+/* The demo database lives in ringkit (name / battery / command) so the BLE
+ * example and 12_ringkit_selftest cannot drift. */
+static ring_bt_config_t bt_cfg = {
     .name          = "SmartRing",
-    .svcs          = bt_svcs,
-    .adv_uuid      = BT_SVC_UUID,
+    .svcs          = NULL,   /* set in ring_example_start() */
+    .adv_uuid      = RING_BT_DEMO_SVC_UUID,
     .bonding       = true,     /* pair + bond so reconnects skip pairing */
     .mitm          = false,    /* Just Works (button-less ring)          */
     .secure_conn   = true,
@@ -159,6 +85,12 @@ static void refresh_cb(lv_timer_t *timer)
     int bat = ring_battery_percent();
     bool connected = ring_bt_is_connected();
 
+    /* Notify the battery characteristic every 2 s (the UI tick is 500 ms). */
+    if ((s_ticks % 4) == 0) {
+        uint8_t b = (uint8_t)bat;
+        ring_bt_notify(RING_BT_DEMO_CHR_BATTERY, &b, sizeof(b));
+    }
+
     /* Periodic console telemetry so the lifecycle is visible in the log. */
     if ((s_ticks++ % 10) == 0) {
         ESP_LOGI(TAG, "status: %s, battery %d%%", state_name(st), bat);
@@ -175,17 +107,17 @@ static void refresh_cb(lv_timer_t *timer)
         snprintf(line, sizeof(line), "battery %d%%", bat);
         lv_label_set_text(s_batt_label, line);
 
+        char last[32];
         char cmd[40];
-        if (s_cmd_mutex) xSemaphoreTake(s_cmd_mutex, portMAX_DELAY);
-        snprintf(cmd, sizeof(cmd), "last: %s", s_last_cmd);
-        if (s_cmd_mutex) xSemaphoreGive(s_cmd_mutex);
+        ring_bt_demo_last_command(last, sizeof(last));
+        snprintf(cmd, sizeof(cmd), "last: %s", last);
         lv_label_set_text(s_cmd_label, cmd);
     }
 }
 
 esp_err_t ring_example_start(void)
 {
-    s_cmd_mutex = xSemaphoreCreateMutex();
+    bt_cfg.svcs = ring_bt_demo_db();
 
     RING_UI_LOCKED(-1) {
         lv_obj_t *scr = lv_screen_active();
@@ -211,7 +143,7 @@ esp_err_t ring_example_start(void)
                                          lv_color_white());
         lv_obj_align(s_batt_label, LV_ALIGN_CENTER, 0, 8);
 
-        /* Last received command (host task -> UI timer). */
+        /* Last received command (written by the shared demo DB). */
         s_cmd_label = ring_ui_add_label(scr, "last: -", &lv_font_montserrat_20,
                                         lv_color_hex(0x2ecc71));
         lv_obj_align(s_cmd_label, LV_ALIGN_CENTER, 0, 40);
@@ -236,7 +168,7 @@ esp_err_t ring_example_start(void)
         return err;
     }
     ESP_LOGI(TAG, "BLE host up, advertising as '%s' (svc 0x%04X)",
-             bt_cfg.name, BT_SVC_UUID);
+             bt_cfg.name, RING_BT_DEMO_SVC_UUID);
 
     return ESP_OK;
 }

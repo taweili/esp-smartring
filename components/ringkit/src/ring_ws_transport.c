@@ -150,8 +150,10 @@ void ring_ws_event_handler(void *arg, esp_event_base_t base,
             xQueueSend(ring_ws_s.msg_queue, &m, portMAX_DELAY);
             /* Hand ownership of ring_ws_s.reasm to the worker until it has parsed
              * the message: the next fragment lands at offset 0 and would
-             * otherwise overwrite the JSON mid-parse. */
-            if (xSemaphoreTake(ring_ws_s.reasm_ack, pdMS_TO_TICKS(2000)) != pdTRUE) {
+             * otherwise overwrite the JSON mid-parse. The worker always acks
+             * (even on a parse error), so wait for it rather than timing out
+             * and corrupting the buffer. */
+            if (xSemaphoreTake(ring_ws_s.reasm_ack, portMAX_DELAY) != pdTRUE) {
                 ESP_LOGW(TAG, "worker did not release the reassembly buffer");
             }
         }

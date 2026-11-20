@@ -17,6 +17,8 @@ make check
 | `test_ring_resample` | `ring_resample.c` + `ring_resample_coeffs.c` | coefficient DC gain, decim/interp DC steady state, impulse response shape, streaming-chunk equivalence, NULL/empty guards |
 | `test_ring_byte_ring` | `ring_byte_ring.c` | push/pop, partial reads, newest-wins overflow, even-drop 16-bit alignment, reset, NULL guards |
 | `test_ring_chat_messages` | `ring_llm.c` (`build_messages`) + `ring_chat.c` | empty/system-only output, message order, escaping, JSON buffer cap, history storage cap, `max_history_turns` window |
+| `test_ring_geodis_payload` | `ring_geodis_payload.c` + `ring_json.c` | token/session-update/tool body builders, escaping, buffer caps |
+| `test_ring_http` | `ring_http.c` | body reader (exact fit, truncation, transport error, empty), buffered SSE (CR strip, final line, long-line growth, transport error), bearer length |
 
 ## Layout
 
@@ -30,7 +32,10 @@ tests/
 ├── test_ring_json.c
 ├── test_ring_resample.c
 ├── test_ring_byte_ring.c
-└── test_ring_chat_messages.c
+├── test_ring_chat_messages.c
+├── test_ring_geodis_payload.c
+├── test_ring_http.c        # brings its own scriptable HTTP-client stub
+└── ring_http_test_stubs.c
 ```
 
 `test_ring_chat_messages.c` includes `ring_llm.c` directly and renames the
