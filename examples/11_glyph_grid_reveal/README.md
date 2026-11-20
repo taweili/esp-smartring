@@ -1,6 +1,6 @@
-# 00_glyph_grid_reveal — ring-rotation-driven glyph reveal
+# 11_glyph_grid_reveal — ring-rotation-driven glyph reveal
 
-Design document for `examples/00_glyph_grid_reveal/`, the **default** application on the
+Design document for `examples/11_glyph_grid_reveal/`, the **default** application on the
 Smart Ring Plus. It implements the **rotation-driven glyph reveal**: a **fixed
 grid of glyphs** whose lit set grows and shrinks as the **ring is turned
 clockwise / counter-clockwise**.
@@ -13,7 +13,7 @@ clockwise / counter-clockwise**.
 
 Target: VIEWE Smart Ring Plus, ESP32-S3, 1.8" 360×360 ST77916 round panel,
 LVGL **9.4.0**, BSP `viewesmart/smartring_plus`. Implementation:
-`examples/00_glyph_grid_reveal/glyph_grid_reveal.c`.
+`examples/11_glyph_grid_reveal/glyph_grid_reveal.c`.
 
 ---
 
@@ -112,7 +112,7 @@ Montserrat `LV_SYMBOL_*` set — a compatible repertoire.
 ## 3. Architecture
 
 ```
-examples/00_glyph_grid_reveal/
+examples/11_glyph_grid_reveal/
 ├── CMakeLists.txt              # fragment: RING_EXAMPLE_SRCS etc. (see examples/)
 ├── include/ring_example.h      # esp_err_t ring_example_start(void);
 ├── glyph_grid_reveal.c               # fixed grid + IMU turn -> reveal repaint
@@ -318,10 +318,10 @@ Growth/shrink needs no touch — it is IMU-driven.
 
 ## 9. Files
 
-1. **`examples/00_glyph_grid_reveal/glyph_grid_reveal.c`** — the whole implementation.
-2. **`examples/00_glyph_grid_reveal/include/ring_example.h`** — `ring_example_start()` /
+1. **`examples/11_glyph_grid_reveal/glyph_grid_reveal.c`** — the whole implementation.
+2. **`examples/11_glyph_grid_reveal/include/ring_example.h`** — `ring_example_start()` /
    `ring_example_name()`.
-3. **`examples/00_glyph_grid_reveal/CMakeLists.txt`** — fragment listing `RING_EXAMPLE_SRCS`.
+3. **`examples/11_glyph_grid_reveal/CMakeLists.txt`** — fragment listing `RING_EXAMPLE_SRCS`.
 4. **`main/main.c`** — app-agnostic; calls `ring_board_init()` then
    `ring_example_start()`.
 5. **`sdkconfig.defaults`** — fonts (already set): `CONFIG_LV_FONT_MONTSERRAT_20=y`.
@@ -337,16 +337,16 @@ Growth/shrink needs no touch — it is IMU-driven.
 
 ```bash
 idf.py build
-idf.py -p /dev/ttyACM0 flash monitor     # watch TAG "00_glyph_grid_reveal"
+idf.py -p /dev/ttyACM0 flash monitor     # watch TAG "11_glyph_grid_reveal"
 ```
 
 Expected log:
 
 ```
-00_glyph_grid_reveal: ready: 169 glyphs, 13 cells, reveal 40..180 px, 90 deg/100px, turn sign +1.0
-00_glyph_grid_reveal: turn 0 deg, reveal 40 px (40..180)       # at rest (idle core)
-00_glyph_grid_reveal: turn 13 deg, reveal 55 px (40..180)      # after a clockwise turn
-00_glyph_grid_reveal: turn -95 deg, reveal 40 px (40..180)     # counter-clockwise → idle
+11_glyph_grid_reveal: ready: 169 glyphs, 13 cells, reveal 40..180 px, 90 deg/100px, turn sign +1.0
+11_glyph_grid_reveal: turn 0 deg, reveal 40 px (40..180)       # at rest (idle core)
+11_glyph_grid_reveal: turn 13 deg, reveal 55 px (40..180)      # after a clockwise turn
+11_glyph_grid_reveal: turn -95 deg, reveal 40 px (40..180)     # counter-clockwise → idle
 ```
 
 Visual check: rotate the ring clockwise → more glyphs light up from the center

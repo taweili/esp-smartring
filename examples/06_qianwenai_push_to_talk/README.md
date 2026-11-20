@@ -428,7 +428,7 @@ idf.py -B build/06_qianwenai_push_to_talk -p /dev/ttyACM0 monitor
 ```
 
 Use the **same `-B`** for build/flash/monitor. The other apps share `ringkit`
-and `sdkconfig.defaults`, so verify them too (`00_glyph_grid_reveal`,
+and `sdkconfig.defaults`, so verify them too (`11_glyph_grid_reveal`,
 `09_hello_smoke_test`, and `07` — which shares the CA/clock plumbing).
 
 ---
@@ -439,7 +439,7 @@ and `sdkconfig.defaults`, so verify them too (`00_glyph_grid_reveal`,
    before trusting the device: STT with a 16 kHz WAV Data URI, the LLM Chat
    Completions shape, and the TTS SSE stream (`format=pcm, sample_rate=48000`).
    Record the exact request/response JSON.
-2. `00_glyph_grid_reveal`, `06_qianwenai_push_to_talk` and
+2. `11_glyph_grid_reveal`, `06_qianwenai_push_to_talk` and
    `07_qianwen_realtime_harness` all build from clean dirs.
 3. Vendored overrides still win (`espressif__esp_codec_dev`,
    `viewesmart__smartring_plus`).

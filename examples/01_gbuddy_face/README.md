@@ -171,7 +171,7 @@ blocking the LVGL task that long trips the task watchdog. Dump a sub-object
   Prefer sprites; never add Wi-Fi to this app.
 - **Battery/IMU are stale after sleep** — clamp the first gaze frame after wake.
 - **The AXP2101 `ESP_ERR_TIMEOUT` warning** in the log is pre-existing (it appears on
-  `00_glyph_grid_reveal` too) and is rate-limited by the BSP.
+  `11_glyph_grid_reveal` too) and is rate-limited by the BSP.
 - **Partition/flash settings are global** (`partitions.csv`, `sdkconfig.defaults`); an
   assets partition would affect every app.
 

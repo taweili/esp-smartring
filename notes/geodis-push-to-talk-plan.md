@@ -493,7 +493,7 @@ Supporting changes:
 | `12_ringkit_selftest` | 2708 KB | 292 KB | exercises `ring_geodis_init`/`stop` |
 | `07_qianwen_realtime_harness` | 2604 KB | 396 KB | `ring_net` consumer, still builds |
 | `10_qianwen_ws_voice_chat` | 1592 KB | 1560 KB | `ring_ws` consumer, still builds |
-| `00_glyph_grid_reveal` | 736 KB | — | unchanged |
+| `11_glyph_grid_reveal` | 736 KB | — | unchanged |
 | `09_hello_smoke_test` | 804 KB | — | unchanged (module dropped by `--gc-sections`) |
 
 Vendored overrides still win (`espressif__esp_codec_dev` 300 refs,
@@ -618,7 +618,7 @@ Phase 1 is unblocked; the module is mostly a mechanical adaptation of
 
 - **Host spike:** `scripts/.venv/bin/python scripts/test_geodis_api.py --mode ptt`
   passes (commit → reply, tool call, transcript).
-- **Builds from clean dirs:** `00_glyph_grid_reveal`, `09_hello_smoke_test`,
+- **Builds from clean dirs:** `11_glyph_grid_reveal`, `09_hello_smoke_test`,
   `07_qianwen_realtime_harness`, `10_qianwen_ws_voice_chat`,
   `14_geodis_push_to_talk`.
 - **Vendored overrides still win:** `espressif__esp_codec_dev` and

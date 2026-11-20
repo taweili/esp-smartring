@@ -19,7 +19,7 @@ get_filename_component(_ring_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 set(_ring_app "${RING_APP}")
 if(NOT _ring_app)
-    set(_ring_app "00_glyph_grid_reveal")
+    set(_ring_app "11_glyph_grid_reveal")
 endif()
 
 set(_app_dir "${_ring_root}/examples/${_ring_app}")

@@ -2,11 +2,10 @@
 
 Each directory here is a self-contained application for the VIEWE Smart Ring
 Plus. Exactly **one** is compiled into a firmware image, selected by the
-`RING_APP` CMake cache variable (default `00_glyph_grid_reveal`).
+`RING_APP` CMake cache variable (default `11_glyph_grid_reveal`).
 
 | App | Description |
 |-----|-------------|
-| `00_glyph_grid_reveal` | Full-screen 13×13 glyph grid with a layered center-out reveal driven by the ring's gyro; tap resets to the idle core. |
 | `01_gbuddy_face` | The GEODIS buddy face: four expressions cut out of `medias/gbuddy-00N.png` as alpha sprites — blinks, IMU gaze, twist look, sleep on hold, battery mood. See `01_gbuddy_face/README.md`. |
 | `02_imu_dashboard` | Live IMU dashboard: bubble level (tilt) + accel (m/s²) + gyro (°/s) + temperature + level calibration. Tap to calibrate. See `02_imu_dashboard/README.md`. |
 | `03_gesture_probe` | Touch gesture probe: shows the name of every single-finger gesture (tap / hold / swipe left/right/up/down, plus press/release) the moment it happens, with a dot following the finger. See `03_gesture_probe/README.md`. |
@@ -17,13 +16,14 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing`, exposes a vendor service (0xFFE0) with a readable name/battery (READ/NOTIFY) and a writable command pipe (WRITE/NOTIFY). Pairable/bondable; scan + connect with a phone (nRF Connect / LightBlue). See `08_ble_peripheral/README.md`. |
 | `09_hello_smoke_test` | Bring-up smoke test: white screen, one large "Hello" glyph. See `09_hello_smoke_test/README.md`. |
 | `10_qianwen_ws_voice_chat` | **WebSocket voice chat** with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, push-to-talk / `server_vad` / `smart_turn_v2` turn-taking (Set screen, NVS-persisted), barge-in, orb with radial level ring, Talk/Chat/Set screens, wire/battery stats. The only realtime transport that works where UDP is blocked. |
+| `11_glyph_grid_reveal` | Full-screen 13×13 glyph grid with a layered center-out reveal driven by the ring's gyro; tap resets to the idle core. |
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. See `12_ringkit_selftest/README.md`. |
 | `13_button_probe` | BOOT-button (GPIO0) probe: shows `press` / `long press` / `click` / `dbl click` on screen the moment each fires, with a live held-time line and per-event counters. See `13_button_probe/README.md`. |
 
 ## Building an app
 
 ```bash
-# default app (00_glyph_grid_reveal)
+# default app (11_glyph_grid_reveal)
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 
@@ -95,7 +95,7 @@ Rules:
 - **Do not** add an `idf_component.yml` per example. Managed dependencies live
   in `main/idf_component.yml`.
 - An app may carry its own `README.md` for a design/spec (see
-  `00_glyph_grid_reveal/README.md`) — it is inert to the build, so it never
+  `11_glyph_grid_reveal/README.md`) — it is inert to the build, so it never
   touches the CMake fragment.
 - **Do not** include `bsp/smartring_plus.h` and **do not** call `bsp_*`
   directly — everything goes through `ringkit/ringkit.h`.

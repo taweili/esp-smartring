@@ -228,7 +228,7 @@ But the arithmetic says you cannot just merge them:
 
 | | bytes |
 |---|---|
-| `00_glyph_grid_reveal` (base: ringkit + LVGL + Wi-Fi) | 750,672 |
+| `11_glyph_grid_reveal` (base: ringkit + LVGL + Wi-Fi) | 750,672 |
 | `07_qianwen_realtime_harness` | 2,704,928 |
 | WebRTC/Opus/cert-bundle delta | **1,954,256** |
 | `01_gbuddy_face` (assets 424,200; size from its README) | 1,153,600 |

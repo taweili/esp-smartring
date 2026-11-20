@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build / flash an example using the local secrets file.
 #
-#   tools/dev.sh build                    # default app (00_glyph_grid_reveal)
+#   tools/dev.sh build                    # default app (11_glyph_grid_reveal)
 #   tools/dev.sh build 06_qianwenai_push_to_talk
 #   tools/dev.sh flash 06_qianwenai_push_to_talk   # build + flash to /dev/ttyACM0
 #   tools/dev.sh monitor                  # follow the serial log
@@ -14,7 +14,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 action="${1:-build}"
-app="${2:-00_glyph_grid_reveal}"
+app="${2:-11_glyph_grid_reveal}"
 port="${PORT:-/dev/ttyACM0}"
 
 # --- ESP-IDF environment -------------------------------------------------

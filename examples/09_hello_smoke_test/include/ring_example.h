@@ -22,7 +22,7 @@ extern "C" {
  */
 esp_err_t ring_example_start(void);
 
-/** Short name for logging, e.g. "00_glyph_grid_reveal". */
+/** Short name for logging, e.g. "11_glyph_grid_reveal". */
 const char *ring_example_name(void);
 
 #ifdef __cplusplus

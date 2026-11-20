@@ -1,11 +1,11 @@
 /*
- * 00_glyph_grid_reveal — ring-rotation-driven glyph reveal.
+ * 11_glyph_grid_reveal — ring-rotation-driven glyph reveal.
  *
  * A fixed 13x13 axis-aligned square grid of glyph labels on the 360x360 round
  * panel. Cells NEVER move, scale or rotate. The grid is built once and never
  * re-laid-out.
  *
- * Interaction (see examples/00_glyph_grid_reveal/README.md):
+ * Interaction (see examples/11_glyph_grid_reveal/README.md):
  *   - Turning the ring CLOCKWISE reveals MORE cells, center-out, until the
  *     panel is full. Turning it COUNTER-CLOCKWISE un-reveals them outside-in.
  *   - The reveal is a single radius, driven by the on-board IMU: gyro Z (the
@@ -27,7 +27,7 @@
 
 #include <math.h>
 
-#define TAG "00_glyph_grid_reveal"
+#define TAG "11_glyph_grid_reveal"
 
 #define GRID_N    13   /* 13x13 = 169 glyphs                        */
 #define GRID_STEP 27   /* px between cells (extent = 13*27 = 351 px) */
@@ -282,5 +282,5 @@ esp_err_t ring_example_start(void)
 
 const char *ring_example_name(void)
 {
-    return "00_glyph_grid_reveal";
+    return "11_glyph_grid_reveal";
 }

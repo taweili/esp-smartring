@@ -34,7 +34,7 @@ The device console is the USB-Serial/JTAG port — **`/dev/ttyACM0`**.
 
 ```bash
 idf.py set-target esp32s3      # first time / after deleting a build dir
-idf.py build                   # default app (00_glyph_grid_reveal)
+idf.py build                   # default app (11_glyph_grid_reveal)
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
@@ -68,7 +68,6 @@ tools/dev.sh monitor 06_qianwenai_push_to_talk  # follow that app's build dir
 
 | App | Description |
 |-----|-------------|
-| `00_glyph_grid_reveal` | **Default.** 13×13 glyph grid, layered center-out reveal driven by the ring's gyro (turn to reveal more/less), green/yellow accents. Tap resets to the idle core. |
 | `01_gbuddy_face` | The buddy face: 4 expressions from `medias/gbuddy-00N.png` as alpha sprites, with blink, IMU gaze, twist look and sleep. |
 | `02_imu_dashboard` | Live IMU dashboard: bubble level (tilt) + accel + gyro + temperature + level calibration. |
 | `03_gesture_probe` | Reports every single-finger gesture (tap / hold / swipe / press / release) the moment it happens. |
@@ -79,6 +78,7 @@ tools/dev.sh monitor 06_qianwenai_push_to_talk  # follow that app's build dir
 | `08_ble_peripheral` | Bluetooth LE peripheral: advertises as `SmartRing` and exposes a GATT server. |
 | `09_hello_smoke_test` | Bring-up smoke test: white screen + one large label. |
 | `10_qianwen_ws_voice_chat` | WebSocket voice chat with `qwen-audio-3.1-realtime-flash`: PCM 16 kHz in / 24 kHz out over `esp_websocket_client`, push-to-talk / `server_vad` / `smart_turn_v2` turn-taking, orb + chat/settings screens. The only realtime transport that works where UDP is blocked. See `examples/10_qianwen_ws_voice_chat/README.md`. |
+| `11_glyph_grid_reveal` | **Default.** 13×13 glyph grid, layered center-out reveal driven by the ring's gyro (turn to reveal more/less), green/yellow accents. Tap resets to the idle core. |
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. |
 | `13_button_probe` | BOOT-button (GPIO0) probe: shows `press` / `long press` / `click` / `dbl click` the moment each fires, with a live held-time line and per-event counters. See `examples/13_button_probe/README.md`. |
 
@@ -115,7 +115,7 @@ SD → IMU (fail soft). All LVGL work happens under `RING_UI_LOCKED(-1) { ... }`
 ### How exactly one app is selected
 
 The project `CMakeLists.txt` is evaluated before `sdkconfig` exists, so a
-**CMake cache variable** (`RING_APP`, default `00_glyph_grid_reveal`) is the
+**CMake cache variable** (`RING_APP`, default `11_glyph_grid_reveal`) is the
 only viable selector there — a Kconfig `choice` would compile the selection
 into `sdkconfig`, which is harder to script and invites "I flashed the wrong
 app". `main/CMakeLists.txt` `include()`s `examples/${RING_APP}/CMakeLists.txt`
@@ -146,7 +146,7 @@ components, so they cannot be unit-tested or depended on independently.
 requirements-gathering pass in a separate CMake process where cache variables
 are not set (`RING_APP` is empty) and `CMAKE_SOURCE_DIR` is the **build
 directory**, not the project. Hence the root is resolved via
-`${CMAKE_CURRENT_LIST_DIR}/..` and `00_glyph_grid_reveal` is used when
+`${CMAKE_CURRENT_LIST_DIR}/..` and `11_glyph_grid_reveal` is used when
 `RING_APP` is empty. Getting this wrong produces `include could not find
 requested file: …/build/…/examples//CMakeLists.txt`.
 
@@ -187,7 +187,6 @@ assert or error log.
 | `AGENTS.md` | Developer guidance: build/flash commands, verification bar, critical fixes, gotchas. **Start here before changing code.** |
 | `examples/README.md` | App contract, how apps are selected and added. |
 | `notes/hardware-bsp-reference.md` | Hardware + BSP reference: product overview, full `bsp_*` API, pin map, gotchas. |
-| `examples/00_glyph_grid_reveal/README.md` | Default app design & build spec (layered reveal maths, risks). |
 | `examples/01_gbuddy_face/README.md` | The sprite-asset app: moods, blink/gaze/sleep, sprite geometry and flash budget, on-device findings (flat background, feathered matte, LVGL snapshot debugging), asset regeneration. |
 | `examples/02_imu_dashboard/README.md` | The IMU dashboard: every QMI8658A channel, the bubble level, and the tap-to-calibrate flow. |
 | `examples/03_gesture_probe/README.md` | The single-finger gesture set the CST816S can produce (multi-touch is impossible) and why the screen must be non-scrollable. |
@@ -203,6 +202,7 @@ assert or error log.
 | `notes/geodis-push-to-talk-plan.md` | The planned `14_geodis_push_to_talk` app: protocol, state machine, verification plan. |
 | `notes/geodis-code-review.md` | Design review of `ring_geodis` and the transport ownership model shared with `ring_net`/`ring_ws`. |
 | `examples/10_qianwen_ws_voice_chat/README.md` | WebSocket voice chat: PCM 16 kHz in / 24 kHz out resampler, the `ring_ws` module, turn-taking, barge-in, transport internals, and the stack + jitter-ring budget. |
+| `examples/11_glyph_grid_reveal/README.md` | Default app design & build spec (layered reveal maths, risks). |
 | `examples/12_ringkit_selftest/README.md` | The subsystem diagnostic app. |
 | `examples/13_button_probe/README.md` | The BOOT-button (GPIO0) probe: events, timings, and the strapping-pin caveat. |
 | `notes/research-meta-muse.md`, `notes/research-xiaozhi.md` | Assistant feasibility research (no code yet). |

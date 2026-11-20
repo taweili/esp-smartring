@@ -363,7 +363,7 @@ Decisions that are easy to get wrong when modifying this path:
 
 ## Verification checklist
 
-1. The 00 / 06 / 07 / 09 / 12 apps still build; `esp_websocket_client` resolves
+1. The 06 / 07 / 09 / 11 / 12 apps still build; `esp_websocket_client` resolves
    from `managed_components/`.
 2. Vendored overrides still win (`espressif__esp_codec_dev`,
    `viewesmart__smartring_plus`).

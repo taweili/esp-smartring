@@ -48,6 +48,6 @@ I (1946) 09_hello_smoke_test: display 360x360, color format 18, swap_bytes 1 —
 
 - The white background is the point: it exercises every pixel.
 - This app is one of several that use `lv_font_montserrat_48` (`03`, `04`,
-  `10` do too). Its image is larger than `00_glyph_grid_reveal`'s (~804 KB
+  `10` do too). Its image is larger than `11_glyph_grid_reveal`'s (~804 KB
   vs ~733 KB) because of that font, not a regression — see `AGENTS.md`
   § Gotchas.

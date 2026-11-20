@@ -8,7 +8,7 @@ This is an **ESP-IDF** project for the **VIEWE "Smart Ring Plus"** — a round, 
 
 Today it is structured as a **generic skeleton plus interchangeable applications**: `components/ringkit/` wraps the whole BSP, and each app under `examples/<name>/` is selected at build time with `RING_APP`.
 
-Default firmware (`00_glyph_grid_reveal`): a full-screen 13×13 glyph grid with a layered center-out reveal driven by the ring's gyro.
+Default firmware (`11_glyph_grid_reveal`): a full-screen 13×13 glyph grid with a layered center-out reveal driven by the ring's gyro.
 
 ## Environment
 
@@ -25,7 +25,7 @@ Default firmware (`00_glyph_grid_reveal`): a full-screen 13×13 glyph grid with 
 idf.py set-target esp32s3          # first time / after deleting build dir
 idf.py reconfigure                 # after changing idf_component.yml or sdkconfig.defaults
 
-# default app (00_glyph_grid_reveal), default build dir
+# default app (11_glyph_grid_reveal), default build dir
 idf.py build
 idf.py -p /dev/ttyACM0 flash       # flash + reset the ring
 idf.py -p /dev/ttyACM0 monitor     # follow serial log (Ctrl-] to exit)
@@ -51,7 +51,7 @@ cd tests && make check
 > ```
 
 > **An invalid `RING_APP` fails fast** at configure time and lists the choices:
-> `RING_APP='nope' is not an example: no examples/nope/CMakeLists.txt.` → `Available: 00_glyph_grid_reveal, 09_hello_smoke_test`
+> `RING_APP='nope' is not an example: no examples/nope/CMakeLists.txt.` → `Available: 01_gbuddy_face, 02_imu_dashboard, …`
 
 > **`sdkconfig` and `sdkconfig.defaults` are shared by every build dir** — they live at the
 > project root, not per app. So a config change affects all apps; there is no per-app config.
@@ -109,7 +109,6 @@ EOF
 │   └── viewesmart__smartring_plus/ # VENDORED OVERRIDE (gyro+temp, 02_imu_dashboard)
 ├── examples/
 │   ├── README.md                # app contract + the app table
-│   ├── 00_glyph_grid_reveal/     # default app: layered glyph-grid reveal (README)
 │   ├── 01_gbuddy_face/          # animated buddy face (sprite assets in assets/, README)
 │   ├── 02_imu_dashboard/        # live IMU dashboard (accel/gyro/temp/tilt, README)
 │   ├── 03_gesture_probe/        # single-finger gesture probe (tap/hold/swipe, README)
@@ -122,6 +121,7 @@ EOF
 │   ├── 10_qianwen_ws_voice_chat/ # WebSocket voice chat: PCM 16k in / 24k out,
 │   │                            #   esp_websocket_client, PTT + hands-free modes,
 │   │                            #   orb + chat/settings screens (README)
+│   ├── 11_glyph_grid_reveal/    # default app: layered glyph-grid reveal (README)
 │   ├── 12_ringkit_selftest/     # subsystem diagnostic: probe + voice init/stop (README)
 │   └── 13_button_probe/         # BOOT-button (GPIO0) event probe: press/long/click/double (README)
 ├── scripts/
@@ -371,10 +371,10 @@ Minimum bar before you claim something works — do all of it, from clean dirs w
 you touched CMake, `sdkconfig.defaults`, or `ringkit` headers:
 
 1. **The apps build** — at minimum the two that bracket the dependency graph
-   (`00_glyph_grid_reveal` has no extras, `09_hello_smoke_test` pulls the 48 px font):
+   (`11_glyph_grid_reveal` has no extras, `09_hello_smoke_test` pulls the 48 px font):
    ```bash
-   rm -rf build/00_glyph_grid_reveal build/09_hello_smoke_test
-   idf.py -B build/00_glyph_grid_reveal -DRING_APP=00_glyph_grid_reveal build
+   rm -rf build/11_glyph_grid_reveal build/09_hello_smoke_test
+   idf.py -B build/11_glyph_grid_reveal -DRING_APP=11_glyph_grid_reveal build
    idf.py -B build/09_hello_smoke_test     -DRING_APP=09_hello_smoke_test       build
    ```
    If you touched `ringkit`, `sdkconfig.defaults` or `main/idf_component.yml`, also build the
@@ -424,7 +424,7 @@ that must stay committed are the override *copies* in `components/`
   **GPIO0 (BOOT)** is reserved by the ROM bootloader but usable as a normal input
   after reset — `ring_button` reads the BOOT button on it (active-low). Holding it
   at power-up/reset still enters download mode.
-- **`09_hello_smoke_test` is bigger than `00_glyph_grid_reveal`** (~804 KB vs ~733 KB). Not a regression: it is
+- **`09_hello_smoke_test` is bigger than `11_glyph_grid_reveal`** (~804 KB vs ~733 KB). Not a regression: it is
   one of several apps using `lv_font_montserrat_48`, which pulls in the 48 px font tables — but
   think before adding another large font.
 - **Image sizes are large and the partition is 3000K.** Measured 2026-11-20 from
@@ -458,8 +458,9 @@ that must stay committed are the override *copies* in `components/`
 - `examples/12_ringkit_selftest/README.md` — the subsystem diagnostic app.
 - `examples/13_button_probe/README.md` — the BOOT-button (GPIO0) probe: events,
   timings, and the strapping-pin caveat.
+- `examples/11_glyph_grid_reveal/README.md` — the default app design & build spec: layered reveal
+  maths, layer timeline, risks.
 - `notes/hardware-bsp-reference.md` — hardware + BSP reference: product overview, BSP API, pin map, pitfalls.
-- `examples/00_glyph_grid_reveal/README.md` — 00_glyph_grid_reveal design & build spec: layered reveal maths, layer timeline, risks.
 - `notes/networking-https-webrtc.md` — networking, HTTPS & WebRTC research: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/
   cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and OpenAI API paths (REST, Realtime
   over WebSocket, Realtime over WebRTC).

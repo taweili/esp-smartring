@@ -1,4 +1,4 @@
-# 00_glyph_grid_reveal — application fragment (NOT a component; see examples/README.md).
+# 11_glyph_grid_reveal — application fragment (NOT a component; see examples/README.md).
 #
 # main/CMakeLists.txt includes this file and adds the sources to the `main`
 # component, with "${_app_dir}" as the base for every path below.

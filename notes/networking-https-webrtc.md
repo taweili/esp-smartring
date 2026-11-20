@@ -471,7 +471,7 @@ same pattern.
 
 ## 8. Verification plan
 
-1. **Apps build** from clean dirs (`00_glyph_grid_reveal`, `09_hello_smoke_test`, plus the
+1. **Apps build** from clean dirs (`11_glyph_grid_reveal`, `09_hello_smoke_test`, plus the
    networking apps `05`/`06`/`07`) — they share `ringkit`, so a change that breaks one can
    break the others.
 2. **HTTPS** (shipped): `ring_net_probe()` in `examples/05_wifi_https_demo`.
