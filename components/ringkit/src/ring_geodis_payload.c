@@ -17,7 +17,8 @@ bool ring_geodis_payload_session_update(char *buf, size_t cap, const char *voice
 {
     int pos = 0;
     bool ok = ring_json_append(buf, cap, &pos,
-                               "{\"type\":\"session.update\",\"session\":{\"audio\":{");
+                               "{\"type\":\"session.update\",\"session\":{"
+                               "\"type\":\"realtime\",\"audio\":{");
     bool need_comma = false;
 
     if (ok && (enable_stt || enable_ptt)) {

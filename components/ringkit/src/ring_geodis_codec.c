@@ -218,13 +218,8 @@ int ring_geodis_on_audio_data(esp_peer_audio_frame_t *frame, void *ctx)
     } else if (e != ESP_AUDIO_ERR_OK) {
         ESP_LOGW(TAG, "opus decode failed: %d", e);
     }
-
-    ring_geodis_s.speaking = true;
-    /* The reply can start after the button was released (state READY), so
-     * accept both pre-turn states here. */
-    ring_geodis_state_t st = ring_geodis_state();
-    if (st == RING_GEODIS_LISTENING || st == RING_GEODIS_READY) {
-        ring_geodis_state_set(RING_GEODIS_SPEAKING);
-    }
+    /* Do NOT set speaking here. The endpoint streams comfort-noise/silence
+     * frames continuously, so "audio arrived" is not "a reply started" — the
+     * authoritative signal is `response.created`, handled in protocol.c. */
     return 0;
 }

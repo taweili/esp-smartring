@@ -44,7 +44,7 @@ the two-symbol example contract (see `examples/README.md`).
 | `ring_chat.h` | HTTPS REST cascade (STT→LLM→TTS) | blocking, no realtime; `examples/06` |
 | `ring_ws.h` | WebSocket, PCM in JSON | server_vad / smart_turn_v2 / PTT; `examples/10` |
 | `ring_net.h` | WebRTC, Opus over RTP (Qianwen) | lowest latency, needs UDP/DTLS; `examples/07` |
-| `ring_geodis.h` | WebRTC, Opus over RTP (GEODIS / Azure Realtime) | ephemeral token + Azure SDP, client-executed RAG tool call; **no app yet** (see `notes/geodis-push-to-talk-plan.md`) |
+| `ring_geodis.h` | WebRTC, Opus over RTP (GEODIS / Azure Realtime) | ephemeral token + Azure SDP, client-executed RAG tool call; `examples/14` (see `notes/geodis-push-to-talk-plan.md`) |
 
 ### Shared infrastructure
 
@@ -235,8 +235,10 @@ cancel()             playback stops at the next frame boundary
 
 The `/tool-call` POST fails on purpose: the app exercises the real
 `lookup_unavailable` path instead of a fabricated answer. Timing is adjustable
-via `ring_geodis_mock_config()`. Costs ~150 KB of flash (the embedded clip) —
-never ship it.
+via `ring_geodis_mock_config()`. `ring_geodis_send_event()` is mock-aware (there
+is no peer on the wire), and the mock starts a turn on
+`input_audio_buffer.commit`. Costs ~150 KB of flash (the embedded clip) — never
+ship it.
 
 ## Build hygiene
 

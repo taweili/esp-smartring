@@ -485,6 +485,10 @@ esp_err_t ring_geodis_set_listening(bool on)
          * the playback buffer, or the ring keeps talking into its own mic. */
         ring_geodis_cancel();
     }
+    /* The endpoint streams silence continuously, so the downlink ring holds up
+     * to 4 s of stale comfort noise. Drop it on every press: the user expects
+     * the reply to start after the commit, not with a silence gap. */
+    ring_byte_ring_reset(&ring_geodis_s.dl_ring);
     ring_geodis_s.uplink_open = true;
     ring_geodis_state_set(RING_GEODIS_LISTENING);
     return ESP_OK;

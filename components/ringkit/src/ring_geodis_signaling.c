@@ -215,6 +215,28 @@ static void normalise_sdp_crlf(const char *in, char *out, size_t out_len)
 }
 
 /**
+ * Azure answers `a=setup:active` to an `a=setup:actpass` offer, which makes the
+ * ESP32 the DTLS server. esp_peer's data-channel role follows the DTLS role, so
+ * it waits for the peer to open the channel — but the Azure Realtime API expects
+ * the client to open it, and the session never reaches `session.created`. Offer
+ * `a=setup:active` instead: Azure answers `passive`, the ESP32 is the DTLS/SCTP
+ * client, and esp_peer sends DCEP automatically.
+ */
+static void force_dtls_client(char *sdp)
+{
+    static const char needle[] = "a=setup:actpass";
+    static const char repl[] = "a=setup:active";
+    const size_t nlen = sizeof(needle) - 1;
+    const size_t rlen = sizeof(repl) - 1;
+    char *p = sdp;
+    while ((p = strstr(p, needle)) != NULL) {
+        memcpy(p, repl, rlen);
+        memmove(p + rlen, p + nlen, strlen(p + nlen) + 1);
+        p += rlen;
+    }
+}
+
+/**
  * POST the Offer to the Azure OpenAI Realtime SDP exchange and return the
  * Answer. All buffers are on the heap so this can run on a small task stack.
  */
@@ -225,6 +247,7 @@ static esp_err_t sdp_exchange(const char *offer, char *answer, size_t answer_len
         return ESP_ERR_NO_MEM;
     }
     normalise_sdp_crlf(offer, offer_crlf, RING_GEODIS_SDP_MAX_BYTES);
+    force_dtls_client(offer_crlf);
 
     uint32_t t0 = ring_geodis_now_ms();
     esp_err_t err = ring_geodis_post_sdp(ring_geodis_s.sdp_url, ring_geodis_s.token,

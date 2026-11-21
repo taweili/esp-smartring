@@ -308,6 +308,14 @@ esp_err_t ring_geodis_send_event(const char *json)
     if (json == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+#ifdef CONFIG_RINGKIT_GEODIS_MOCK
+    /* No peer on the wire. The mock's transport_on_event() is the observer,
+     * exactly as esp_peer_send_data() would be in a real session, so commit /
+     * cancel / session.update reach it and report success. Without this the
+     * mock's s.peer is NULL and every send_event() fails, so commit() never
+     * starts a turn. */
+    esp_err_t ret = ESP_OK;
+#else
     esp_err_t ret = ESP_ERR_INVALID_STATE;
     xSemaphoreTake(ring_geodis_s.peer_lock, portMAX_DELAY);
     if (ring_geodis_s.peer != NULL) {
@@ -327,6 +335,7 @@ esp_err_t ring_geodis_send_event(const char *json)
         }
     }
     xSemaphoreGive(ring_geodis_s.peer_lock);
+#endif /* CONFIG_RINGKIT_GEODIS_MOCK */
     /* The mock transport has no wire to observe, so give it the same view the
      * server would get. A no-op in a real build. */
     ring_geodis_transport_on_event(json, ret);

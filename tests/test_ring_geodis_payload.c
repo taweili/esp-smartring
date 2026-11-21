@@ -61,8 +61,8 @@ static void test_session_update_rejects_legacy_shape(void)
           strstr(buf, "\"audio\"") < strstr(buf, "\"turn_detection\""),
           "turn_detection is inside audio");
 
-    CHECK(strncmp(buf, "{\"type\":\"session.update\",\"session\":{\"audio\":{",
-                  strlen("{\"type\":\"session.update\",\"session\":{\"audio\":{")) == 0,
+    CHECK(strncmp(buf, "{\"type\":\"session.update\",\"session\":{\"type\":\"realtime\",\"audio\":{",
+                  strlen("{\"type\":\"session.update\",\"session\":{\"type\":\"realtime\",\"audio\":{")) == 0,
           "leading shape");
 }
 
@@ -73,7 +73,7 @@ static void test_session_update_all_flags(void)
     CHECK(ring_geodis_payload_session_update(buf, sizeof(buf), "coral", true, true),
           "stt+ptt+voice");
     CHECK_STR(buf,
-              "{\"type\":\"session.update\",\"session\":{\"audio\":{"
+              "{\"type\":\"session.update\",\"session\":{\"type\":\"realtime\",\"audio\":{"
               "\"input\":{\"transcription\":{\"model\":\"whisper-1\"},"
               "\"turn_detection\":null},"
               "\"output\":{\"voice\":\"coral\"}}}}",
@@ -105,7 +105,7 @@ static void test_session_update_flag_combinations(void)
           "no flags");
     CHECK(strstr(buf, "\"input\"") == NULL, "no flags: no input block");
     CHECK_STR(buf,
-              "{\"type\":\"session.update\",\"session\":{\"audio\":{"
+              "{\"type\":\"session.update\",\"session\":{\"type\":\"realtime\",\"audio\":{"
               "\"output\":{\"voice\":\"coral\"}}}}",
               "no flags exact");
 }
@@ -126,7 +126,7 @@ static void test_session_update_voice_optional(void)
 
     /* Exact shape when there is no trailing comma to worry about. */
     CHECK_STR(buf,
-              "{\"type\":\"session.update\",\"session\":{\"audio\":{"
+              "{\"type\":\"session.update\",\"session\":{\"type\":\"realtime\",\"audio\":{"
               "\"input\":{\"transcription\":{\"model\":\"whisper-1\"},"
               "\"turn_detection\":null}}}}",
               "no voice exact");

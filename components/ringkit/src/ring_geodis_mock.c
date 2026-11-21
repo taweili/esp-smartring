@@ -249,8 +249,11 @@ void ring_geodis_transport_on_event(const char *json, esp_err_t sent)
     if (json == NULL || sent != ESP_OK) {
         return;
     }
-    if (strstr(json, "input_audio_buffer.commit") != NULL ||
-        strstr(json, "response.create") != NULL) {
+    /* The commit is the PTT turn trigger. `response.create` is NOT a trigger
+     * here: the client-executed tool path sends function_call_output +
+     * response.create inside the same turn, and treating that as a new turn
+     * would start a duplicate reply while the first is still playing. */
+    if (strstr(json, "input_audio_buffer.commit") != NULL) {
         ring_geodis_s.mock_turn_req = true;
     }
     ESP_LOGD(TAG, "mock dc out: %.80s", json);
