@@ -81,9 +81,10 @@ tools/dev.sh monitor 06_qianwenai_push_to_talk  # follow that app's build dir
 | `11_glyph_grid_reveal` | **Default.** 13×13 glyph grid, layered center-out reveal driven by the ring's gyro (turn to reveal more/less), green/yellow accents. Tap resets to the idle core. |
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. |
 | `13_button_probe` | BOOT-button (GPIO0) probe: shows `press` / `long press` / `click` / `dbl click` the moment each fires, with a live held-time line and per-event counters. See `examples/13_button_probe/README.md`. |
+| `14_geodis_push_to_talk` | GEODIS Voice Agent push-to-talk: hold the round button, speak, release — Opus/WebRTC through the GEODIS gateway (Azure OpenAI Realtime), client-executed RAG tool call, transcripts + spoken reply. `CONFIG_RINGKIT_GEODIS_MOCK` gives an offline canned turn. See `examples/14_geodis_push_to_talk/README.md`. |
 
-> `07` needs a network that allows **outbound UDP** for DTLS; on a
-> UDP-filtered LAN it connects as far as ICE and then times out. See
+> `07` and `14` need a network that allows **outbound UDP** for DTLS; on a
+> UDP-filtered LAN they connect as far as ICE and then time out. See
 > `notes/networking-https-webrtc.md` §8. `06`/`10` are TCP/443-only.
 
 ## Architecture
@@ -199,12 +200,13 @@ assert or error log.
 | `notes/networking-https-webrtc.md` | Networking, HTTPS & WebRTC reference: ESP-IDF v6.1 stack, `esp_http_client`/`esp-tls`/cert bundle, HTTPS server, WebSocket/MQTT/mDNS, `esp_peer` WebRTC, and the three OpenAI API paths (REST, Realtime-over-WebSocket, Realtime-over-WebRTC). |
 | `notes/qianwen-ai-platform.md` | 千问 AI 平台 (qianwenai.com) reference: model catalog by category (LLM, vision, image/video/3D generation, speech, omni, embeddings) and the API surface (OpenAI-compatible, Anthropic-compatible, DashScope native, WebSocket/WebRTC/AOQ realtime, async task/batch APIs). |
 | `notes/geodis-ai-api.md` | GEODIS Voice Agent API reference (Azure OpenAI Realtime over WebRTC: `/token`, SDP, session schema, tool call). |
-| `notes/geodis-push-to-talk-plan.md` | The planned `14_geodis_push_to_talk` app: protocol, state machine, verification plan. |
+| `notes/geodis-push-to-talk-plan.md` | The `14_geodis_push_to_talk` app: protocol, state machine, verification plan. |
 | `notes/geodis-code-review.md` | Design review of `ring_geodis` and the transport ownership model shared with `ring_net`/`ring_ws`. |
 | `examples/10_qianwen_ws_voice_chat/README.md` | WebSocket voice chat: PCM 16 kHz in / 24 kHz out resampler, the `ring_ws` module, turn-taking, barge-in, transport internals, and the stack + jitter-ring budget. |
 | `examples/11_glyph_grid_reveal/README.md` | Default app design & build spec (layered reveal maths, risks). |
 | `examples/12_ringkit_selftest/README.md` | The subsystem diagnostic app. |
 | `examples/13_button_probe/README.md` | The BOOT-button (GPIO0) probe: events, timings, and the strapping-pin caveat. |
+| `examples/14_geodis_push_to_talk/README.md` | GEODIS Azure Realtime push-to-talk: UI, PTT flow, mock transport, NVS endpoint overrides, verification status. |
 | `notes/research-meta-muse.md`, `notes/research-xiaozhi.md` | Assistant feasibility research (no code yet). |
 | `scripts/README.md` | Host-side API test clients: `test_qianwen_realtime.py` (WebRTC, as `07`), `test_qianwen_ws.py` (WebSocket, as `10`), `test_qianwen_ws_keepalive.py`, `test_geodis_api.py`. |
 | `tests/README.md` | Host unit tests for the pure-logic ringkit modules (`make check`). |

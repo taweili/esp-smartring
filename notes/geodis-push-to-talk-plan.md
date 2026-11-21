@@ -1,11 +1,16 @@
 # Plan — `14_geodis_push_to_talk` (GEODIS voice agent, push-to-talk)
 
-**Status (2026-11-20):** Phase 0 ✅ (host spike, 2026-07-30); Phase 1 ✅ built
-(`ring_geodis` in `ringkit`, code-review fixes 2026-11-12) but **not yet run on
-hardware**; §5.6 diagnostics (`ring_geodis_stats_t`, `last_err`,
-`set_tool_done_cb`) **added 2026-11-20**; Phase 2
-(`examples/14_geodis_push_to_talk`) **not started**; Phase 3 pending. This note
-is a plan + decision record — for the API itself see
+**Status (2026-11-21 19:30):** Phase 0 ✅ (host spike, 2026-07-30); Phase 1 ✅ built
+(`ring_geodis` in `ringkit`, code-review fixes 2026-11-12; §5.6 diagnostics
+`ring_geodis_stats_t`, `last_err`, `set_tool_done_cb` added 2026-11-20); Phase 1b ✅
+**on hardware** — the ring enumerates and boots (§6A.4), CST816S included;
+Phase 2a ✅ **verified on hardware** (mock sequence incl. barge-in, §5.5);
+Phase 2b ✅ **the real session reaches `READY`** on the ring after three
+on-hardware fixes (§6A.6: DTLS client role, `session.type`, comfort-noise) —
+**a live user turn is the one remaining step**; real 2,691,792 B / 12% free,
+mock 1,903,408 B / 38% free; Phase 3 docs **done**, boot + run logs recorded.
+**Next: a human speaks a real turn** (hold → STT → tool → TTS). This note is a
+plan + decision record — for the API itself see
 `components/ringkit/include/ringkit/ring_geodis.h`.
 
 **Inputs:** `notes/geodis-ai-api.md` (the API survey + the 2026-11-10 verification
@@ -80,9 +85,12 @@ Why not a full shared core now:
   partition, so there is headroom.
 
 Follow-up: extract `ring_rtc_core` (peer open, Opus codec, downlink ring, state
-machine) and make `ring_net` / `ring_geodis` thin protocol adapters. The review
-recommends doing this **before or alongside** example 14, not after, so the app
-does not encode the fork's semantics — see §5.6.
+machine) and make `ring_net` / `ring_geodis` thin protocol adapters. The review's
+§7 order puts the app first and this extraction **after**, once the semantics
+have stopped moving (the module gained stats/tool callbacks on 2026-11-20); the
+app should not be held up by the refactor, but `ring_net`'s latent peer-lifetime
+and uplink-open bugs should be fixed in the shared core rather than copied into
+`ring_geodis` again — see §5.6.
 
 ---
 
@@ -336,7 +344,26 @@ no Wi-Fi and no metered endpoint, so it is the desk path for example 14:
 3. Only then build with the mock off and run on a UDP-capable network.
 
 This turns the UDP risk from "the example may be unverifiable" into "verify
-offline first, then confirm online".
+offline first, then confirm online". A mock-enabled `12_ringkit_selftest` build
+(`build/12_mock`, `CONFIG_RINGKIT_GEODIS_MOCK=y`) already compiles and links the
+mock transport; example 14 is its first real consumer. Example 14 builds both
+ways: real 2,691,792 B (12% free), mock 1,903,408 B (38% free). The mock build
+uses a private sdkconfig (`-DSDKCONFIG=build/14_geodis_push_to_talk_mock/sdkconfig`)
+so the shared root `sdkconfig` stays on the real transport.
+
+**Verified on hardware 2026-11-21** (mock build of `14`): connect → `READY`;
+press → `LISTENING`; release → user transcript → `looking up…` → tool result →
+canned reply → `READY`; press while the reply plays → barge-in (`playback
+cancelled`, `mock: reply interrupted`). `commit->first audio` 1003–1022 ms,
+`frames_dropped=0`, no panic. The log proves the state machine and the tool
+path; the on-screen rendering still needs eyes.
+
+**Mock fix found by that run:** `ring_geodis_send_event()` had no mock branch,
+so with `s.peer == NULL` every `commit()` returned `ESP_ERR_INVALID_STATE` and
+the mock never started a turn. It now takes the same
+`#ifdef CONFIG_RINGKIT_GEODIS_MOCK` path as `ring_geodis_uplink_send()`, and the
+mock triggers a turn on `input_audio_buffer.commit` only (the tool path's
+`response.create` would otherwise start a duplicate reply).
 
 ### 5.6 Module additions before the app
 
@@ -367,9 +394,14 @@ cannot work around.
   spike and measure `commit_to_first_audio_ms` with and without; auto-detect
   costs latency and misfires on short utterances. (Needs a live spike; not run.)
 - **Shared WebRTC core** — pull `ring_rtc_core` (peer ownership, Opus, downlink
-  ring, uplink-open flag, event queue, PTT) out before the app encodes the
-  current fork's semantics; at minimum fix the same latent bugs in `ring_net`
-  (peer lifetime, uplink-open vs state) so the two transports stop diverging.
+  ring, uplink-open flag, event queue, PTT) out after the app, per the review's
+  §7 order; at minimum fix the same latent bugs in `ring_net` (peer lifetime,
+  uplink-open vs state) so the two transports stop diverging. The app must not
+  encode the current fork's semantics.
+- **Session reconnect policy** — review §6.4 (`RING_GEODIS_RECONNECTING`,
+  jittered backoff, press-to-retry that skips Wi-Fi/SNTP when they are still
+  valid, idle teardown). Not needed for the first app: it uses `stop()` +
+  `start()`. Track as a post-app follow-up.
 
 ---
 
@@ -546,34 +578,77 @@ Supporting changes:
 > Point-in-time numbers (2026-07-30). `07` is ~2642 KB in `AGENTS.md` and
 > 2,704,928 B in `notes/geodis-code-review.md` §6.1; the table above says
 > 2604 KB. Re-measure at the end of Phase 2 rather than editing history.
+> The `build/*` dirs on disk at 2026-11-20 23:00 were produced 21:16–21:23,
+> **before** the diagnostics commit `0cc397a` (22:51), so they verify the
+> pre-diagnostics tree; rebuild from clean dirs when 14 lands.
+>
+> Re-measured at Phase 2a close (2026-11-20, clean dirs): `14` real
+> 2,691,792 B (12% free), `14` mock 1,903,408 B (38% free), `12` 2,777,856 B
+> (10% free).
 
 Vendored overrides still win (`espressif__esp_codec_dev` 300 refs,
 `viewesmart__smartring_plus` 66 refs, all from `components/`). Host tests:
-`make check` → 1425 checks, 0 failures (point-in-time; §6A.5 reports 1480 after
-the payload-builder split).
+`make check` → 1596 checks, 0 failures at 2026-11-20 (1425 at the 2026-07-30
+build; §6A.5's 1480 was the review-fix point).
 
-### 6A.4 Hardware blocker
+### 6A.4 Hardware check (resolved 2026-11-20)
 
-**On-device verification is blocked by a pre-existing touch-controller
-failure.** `ring_board_init()` aborts in `bsp_display_init()` with
-`CST816S: I2C read failed` / `ESP_ERR_INVALID_RESPONSE` before any app code
-runs. The known-good `09_hello_smoke_test` fails identically, so it is not
-caused by the new module. The CST816S needs a **physical power cycle**
-(unplug/replug USB); a software reset via the USB-JTAG RTS pin does not clear
-it. Phase 1's firmware verification (boot log + `ring_geodis_init`/`stop`)
-is pending that.
+**The CST816S failure was a power-cycle issue, not a board fault.** A physical
+USB power cycle clears it; a software reset via the USB-JTAG RTS pin does not.
+The ring now enumerates on `/dev/ttyACM0` (`303a:1001`) and boots.
 
-**Status 2026-11-20:** the ring enumerates on `/dev/ttyACM0` again, so re-run
-`09_hello_smoke_test` after a physical power cycle. If it still aborts in
-`bsp_display_init()`, the blocker is real and Phase 2's on-device step stays
-gated; if it boots, close this section and record the boot log.
+**Boot log — mock build of `14`, 2026-11-20 23:45:**
+
+```
+I (1161) smartring: Smart Ring Plus starting (ringkit 1.1.0, app: 14_geodis_push_to_talk)
+I (1563) CST816S: IC id: 182
+I (2124) ringkit: display=ok battery=ok(AXP2101/V2) power=ok audio=ok sd=ok imu=ok
+I (2161) ring_geodis: opus encoder: in 3840 B out 180 B
+I (2164) ring_geodis: tool task started (hwm 10448 words)
+I (2165) ring_geodis: initialised
+I (2259) 14_geodis_push_to_talk: audio task started (stack hwm 124632 B)
+I (2271) ring_geodis: config: https://connect-weu-uat.api.geodis.com/corp/voice-agent/v1, voice coral, push-to-talk, stt on
+W (2272) ring_geodis: MOCK TRANSPORT: no network, canned replies
+I (2276) smartring: app '14_geodis_push_to_talk' is on screen
+I (2575) ring_geodis: state -> ready
+I (2575) ring_geodis: mock: session ready (voice coral, push-to-talk, stt on)
+I (2578) 14_geodis_push_to_talk: session ready
+```
+
+No `panic` / `assert` / `Guru Meditation`. `ring_geodis_init()` and the mock
+session come up on the device; the UI/touch sequence still needs a human (§5.5).
+The audio task's 128 KB PSRAM stack reports ~122 KB free at start.
+
+**Run log — mock turn + barge-in, 2026-11-21 00:00:**
+
+```
+I (78657)  ring_geodis: state -> listening
+I (85109)  ring_geodis: state -> ready
+I (85520)  ring_geodis: state -> speaking
+I (86120)  ring_geodis: tool 'rechercher_base_geodis' queued (34 B args)
+I (86122)  14_geodis_push_to_talk: tool call: rechercher_base_geodis
+W (86140)  ring_geodis: tool 'rechercher_base_geodis': http_error (HTTP 0)
+I (86141)  14_geodis_push_to_talk: tool done: rechercher_base_geodis ok=0 status=0 chunks=-1
+I (87723)  ring_geodis: state -> ready
+I (87723)  ring_geodis: mock: turn complete
+I (88210)  14_geodis_push_to_talk: stats: setup=304 ms ... commit->first audio=1003 ms sent=324 dropped=0 tools=1 tool=0 ms
+...
+I (213605) 14_geodis_push_to_talk: playback cancelled (barge-in)
+I (213608) ring_geodis: state -> ready
+I (213608) ring_geodis: state -> listening
+I (213666) ring_geodis: mock: reply interrupted at 0/76800 samples
+```
+
+`commit->first audio` 1003–1022 ms across turns, `frames_dropped=0`. The stats
+are cumulative since `start()` (as the header documents), so `sent`/`tools`
+grow across turns.
 
 ### 6A.5 Review fixes (2026-11-12, after `b7e0065`)
 
 `notes/geodis-code-review.md` read the module against how example 14 will use
 it. The P0/P1 findings are fixed; the module still has never run on hardware,
 so the fixes are compile-verified only (`12_ringkit_selftest` links and builds,
-host tests 1480 checks / 0 failures).
+host tests 1596 checks / 0 failures at 2026-11-20).
 
 Contract changes an app author must know:
 
@@ -621,6 +696,45 @@ the three module tasks and the PSRAM buffers are created at `init()` rather than
 app task. `response.created` → `SPEAKING`, the DEBUG demotion of DataChannel
 frame logging, the `init()` guard and the wrap-safe `now_ms()` are done.
 
+### 6A.6 Real-transport fixes (2026-11-21, found on hardware)
+
+Flashing the real build of `14` exposed three bugs the mock could not:
+
+- **DTLS role.** Azure answers `a=setup:active` to `esp_peer`'s
+  `a=setup:actpass` offer, making the ESP32 the DTLS/SCTP **server**. esp_peer's
+  data-channel role follows the DTLS role, so it waited for the peer to open the
+  channel — but the Azure Realtime API expects the client to open it. DTLS and
+  SCTP came up, then the session timed out with no `session.created`.
+  `ring_geodis_signaling.c` now rewrites the offer to `a=setup:active`
+  (`force_dtls_client()`); Azure answers `passive`, the ESP32 is the client, and
+  esp_peer sends DCEP automatically (`data channel 'esp_channel' open`).
+- **`session.type`.** The GA endpoint rejected `session.update` with
+  `missing_required_parameter: session.type`. The payload builder now emits
+  `{"type":"session.update","session":{"type":"realtime","audio":{…}}}`.
+- **Comfort noise is not a reply.** The endpoint streams silence/comfort-noise
+  audio continuously (a host probe counted 645 frames/25 s, starting before
+  `session.created`). `ring_geodis_codec.c` marked `speaking` on every audio
+  frame, so the UI sat on `speaking…`. Only `response.created` sets it now, and
+  `set_listening(true)` flushes the 4 s downlink ring so a press does not play
+  back the accumulated silence.
+
+**Boot log — real build, 2026-11-21 (abridged):**
+
+```
+I (2395)  ring_geodis: state -> connecting
+I (10162) ring_geodis: local SDP ready (949 bytes)
+I (22170) ring_geodis: peer connected
+I (22201) ring_geodis: data channel 'esp_channel' open (stream 2)
+I (22202) ring_geodis: session created -> configuring
+I (22208) ring_geodis: session.update sent
+I (22268) ring_geodis: session configured
+I (22268) ring_geodis: state -> ready
+I (22270) 14_geodis_push_to_talk: session ready
+```
+
+No `panic`/`assert`. The real session reaches `READY` on the ring; a live user
+turn (mic → STT → tool → TTS) is the one remaining unverified step.
+
 ---
 
 ## 7. Phases
@@ -629,10 +743,15 @@ frame logging, the `init()` guard and the wrap-safe `now_ms()` are done.
 |---|---|---|
 | **0** ✅ | `scripts/test_geodis_api.py --mode ptt` | PTT + codec + TLS confirmed — **done 2026-07-30**, 10/10 |
 | **1** ✅ | `ring_geodis` module in `ringkit` | builds; `12_ringkit_selftest` can init/stop it — **built 2026-07-30** |
-| **1b** | Hardware check of `ring_geodis` | `12_ringkit_selftest` boots and init/stop on the ring — **pending** (§6A.4) |
-| **2a** | `examples/14_geodis_push_to_talk` against `CONFIG_RINGKIT_GEODIS_MOCK` | builds; full state sequence + barge-in verified offline (§5.5) |
-| **2b** | `14` on a UDP-capable network | boots to `ready`; one real turn end-to-end |
-| **3** | Docs + verification | README, app table, ringkit map, boot log, human voice check, `make check` |
+| **1b** ✅ | Hardware check of `ring_geodis` | the module initialised and a mock session came up on the ring via `14` (§6A.4); `12` not re-run |
+| **2a** ✅ | `examples/14_geodis_push_to_talk` against `CONFIG_RINGKIT_GEODIS_MOCK` | **verified on hardware**: full state sequence + barge-in (§5.5); real + mock builds green |
+| **2b** ✅ | `14` on a real network | real session reaches `ready` (§6A.6); one real turn end-to-end — **live turn pending a human** |
+| **3** | Docs + verification | README, app table, ringkit map, boot + run logs, `make check` — **done**; the on-screen rendering and a real conversation still need eyes/ears |
+
+**Next: the live user turn.** The real build is flashed and reaches
+`session ready` (§6A.6). What remains is a human: hold, speak, release, hear the
+reply, see both transcripts. The mock path and the real signalling path are
+verified; the mic → STT → tool → TTS loop is not.
 
 Phase 0 is complete: `turn_detection: null` is accepted, the PTT clip → commit →
 reply flow works end-to-end (with the client-executed RAG call), the SDP
@@ -671,23 +790,26 @@ of `ring_net`, not a new stack.
    outbound UDP (a phone hotspot is the usual workaround). **Mitigation:** verify
    the app first against `CONFIG_RINGKIT_GEODIS_MOCK` (§5.5), which needs no
    network.
-2. **Image size.** `07` is ~2642 KB in a 3000K partition; `14` will be similar.
-   Measure `idf.py -B build/14_geodis_push_to_talk size`. The face app (`15`)
-   needs the partition raised to 3400K.
+2. **Image size.** `07` is ~2642 KB in a 3000K partition; `14` measures
+   2,691,792 B (12% free) real and 1,903,408 B (38% free) mock. The face app
+   (`15`) needs the partition raised to 3400K.
 3. **Unauthenticated, metered endpoint.** Every session costs GEODIS's Azure
    budget, and `/token` is open and transcripts are readable/writable by
    `chat_session_id`. No looping tests; no automatic retries that start new
    sessions; do not log the conversation at INFO. Must be gated before production.
 4. **Tool-call latency.** The RAG POST blocks the reply; surface a `looking up…`
    state so the user knows it is not hung. The module has `tool_cb` for the
-   start, but no completion/chunk-count path yet (§5.6).
+   start and, since 2026-11-20, `ring_geodis_set_tool_done_cb()` for the
+   completion (`ok`, HTTP `status`, `retrievedChunks` count) — wire both into
+   the UI stage line.
 5. **RAG content gap.** The KB has no live consignment data (see
    `notes/geodis-ai-api.md` §2); the demo must use a KB-backed prompt or inject
    data via `mcp_database`/`mcp_collection`.
 6. **Console back-pressure.** Drain `/dev/ttyACM0` continuously; a capture script
    that sleeps before reading will stall the firmware and mimic a hang.
-7. **Hardware verification.** The module has never run on a device; the CST816S
-   blocker (§6A.4) needs a resolution before Phase 3.
+7. **Hardware verification.** ✅ Resolved 2026-11-21: the ring enumerates, boots
+   and the real session reaches `READY` (§6A.4, §6A.6). The live user turn
+   (mic → STT → tool → TTS) still needs a human.
 
 ---
 
@@ -696,36 +818,46 @@ of `ring_net`, not a new stack.
 - **Host spike:** `scripts/.venv/bin/python scripts/test_geodis_api.py --mode ptt`
   passes (commit → reply, tool call, transcript). `--mode live` (mic/speaker)
   exists for a manual end-to-end check.
-- **Mock build:** `14` builds and runs with `CONFIG_RINGKIT_GEODIS_MOCK=y`;
-  verify connect → `READY`, press → `LISTENING`, release → transcript → tool
-  call → canned audio → `READY`, and press-while-speaking → barge-in (§5.5).
+- **Mock build:** ✅ 2026-11-21 — `14` builds with `CONFIG_RINGKIT_GEODIS_MOCK=y`
+  (1,903,408 B, 38% free; real 2,691,792 B, 12% free) and runs on the ring:
+  connect → `READY`, press → `LISTENING`, release → transcript → tool call →
+  canned audio → `READY`, press-while-speaking → barge-in (§5.5, §6A.4).
 - **Builds from clean dirs:** `11_glyph_grid_reveal`, `09_hello_smoke_test`,
   `07_qianwen_realtime_harness`, `10_qianwen_ws_voice_chat`,
-  `14_geodis_push_to_talk`.
+  `14_geodis_push_to_talk` — all green 2026-11-20 (11 750,672 B, 09 823,392 B,
+  07 2,707,328 B, 10 1,633,792 B; 14 above).
 - **Vendored overrides still win:** `espressif__esp_codec_dev` and
   `viewesmart__smartring_plus` (see `AGENTS.md`).
-- **Boot log:** `ringkit:` summary all `ok`, `app: 14_geodis_push_to_talk`,
-  `session ready`, no `panic` / `assert` / `Guru Meditation`.
-- **On-device (needs a human + UDP-capable network):** hold the button, speak,
-  release, hear the reply, see both transcripts. The log proves the pipeline
-  runs, not that the conversation is intelligible.
-- **Unit tests:** `cd tests && make check` (the payload builders are pure and
-  host-tested; 62 checks at 2026-11-12).
-- **Stats:** the harness prints `ring_geodis_stats_t` per turn once §5.6 lands;
-  check `commit_to_first_audio_ms` and `frames_dropped` are sane.
+- **Boot log:** ✅ 2026-11-20 mock build — `ringkit:` summary all `ok`,
+  `app: 14_geodis_push_to_talk`, `session ready`, no `panic` / `assert` /
+  `Guru Meditation` (§6A.4). ✅ 2026-11-21 real build — reaches `session ready`
+  (§6A.6).
+- **On-device mock touch sequence:** ✅ 2026-11-21 — verified from the log
+  (§6A.4); the on-screen rendering itself still needs eyes.
+- **On-device real session:** ✅ 2026-11-21 — reaches `READY` on the ring
+  (§6A.6). **Live user turn pending a human:** hold, speak, release, hear the
+  reply, see both transcripts. The log proves the pipeline runs, not that the
+  conversation is intelligible.
+- **Unit tests:** `cd tests && make check` — 1596 checks / 0 failures at
+  2026-11-20 (the payload builders are pure and host-tested; 62 of those).
+- **Stats:** the harness prints `ring_geodis_stats_t` per turn (§5.6 landed
+  2026-11-20); check `commit_to_first_audio_ms` and `frames_dropped` are sane.
 
 ---
 
 ## 10. Docs to update
 
-- `examples/README.md` — add `14_geodis_push_to_talk` to the app table.
-- `components/ringkit/README.md` — module map (`ring_geodis`), task table,
+- ✅ `examples/README.md` — `14_geodis_push_to_talk` added to the app table.
+- ✅ `components/ringkit/README.md` — module map (`ring_geodis`), task table,
   state machine, and the voice transport decision guide (GEODIS = Azure
-  Realtime over WebRTC, client-executed tools). The phantom `examples/14`
-  reference is already fixed (line 47 now points at this note).
-- `AGENTS.md` — architecture tree (new module + example), app table, and the
-  `vApplicationStackOverflowHook` move.
-- `scripts/README.md` — document `--mode ptt` and `--mode live`.
-- `notes/geodis-ai-api.md` — link this plan and record the Phase 0 results.
-- `notes/geodis-push-to-talk-plan.md` — keep this status block current; re-measure
-  the build/test numbers at Phase 2 close.
+  Realtime over WebRTC, client-executed tools). Line 47 now points at
+  `examples/14` instead of saying "no app yet".
+- ✅ `AGENTS.md` — module list, `ring_geodis_*` API, the
+  `vApplicationStackOverflowHook` move, this note in the docs map, the
+  `examples/14` architecture-tree row and its README in the deep-dive list.
+- ✅ `scripts/README.md` — documents `--mode ptt` and `--mode live`.
+- ✅ `notes/geodis-ai-api.md` — the Phase 0 findings are recorded (STT opt-in, the
+  transcript event, the tool-call shape, SDP 400/201) and the note now links
+  this plan.
+- ✅ `notes/geodis-push-to-talk-plan.md` — status block current; build/test
+  numbers re-measured from clean dirs at Phase 2a close (2026-11-20).

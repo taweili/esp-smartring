@@ -303,3 +303,6 @@ python3 scripts/test_geodis_api.py --mode http
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode webrtc
 scripts/.venv/bin/python scripts/test_geodis_api.py --mode voice
 ```
+
+Implementation on the ring: `notes/geodis-push-to-talk-plan.md` — the
+`ring_geodis` module and `examples/14_geodis_push_to_talk`.

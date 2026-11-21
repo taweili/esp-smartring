@@ -123,7 +123,8 @@ EOF
 │   │                            #   orb + chat/settings screens (README)
 │   ├── 11_glyph_grid_reveal/    # default app: layered glyph-grid reveal (README)
 │   ├── 12_ringkit_selftest/     # subsystem diagnostic: probe + voice init/stop (README)
-│   └── 13_button_probe/         # BOOT-button (GPIO0) event probe: press/long/click/double (README)
+│   ├── 13_button_probe/         # BOOT-button (GPIO0) event probe: press/long/click/double (README)
+│   └── 14_geodis_push_to_talk/  # GEODIS Azure Realtime push-to-talk (ring_geodis; README)
 ├── scripts/
 │   ├── test_qianwen_realtime.py # host-side Qianwen WebRTC test client
 │   ├── test_qianwen_ws.py      # host-side Qianwen WebSocket test client
@@ -460,6 +461,8 @@ that must stay committed are the override *copies* in `components/`
 - `examples/12_ringkit_selftest/README.md` — the subsystem diagnostic app.
 - `examples/13_button_probe/README.md` — the BOOT-button (GPIO0) probe: events,
   timings, and the strapping-pin caveat.
+- `examples/14_geodis_push_to_talk/README.md` — GEODIS Azure Realtime push-to-talk (`ring_geodis`):
+  UI, PTT flow, mock transport, NVS endpoint overrides, verification status.
 - `examples/11_glyph_grid_reveal/README.md` — the default app design & build spec: layered reveal
   maths, layer timeline, risks.
 - `notes/hardware-bsp-reference.md` — hardware + BSP reference: product overview, BSP API, pin map, pitfalls.

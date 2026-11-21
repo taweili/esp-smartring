@@ -19,6 +19,7 @@ Plus. Exactly **one** is compiled into a firmware image, selected by the
 | `11_glyph_grid_reveal` | Full-screen 13×13 glyph grid with a layered center-out reveal driven by the ring's gyro; tap resets to the idle core. |
 | `12_ringkit_selftest` | Bring-up diagnostic: probes display/touch/audio/IMU/SD/battery, then init/stop for Wi-Fi, BLE and the voice modules. See `12_ringkit_selftest/README.md`. |
 | `13_button_probe` | BOOT-button (GPIO0) probe: shows `press` / `long press` / `click` / `dbl click` on screen the moment each fires, with a live held-time line and per-event counters. See `13_button_probe/README.md`. |
+| `14_geodis_push_to_talk` | GEODIS Voice Agent push-to-talk: hold the round button, speak, release — Opus/WebRTC through the GEODIS gateway (Azure OpenAI Realtime), client-executed RAG tool call, transcripts + spoken reply. `CONFIG_RINGKIT_GEODIS_MOCK` gives an offline canned turn. See `14_geodis_push_to_talk/README.md`. |
 
 ## Building an app
 
